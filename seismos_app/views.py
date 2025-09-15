@@ -7,6 +7,9 @@ import numpy as np
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 import folium
+import geopandas as gpd
+import glob
+
 
 from datetime import timedelta
 from math import pi, sin, cos, atan2, sqrt
@@ -669,53 +672,212 @@ def distance_haversine(lat1, lon1, lat2, lon2):
     d = 6371 * c
     return d
 
+def get_all_shapefiles():
+
+    shapefile_paths = []
+
+    search_paths = [
+        os.path.join(settings.BASE_DIR, 'static', 'shapefiles', 'AFEAD_*.shp'),
+        os.path.join(settings.BASE_DIR, 'media', 'shapefiles', 'AFEAD_*.shp'),
+        os.path.join(settings.BASE_DIR, 'data', 'AFEAD_*.shp'),
+        os.path.join(settings.BASE_DIR, 'shapefiles', 'AFEAD_*.shp'),
+        os.path.join(settings.BASE_DIR, 'static', 'data', 'AFEAD_*.shp'),
+        os.path.join(settings.BASE_DIR, 'AFEAD_*.shp'),
+    ]
+
+    if hasattr(settings, 'CRACKS_SHAPEFILES_DIR'):
+        search_path.append(os.path.join(settings.CRACKS_SHAPEFILES_DIR, '*.shp'))
+
+    for search_path in search_paths:
+        found_files = glob.glob(search_path)
+        shapefile_paths.extend(found_files)
+
+        #dublikatlarni olib tashlash
+        shapefile_paths = list(set(shapefile_paths))
+
+        logging.info(f"Topilgan shapefilelar: {len(shapefile_paths)} ta")
+        for path in shapefile_paths:
+            logging.info(f" -{os.path.basename(path)}")
+
+        return shapefile_paths
+
+def load_all_cracks_shapefiles():
+    shapefile_paths = get_all_shapefiles()
+
+    if not shapefile_paths:
+        logging.warning("Hech qanday shapefile topilmadi")
+        return None
+
+    all_cracks = []
+
+    for shapefile_path in shapefile_paths:
+        try:
+            gdf = gpd.read_file(shapefile_path)
+
+            if gdf.crs and gdf.crs != 'EPSG:4326':
+                gdf = gdf.to_crs('EPSG:4326')
+
+            #Fayl nomini qo'shish
+            gdf['source_file'] = os.path.basename(shapefile_path)
+
+            all_cracks.append(gdf)
+            logging.info(f"Yuklandi:{os.path.basename(shapefile_path)}-{len(gdf)} ta yoriq")
+
+        except Exception as e:
+            logging.error(f"Shapefile {shapefile_path}:{e}")
+            continue
+
+    if not all_cracks:
+        logging.warning("Hech qanday shapefile yuklanmadi")
+        return None
+
+    #Barcha malumotlarni  birlashtirish
+    try:
+        combined_gdf = gpd.GeoDataFrame(pd.concat(all_cracks, ignore_index=True))
+        logging.info(f"Umumiy yoriqlar soni: {len(combined_gdf)}")
+        return combined_gdf
+    except Exception as e:
+        logging.error(f"Shapefilelarni birlashtirishda xato:{e}")
+        return None
+
+
+def add_cracks_to_map(folium_map, cracks_gdf):
+    """
+    Folium xaritasiga barcha yer yoriqlarini qo'shadi (turli ranglarda)
+
+    Args:
+        folium_map: Folium Map obyekti
+        cracks_gdf: GeoDataFrame with all crack data
+    """
+    if cracks_gdf is None or cracks_gdf.empty:
+        return
+
+    # Har xil fayllar uchun turli ranglar
+    colors = ['red', 'darkred', 'orange', 'purple', 'darkgreen', 'blue', 'pink', 'gray']
+
+    # Source file bo'yicha guruhlashtirish
+    if 'source_file' in cracks_gdf.columns:
+        file_groups = cracks_gdf.groupby('source_file')
+        color_map = {}
+        for i, (file_name, _) in enumerate(file_groups):
+            color_map[file_name] = colors[i % len(colors)]
+    else:
+        color_map = {'unknown': 'red'}
+
+    try:
+        for idx, row in cracks_gdf.iterrows():
+            geometry = row.geometry
+            source_file = row.get('source_file', 'unknown')
+            color = color_map.get(source_file, 'red')
+
+            # Atributlarni olish
+            properties = {}
+            for col in cracks_gdf.columns:
+                if col not in ['geometry', 'source_file']:
+                    properties[col] = row[col]
+
+            # Popup uchun ma'lumotlar
+            popup_text = f"<b>Yer Yoriği</b><br><b>Fayl:</b> {source_file}<br>"
+            for key, value in properties.items():
+                if value is not None and str(value).strip():
+                    popup_text += f"<b>{key}:</b> {value}<br>"
+
+            tooltip_text = f"Yer Yoriği ({source_file})"
+
+            if geometry.geom_type == 'LineString':
+                # Chiziq sifatida
+                coords = [[point[1], point[0]] for point in geometry.coords]
+                folium.PolyLine(
+                    locations=coords,
+                    color=color,
+                    weight=3,
+                    opacity=0.8,
+                    popup=popup_text,
+                    tooltip=tooltip_text
+                ).add_to(folium_map)
+
+            elif geometry.geom_type == 'MultiLineString':
+                # Ko'p chiziqlar
+                for line in geometry.geoms:
+                    coords = [[point[1], point[0]] for point in line.coords]
+                    folium.PolyLine(
+                        locations=coords,
+                        color=color,
+                        weight=3,
+                        opacity=0.8,
+                        popup=popup_text,
+                        tooltip=tooltip_text
+                    ).add_to(folium_map)
+
+            elif geometry.geom_type == 'Point':
+                # Nuqta sifatida
+                folium.Marker(
+                    location=[geometry.y, geometry.x],
+                    popup=popup_text,
+                    tooltip=tooltip_text,
+                    icon=folium.Icon(color=color, icon='warning-sign')
+                ).add_to(folium_map)
+
+            elif geometry.geom_type == 'Polygon':
+                # Ko'pburchak sifatida
+                coords = [[point[1], point[0]] for point in geometry.exterior.coords]
+                folium.Polygon(
+                    locations=coords,
+                    color=color,
+                    weight=2,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.3,
+                    popup=popup_text,
+                    tooltip=tooltip_text
+                ).add_to(folium_map)
+
+        # Layer control va legend uchun ma'lumot qaytarish
+        return color_map
+
+    except Exception as e:
+        logging.error(f"Yer yoriqlarini xaritaga qo'shishda xato: {e}")
+        return {}
+
 
 def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, min_mlgr):
     """
     Folium yordamida interaktiv xarita yaratadi va unga barcha
-    skvajinalar, tanlangan skvajinalar va filtrlangan zilzilalarni qoʻshadi.
+    skvajinalar, tanlangan skvajinalar, filtrlangan zilzilalar va
+    BARCHA yer yoriqlarini qo'shadi.
     """
     all_wells = get_all_wells_coordinates()
 
     selected_well_names = set()
     filtered_earthquakes_by_well = []
-    
+
     # Har bir tanlangan skvajina uchun filtrlangan zilzilalarni hisoblash
     for key in selected_keys:
         _, skvajina = key.split(" | ")
         selected_well_names.add(skvajina)
-        
+
         lat, lon = well_coords.get(skvajina, (None, None))
         if lat is not None and lon is not None:
-            # Shu skvajina uchun filtrlangan zilzilalarni hisoblash
             df = earthquake_data.copy()
-            
-            # Mb qiymatlarini raqamga aylantirish
             df[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(df[MAIN_MAGNITUDE_COLUMN], errors="coerce")
             df.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
-            
-            # Masofani hisoblash
             df["R(km)"] = np.round(
                 destenc_vectorized(lat, lon, df[LATITUDE_COLUMN], df[LONGITUDE_COLUMN])
             )
             df["M/lgR"] = np.where(
                 df["R(km)"] > 1, df[MAIN_MAGNITUDE_COLUMN] / np.log10(df["R(km)"]), np.nan
             )
-            
-            # Filtrlash
             valid_earthquakes = df[
-                (df[MAIN_MAGNITUDE_COLUMN] >= min_mag) & 
+                (df[MAIN_MAGNITUDE_COLUMN] >= min_mag) &
                 (df["M/lgR"] >= min_mlgr)
-            ].copy()
-            
+                ].copy()
+
             if not valid_earthquakes.empty:
-                valid_earthquakes['skvajina'] = skvajina  # Qaysi skvajina uchun ekanligini belgilash
+                valid_earthquakes['skvajina'] = skvajina
                 filtered_earthquakes_by_well.append(valid_earthquakes)
 
-    # Barcha filtrlangan zilzilalarni birlashtirish
     if filtered_earthquakes_by_well:
         all_filtered_earthquakes = pd.concat(filtered_earthquakes_by_well, ignore_index=True)
-        # Dublikatlarni olib tashlash (bir zilzila bir necha skvajina uchun mos kelishi mumkin)
         all_filtered_earthquakes = all_filtered_earthquakes.drop_duplicates(
             subset=[LATITUDE_COLUMN, LONGITUDE_COLUMN, DATE_COLUMN, TIME_COLUMN]
         )
@@ -748,9 +910,50 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         location=[center_lat, center_lon],
         zoom_start=8,
         tiles="OpenStreetMap",
+        attr = "© OpenStreetMap contributors"
     )
 
-    # Barcha skvajinalarni xaritaga qoʻshish (kulrang rangda)
+    # Turli xil fon xaritalari qo'shish (xatolikni oldini olish uchun try-except)
+    try:
+        folium.TileLayer(
+            tiles='https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png',
+            attr='Map tiles by <a href="http://stamen.com">Stamen Design</a>, under <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. Data by <a href="http://openstreetmap.org">OpenStreetMap</a>, under <a href="http://creativecommons.org/licenses/by-sa/3.0">CC BY SA</a>.',
+            name='Terrain'
+        ).add_to(m)
+    except:
+        logging.warning("Terrain tiles yuklanmadi")
+
+    try:
+        folium.TileLayer(
+            tiles='https://cartodb-basemaps-{s}.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png',
+            attr='© OpenStreetMap contributors © CARTO',
+            name='Light Map'
+        ).add_to(m)
+    except:
+        logging.warning("CartoDB tiles yuklanmadi")
+
+    try:
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Tiles © Esri — Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+            name='Satellite',
+            overlay=False,
+            control=True
+        ).add_to(m)
+    except:
+        logging.warning("Satellite tiles yuklanmadi")
+
+    # BARCHA YER YORIQLARINI QO'SHISH - Avtomatik
+    logging.info("Yer yoriqlarini yuklash boshlandi...")
+    all_cracks = load_all_cracks_shapefiles()
+    crack_colors = {}
+    if all_cracks is not None:
+        crack_colors = add_cracks_to_map(m, all_cracks)
+        logging.info(f"Yer yoriqlari xaritaga qo'shildi: {len(all_cracks)} ta")
+    else:
+        logging.warning("Yer yoriqlari yuklanmadi")
+
+    # Barcha skvajinalarni xaritaga qo'shish (kulrang rangda)
     for well_name, (lat, lon) in all_wells.items():
         if well_name not in selected_well_names:
             tooltip_text = f"<b>Skvajina:</b> {well_name}<br>(Tanlanmagan)"
@@ -760,7 +963,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 icon=folium.Icon(color="lightblue", icon="pin"),
             ).add_to(m)
 
-    # Tanlangan skvajinalarni xaritaga qoʻshish (pushti rangda, kattaroq)
+    # Tanlangan skvajinalarni xaritaga qo'shish (pushti rangda)
     for key in selected_keys:
         _, skvajina = key.split(" | ")
         lat, lon = well_coords.get(skvajina, (None, None))
@@ -772,8 +975,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 icon=folium.Icon(color="pink", icon="pin"),
             ).add_to(m)
 
-    # Filtrlangan zilzilalarni xaritaga qoʻshish
-    logging.info(f"Xaritaga qo'shiladigan filtrlangan zilzila qatorlari: {len(all_filtered_earthquakes)}")
+    # Filtrlangan zilzilalarni xaritaga qo'shish
     if not all_filtered_earthquakes.empty:
         for idx, row in all_filtered_earthquakes.iterrows():
             mag_val = row.get(MAIN_MAGNITUDE_COLUMN, None)
@@ -783,8 +985,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             distance_val = row.get("R(km)", "Noma'lum")
             mlgr_val = row.get("M/lgR", "Noma'lum")
             depth_val = row.get("Depth", "Noma'lum")
-            
-            logging.info(f"Filtrlangan zilzila {idx}: Sana={date_val}, Mb={mag_val}")
 
             if mag_val is not None and not np.isnan(mag_val) and mag_val > 0:
                 tooltip_html = f"""
@@ -794,9 +994,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 Chuqurlik (km): {depth_val}<br>
                 Masofa (km): {distance_val:.1f}<br>
                 M/lgR: {mlgr_val:.2f}<br>
-                
                 """
-                # Magnitudaga qarab rang va o'lchamni belgilash
                 if mag_val >= 6:
                     color = "darkred"
                     radius = mag_val * 3
@@ -809,7 +1007,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 else:
                     color = "yellow"
                     radius = mag_val * 1.5
-                
+
                 folium.CircleMarker(
                     location=[row[LATITUDE_COLUMN], row[LONGITUDE_COLUMN]],
                     radius=radius,
@@ -821,23 +1019,28 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                     weight=2,
                     tooltip=tooltip_html,
                 ).add_to(m)
-            else:
-                logging.warning(f"Zilzila {idx} o'tkazib yuborildi: Mb={mag_val}")
 
-    # Legend qo'shish
-    legend_html = '''
+    # Dinamik Legend (yer yoriqlari va zilzilalar bilan)
+    legend_items = [
+        '<p><b>Xarita elementlari:</b></p>',
+        '<p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>',
+        '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>',
+        '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>',
+        '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>',
+    ]
+
+    legend_html = f'''
     <div style="position: fixed; 
-                bottom: 50px; left: 50px; width: 200px; height: 160px; 
+                bottom: 50px; left: 50px; width: 250px; height: {min(400, 50 + len(legend_items) * 25)}px; 
                 background-color: white; border:2px solid grey; z-index:9999; 
-                font-size:14px; padding: 10px">
-    <p><b>Zilzila ranglari:</b></p>
-    <p><i class="fa fa-circle" style="color:darkred"></i> Mb ≥ 6.0</p>
-    <p><i class="fa fa-circle" style="color:red"></i> Mb 5.0-5.9</p>
-    <p><i class="fa fa-circle" style="color:orange"></i> Mb 4.0-4.9</p>
-    <p><i class="fa fa-circle" style="color:yellow"></i> Mb < 4.0</p>
+                font-size:12px; padding: 10px; overflow-y: auto;">
+    {''.join(legend_items)}
     </div>
     '''
     m.get_root().html.add_child(folium.Element(legend_html))
+
+    # Layer control qo'shish
+    folium.LayerControl().add_to(m)
 
     return m._repr_html_()
 
@@ -1167,12 +1370,14 @@ def results_view(request):
             # X-o'qi diapazonini belgilash
             fig.update_xaxes(
                 range=[min_date - delta, max_date + delta],
-                tickformat="%Y" if first_anomaly_date else "%Y",
+                type = "date",
+                tickformat=None,
                 showgrid=True,
                 griddash="dot",
-                dtick="M3" if first_anomaly_date else "M12",  # Anomaliya bo'lsa 3 oylik, yo'qsa yillik
+                dtick=None,
                 row=row,
                 col=col,
+                autorange=False,
             )
 
         # Layout sozlamalari
@@ -1213,6 +1418,13 @@ def results_view(request):
             # Zoom va pan imkoniyatlarini kengaytirish
             "showTips": True,
             "displaylogo": False,
+            "toImageButtonOptions": {
+                "format": "png",
+                "filename": "seismic_analysis",
+                "height": 500,
+                "width": 700,
+                "scale": 1
+            }
         }
         plotly_html = fig.to_html(
             full_html=False, include_plotlyjs="cdn", config=config
