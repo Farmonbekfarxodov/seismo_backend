@@ -283,12 +283,32 @@ def process_dataframe(
         return None
 
 
-def generate_colors(n, cmap_name="tab20"):
-    """
-    Matplotlib colormap orqali `n` ta rang hosil qiladi.
-    """
-    cmap = plt.get_cmap(cmap_name)
-    return [f"rgb{tuple(int(c * 255) for c in cmap(i % cmap.N)[:3])}" for i in range(n)]
+def generate_colors(n):
+    safe_colors = [
+        'blue',  # Ko'k
+        'green',  # Yashil
+        'orange',  # To'q sariq
+        'purple',  # Binafsha
+        'yellow',  # Sariq
+        'brown',  # Jigarrang
+        'pink',  # Pushti
+        'cyan',  # Moviy-yashil
+        'lime',  # Yorqin yashil
+        'teal',  # To'q moviy-yashil
+        'gold',  # Oltin
+        'navy',  # To'q ko'k
+        'magenta',  # To'q pushti
+        'olive',  # Zaytun yashil
+        'indigo',  # Indigo
+        'turquoise',  # To'q moviy-yashil
+        'plum'  # Pushti-binafsha
+    ]
+
+    # Takrorlash agar ko'p ranglar kerak bo'lsa
+    while len(safe_colors) < n:
+        safe_colors.extend(safe_colors)
+
+    return safe_colors[:n]
 
 
 def plot_data_with_anomalies(
@@ -679,7 +699,7 @@ def get_all_shapefiles():
     search_paths = [
         os.path.join(settings.BASE_DIR, 'static', 'shapefiles', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'media', 'shapefiles', 'AFEAD_*.shp'),
-        os.path.join(settinwell_namegs.BASE_DIR, 'data', 'AFEAD_*.shp'),
+        os.path.join(settings.BASE_DIR, 'data', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'shapefiles', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'static', 'data', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'AFEAD_*.shp'),
@@ -961,8 +981,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             folium.Marker(
                 location=[lat, lon],
                 tooltip=tooltip_text,
-                icon=folium.Icon(color="beige", icon="pin"),
+                icon=folium.Icon(color="beige", prefix="fa",icon="pin", opacity=0.1),
             ).add_to(m)
+
 
     # Tanlangan skvajinalarni xaritaga qo'shish (pushti rangda)
     for key in selected_keys:
