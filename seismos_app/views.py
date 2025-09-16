@@ -679,14 +679,14 @@ def get_all_shapefiles():
     search_paths = [
         os.path.join(settings.BASE_DIR, 'static', 'shapefiles', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'media', 'shapefiles', 'AFEAD_*.shp'),
-        os.path.join(settings.BASE_DIR, 'data', 'AFEAD_*.shp'),
+        os.path.join(settinwell_namegs.BASE_DIR, 'data', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'shapefiles', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'static', 'data', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'AFEAD_*.shp'),
     ]
 
     if hasattr(settings, 'CRACKS_SHAPEFILES_DIR'):
-        search_path.append(os.path.join(settings.CRACKS_SHAPEFILES_DIR, '*.shp'))
+        search_paths.append(os.path.join(settings.CRACKS_SHAPEFILES_DIR, '*.shp'))
 
     for search_path in search_paths:
         found_files = glob.glob(search_path)
@@ -743,101 +743,102 @@ def load_all_cracks_shapefiles():
 
 def add_cracks_to_map(folium_map, cracks_gdf):
     """
-    Folium xaritasiga barcha yer yoriqlarini qo'shadi (turli ranglarda)
-
-    Args:
-        folium_map: Folium Map obyekti
-        cracks_gdf: GeoDataFrame with all crack data
+    Folium xaritasiga yer yoriqlarini qo'shadi
+    (RATE bo'yicha qalinlik va rang to'qligi, CONF bo'yicha rang tanlanadi)
     """
     if cracks_gdf is None or cracks_gdf.empty:
         return
 
-    # Har xil fayllar uchun turli ranglar
-    colors = ['red', 'darkred', 'orange', 'purple', 'darkgreen', 'blue', 'pink', 'gray']
+    # CONF bo'yicha asosiy ranglar
+    conf_colors = {
+        "A": (255, 0, 0),      # qizil
+        "B": (200, 0, 0),      # qizil (biroz farqli bo'lishi mumkin)
+        "C": (255, 165, 0),    # sariq/oranj
+        "D": (128, 128, 128),  # kulrang
+    }
 
-    # Source file bo'yicha guruhlashtirish
-    if 'source_file' in cracks_gdf.columns:
-        file_groups = cracks_gdf.groupby('source_file')
-        color_map = {}
-        for i, (file_name, _) in enumerate(file_groups):
-            color_map[file_name] = colors[i % len(colors)]
-    else:
-        color_map = {'unknown': 'red'}
+    # RATE bo'yicha qalinlik va alpha
+    rate_styles = {
+        "1": {"weight": 6, "alpha": 1.0},   # eng qalin, to‘q
+        "2": {"weight": 4, "alpha": 0.8},   # o‘rtacha
+        "3": {"weight": 2, "alpha": 0.6},   # eng yupqa, eng och
+    }
+
+    default_color = "blue"
+    default_weight = 3
 
     try:
         for idx, row in cracks_gdf.iterrows():
             geometry = row.geometry
-            source_file = row.get('source_file', 'unknown')
-            color = color_map.get(source_file, 'red')
 
-            # Atributlarni olish
-            properties = {}
+            # RATE va CONF qiymatlarini olish
+            rate = str(row.get("RATE", "")).strip()
+            conf = str(row.get("CONF", "")).strip().upper()
+
+            # Rang va qalinlikni tanlash
+            if conf in conf_colors and rate in rate_styles:
+                base_rgb = conf_colors[conf]
+                style = rate_styles[rate]
+
+                # RGBA -> hex rang (shade)
+                r, g, b = base_rgb
+                alpha = style["alpha"]
+                color = f"rgba({r},{g},{b},{alpha})"
+                weight = style["weight"]
+            else:
+                color = default_color
+                weight = default_weight
+
+            # Popup va tooltip matn
+            key = f"{rate}_{conf}" if rate and conf else "Nomalum"
+            popup_text = f"<b>Yer Yorig'i</b><br><b>Kategoriya:</b> {key}<br>"
             for col in cracks_gdf.columns:
-                if col not in ['geometry', 'source_file']:
-                    properties[col] = row[col]
+                if col != "geometry":
+                    val = row[col]
+                    if val is not None and str(val).strip():
+                        popup_text += f"<b>{col}:</b> {val}<br>"
 
-            # Popup uchun ma'lumotlar
-            popup_text = f"<b>Yer Yoriği</b><br><b>Fayl:</b> {source_file}<br>"
-            for key, value in properties.items():
-                if value is not None and str(value).strip():
-                    popup_text += f"<b>{key}:</b> {value}<br>"
+            tooltip_text = f"Yer Yorig'i ({key})"
 
-            tooltip_text = f"Yer Yoriği ({source_file})"
-
-            if geometry.geom_type == 'LineString':
-                # Chiziq sifatida
-                coords = [[point[1], point[0]] for point in geometry.coords]
+            # Geometriya chizish
+            if geometry.geom_type == "LineString":
+                coords = [[y, x] for x, y in geometry.coords]
                 folium.PolyLine(
-                    locations=coords,
-                    color=color,
-                    weight=3,
-                    opacity=0.8,
-                    popup=popup_text,
-                    tooltip=tooltip_text
+                    coords, color=color, weight=weight, opacity=1.0,
+                    popup=popup_text, tooltip=tooltip_text
                 ).add_to(folium_map)
 
-            elif geometry.geom_type == 'MultiLineString':
-                # Ko'p chiziqlar
+            elif geometry.geom_type == "MultiLineString":
                 for line in geometry.geoms:
-                    coords = [[point[1], point[0]] for point in line.coords]
+                    coords = [[y, x] for x, y in line.coords]
                     folium.PolyLine(
-                        locations=coords,
-                        color=color,
-                        weight=3,
-                        opacity=0.8,
-                        popup=popup_text,
-                        tooltip=tooltip_text
+                        coords, color=color, weight=weight, opacity=1.0,
+                        popup=popup_text, tooltip=tooltip_text
                     ).add_to(folium_map)
 
-            elif geometry.geom_type == 'Point':
-                # Nuqta sifatida
-                folium.Marker(
+            elif geometry.geom_type == "Point":
+                folium.CircleMarker(
                     location=[geometry.y, geometry.x],
-                    popup=popup_text,
-                    tooltip=tooltip_text,
-                    icon=folium.Icon(color=color, icon='warning-sign')
+                    color=color, fill=True, fillColor=color,
+                    fillOpacity=0.9, radius=weight,
+                    popup=popup_text, tooltip=tooltip_text
                 ).add_to(folium_map)
 
-            elif geometry.geom_type == 'Polygon':
-                # Ko'pburchak sifatida
-                coords = [[point[1], point[0]] for point in geometry.exterior.coords]
-                folium.Polygon(
-                    locations=coords,
-                    color=color,
-                    weight=2,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=0.3,
-                    popup=popup_text,
-                    tooltip=tooltip_text
-                ).add_to(folium_map)
-
-        # Layer control va legend uchun ma'lumot qaytarish
-        return color_map
+        # Legend qaytarish
+        legend_data = {
+            "A-B (RATE 1–3)": "qizil (qalinlik darajaga qarab)",
+            "C (RATE 1–3)": "sariq/oranj (qalinlik darajaga qarab)",
+            "D (RATE 1–3)": "kulrang (qalinlik darajaga qarab)",
+        }
+        return legend_data
 
     except Exception as e:
+        import logging
         logging.error(f"Yer yoriqlarini xaritaga qo'shishda xato: {e}")
         return {}
+
+
+
 
 
 def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, min_mlgr):
@@ -960,7 +961,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             folium.Marker(
                 location=[lat, lon],
                 tooltip=tooltip_text,
-                icon=folium.Icon(color="lightblue", icon="pin"),
+                icon=folium.Icon(color="beige", icon="pin"),
             ).add_to(m)
 
     # Tanlangan skvajinalarni xaritaga qo'shish (pushti rangda)
@@ -972,19 +973,19 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             folium.Marker(
                 location=[lat, lon],
                 tooltip=tooltip_text,
-                icon=folium.Icon(color="pink", icon="pin"),
+                icon=folium.Icon(color="darkblue", icon="pin"),
             ).add_to(m)
 
     # Filtrlangan zilzilalarni xaritaga qo'shish
     if not all_filtered_earthquakes.empty:
         for idx, row in all_filtered_earthquakes.iterrows():
             mag_val = row.get(MAIN_MAGNITUDE_COLUMN, None)
-            date_val = row.get(DATE_COLUMN, "Noma'lum")
+            date_val = row.get(DATE_COLUMN, "Nomalum")
             if isinstance(date_val, (pd.Timestamp, datetime.datetime)):
                 date_val = date_val.strftime("%Y-%m-%d")
-            distance_val = row.get("R(km)", "Noma'lum")
-            mlgr_val = row.get("M/lgR", "Noma'lum")
-            depth_val = row.get("Depth", "Noma'lum")
+            distance_val = row.get("R(km)", "Nomalum")
+            mlgr_val = row.get("M/lgR", "Nomalum")
+            depth_val = row.get("Depth", "Nomalum")
 
             if mag_val is not None and not np.isnan(mag_val) and mag_val > 0:
                 tooltip_html = f"""
@@ -1031,7 +1032,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
 
     legend_html = f'''
     <div style="position: fixed; 
-                bottom: 50px; left: 50px; width: 250px; height: {min(400, 50 + len(legend_items) * 25)}px; 
+                bottom: 50px; left: 50px; width: 160px; height: 160px; 
                 background-color: white; border:2px solid grey; z-index:9999; 
                 font-size:12px; padding: 10px; overflow-y: auto;">
     {''.join(legend_items)}
