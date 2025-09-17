@@ -981,7 +981,8 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             folium.Marker(
                 location=[lat, lon],
                 tooltip=tooltip_text,
-                icon=folium.Icon(color="beige", prefix="fa",icon="pin", opacity=0.1),
+                icon=folium.Icon(color="lightblue", prefix="fa",icon="pin", opacity=0.4),
+                opacity=0.4,
             ).add_to(m)
 
 
