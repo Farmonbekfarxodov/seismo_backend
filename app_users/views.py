@@ -39,7 +39,7 @@ class UserListCreateView(generics.ListCreateAPIView):
         
         # Superadmin foydalanuvchi yaratishda 'is_admin' ni belgilashi mumkin
         if user.is_superuser:
-            is_admin = self.request.data.get('is_admin', False)
+            is_admin = self.request.data.get('is_admin', True)
             serializer.save(is_admin=is_admin)
         # Adminlar faqat oddiy foydalanuvchilar yarata oladi
         elif user.is_admin:

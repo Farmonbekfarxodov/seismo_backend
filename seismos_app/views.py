@@ -5,7 +5,6 @@ import logging
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import matplotlib.pyplot as plt
 import folium
 import geopandas as gpd
 import glob
@@ -327,6 +326,16 @@ def plot_data_with_anomalies(
     """
     Ma'lumotlarning butun chizig'ini chizadi va anomaliya qismlarini qizil rangda belgilaydi.
     """
+    
+    if isinstance(x_val, pd.Series):
+        x_val = x_val.tolist()
+    if isinstance(y_val, pd.Series):
+        y_val = y_val.tolist()
+
+    if len(x_val) != len(y_val):
+        logging.error(f"x_val va y_val uzunliklari mos emas: {len(x_val)} vs {len(y_val)}")
+        return [mean]
+    
 
     upper_bound = mean + btn_value * sigma
     lower_bound = mean - btn_value * sigma
@@ -1159,6 +1168,7 @@ def results_view(request):
     """
     Generates and displays seismic analysis results with graphs, and a separate map
     at the bottom of the page showing all wells and selected wells with radii.
+    Now includes date filtering functionality.
     """
     selected_keys = request.session.get("selected_keys", [])
     selected_params = request.session.get("selected_params", [])
@@ -1167,30 +1177,59 @@ def results_view(request):
     min_mlgr = request.session.get("min_mlgr")
     excel_file = request.session.get("excel_file")
 
-    if not all(
-        [
-            selected_keys,
-            excel_file,
-            min_mag is not None,
-            btn_value is not None,
-            min_mlgr is not None,
-        ]
-    ):
+    # Input validatsiyasi
+    if not all([
+        selected_keys,
+        excel_file,
+        min_mag is not None,
+        btn_value is not None,
+        min_mlgr is not None,
+    ]):
         return render(
             request,
             "seismos_app/results.html",
             {
-                "error": "To'liq maʼlumotlar mavjud emas. Iltimos, oldingi qadamlarga qayting."
+                "error": "To'liq ma'lumotlar mavjud emas. Iltimos, oldingi qadamlarga qayting."
             },
         )
 
     if not selected_params:
         selected_params = sorted(list(set(sum(DEFAULT_ELEMENTS_GROUPS.values(), []))))
 
+    # Sana filtrini olish va validatsiya qilish
+    filter_start_date = request.GET.get('start_date')
+    filter_end_date = request.GET.get('end_date')
+    
+    # Sana filtrlari bo'sh bo'lsa, standart qiymatlarga o'tkazish
+    if filter_start_date and filter_end_date:
+        try:
+            start_date = pd.to_datetime(filter_start_date)
+            end_date = pd.to_datetime(filter_end_date)
+            if start_date > end_date:
+                return render(
+                    request,
+                    "seismos_app/results.html",
+                    {"error": "Boshlang'ich sana oxirgi sanadan katta bo'lmasligi kerak."},
+                )
+        except (ValueError, TypeError) as e:
+            logging.warning(f"Sana filtri xatosi: {e}")
+            return render(
+                request,
+                "seismos_app/results.html",
+                {"error": f"Noto'g'ri sana formati: {e}"},
+            )
+
     engine = None
     conn = None
 
     try:
+        # Excel faylini tekshirish
+        if not excel_file:
+            return render(
+                request,
+                "seismos_app/results.html",
+                {"error": "Excel fayli tanlanmagan."},
+            )
         file_path = os.path.join(settings.MEDIA_ROOT, excel_file)
         if not os.path.exists(file_path):
             return render(
@@ -1209,7 +1248,7 @@ def results_view(request):
             SECONDARY_MAGNITUDE_COLUMN,
         ]
         if not all(col in dfe.columns for col in required_cols):
-            missing = [col for col in required_cols if col not in dfe.columns]
+            missing = [col for col in required_cols if col in dfe.columns]
             return render(
                 request,
                 "seismos_app/results.html",
@@ -1218,37 +1257,88 @@ def results_view(request):
                 },
             )
 
+        # Ma'lumotlar bazasidan ma'lumot olish
         lst_stansiya, well_coords = fetch_data()
         if not lst_stansiya or not well_coords:
             return render(
                 request,
                 "seismos_app/results.html",
-                {"error": "Bazadan maʼlumotlar olinmadi."},
+                {"error": "Bazadan ma'lumotlar olinmadi."},
             )
 
-        engine = connect_db()
-        conn = engine.connect()
+        try:
+            engine = connect_db()
+            if not engine:
+                return render(
+                    request,
+                    "seismos_app/results.html",
+                    {"error": "Ma'lumotlar bazasiga ulanish imkonsiz."},
+                )
+            conn = engine.connect()
+        except Exception as e:
+            logging.error(f"Ma'lumotlar bazasiga ulanish xatosi: {e}")
+            return render(
+                request,
+                "seismos_app/results.html",
+                {"error": f"Ma'lumotlar bazasiga ulanishda xato: {e}"},
+            )
 
         graph_data = []
         first_anomaly_date = None
 
+        # Ma'lumotlarni bazadan olish va filtrlaish
+        # `results_view` ichidagi ma'lumotlarni olish va filtrlaish qismi
         for key in selected_keys:
             for param in selected_params:
                 ssdi_id = lst_stansiya.get(key, {}).get(param)
                 if not ssdi_id:
+                    logging.warning(f"{key} uchun {param} parametri topilmadi")
                     continue
-                query = text(
-                    f"SELECT date, `{ssdi_id}` FROM alldata WHERE `{ssdi_id}` IS NOT NULL"
-                )
-                data = conn.execute(query).fetchall()
+                query = text(f"SELECT date, `{ssdi_id}` FROM alldata WHERE `{ssdi_id}` IS NOT NULL")
+                try:
+                    data = conn.execute(query).fetchall()
+                except Exception as e:
+                    logging.error(f"Query xatosi {key} - {param}: {e}")
+                    continue
                 if not data:
+                    logging.warning(f"{key} - {param} uchun ma'lumot topilmadi")
                     continue
-                x_val = pd.to_datetime([row[0] for row in data])
-                y_val = [row[1] for row in data]
+                
+                df_temp = pd.DataFrame(data, columns=['date', 'value'])
+                df_temp['date'] = pd.to_datetime(df_temp['date'], errors='coerce')
+                df_temp.dropna(subset=['date', 'value'], inplace=True)
+                
+                if filter_start_date and filter_end_date:
+                    try:
+                        start_date = pd.to_datetime(filter_start_date, format="%Y-%m-%d")
+                        end_date = pd.to_datetime(filter_end_date, format="%Y-%m-%d")
+                        df_filtered = df_temp[(df_temp['date'] >= start_date) & (df_temp['date'] <= end_date)]
+                        
+                        if len(df_filtered) == 0:
+                            logging.warning(f"{key} - {param} uchun filtrlangan ma'lumot yo'q")
+                            continue
+                        
+                        x_val = df_filtered['date'].tolist()  # O'ZGARTIRISH: Series -> List
+                        y_val = df_filtered['value'].tolist()
+                    except (ValueError, TypeError) as e:
+                        logging.warning(f"Sana filtri xatosi {key} - {param}: {e}")
+                        x_val = df_temp['date'].tolist()  # O'ZGARTIRISH: Series -> List
+                        y_val = df_temp['value'].tolist()
+                else:
+                    x_val = df_temp['date'].tolist()  # O'ZGARTIRISH: Series -> List
+                    y_val = df_temp['value'].tolist()
 
-                y_series = pd.Series(y_val, index=x_val)  # Pandas Series ga aylantirish
+                if len(y_val) == 0:
+                    logging.warning(f"{key} - {param} uchun y_val bo'sh")
+                    continue
 
+                y_series = pd.Series(y_val, index=x_val)  # Bu hali ham Series uchun ishlaydi
                 mean, sigma = np.mean(y_val), np.std(y_val)
+                
+                if sigma == 0:
+                    logging.warning(f"{key} - {param} uchun sigma nolga teng")
+                    continue
+                
                 stansiya, skvajina = key.split(" | ")
                 graph_data.append((x_val, y_val, mean, sigma, param, key, skvajina))
 
@@ -1260,6 +1350,7 @@ def results_view(request):
                 ]
                 if not anomalies.empty:
                     anomaly_start_date = anomalies.index[0]
+                    logging.info(f"Anomaliya topildi: {key} - {param}, sana: {anomaly_start_date}")
                     if (
                         first_anomaly_date is None
                         or anomaly_start_date < first_anomaly_date
@@ -1270,10 +1361,10 @@ def results_view(request):
             return render(
                 request,
                 "seismos_app/results.html",
-                {"error": "Hech qanday mos keluvchi maʼlumot topilmadi."},
+                {"error": "Tanlangan sana oralig'ida hech qanday mos keluvchi ma'lumot topilmadi."},
             )
 
-        # Excel fayldagi zilzilalar ma'lumotlarini yuklash
+        # Excel fayldagi zilzilalar ma'lumotlarini yuklash va filtrlaish
         all_earthquakes_df = dfe.copy()
         all_earthquakes_df["combined_datetime"] = pd.to_datetime(
             all_earthquakes_df[DATE_COLUMN].astype(str)
@@ -1284,8 +1375,17 @@ def results_view(request):
         )
         all_earthquakes_df.dropna(subset=["combined_datetime"], inplace=True)
         
-        logging.info(f"Excel fayldagi yillar: {all_earthquakes_df['combined_datetime'].dt.year.unique()}")
-        logging.info(f"Excel fayldagi umumiy qatorlar: {len(all_earthquakes_df)}")
+        # Zilzilalarni ham sana bo'yicha filtrlaish
+        if filter_start_date and filter_end_date:
+            try:
+                start_date = pd.to_datetime(filter_start_date)
+                end_date = pd.to_datetime(filter_end_date)
+                earthquake_mask = (all_earthquakes_df["combined_datetime"] >= start_date) & (all_earthquakes_df["combined_datetime"] <= end_date)
+                all_earthquakes_df = all_earthquakes_df[earthquake_mask]
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Zilzilalar uchun sana filtri xatosi: {e}")
+
+        logging.info(f"Filtrlangan zilzilalar: {len(all_earthquakes_df)} ta")
 
         # Grafiklar chizish
         num_graphs = len(graph_data)
@@ -1302,64 +1402,81 @@ def results_view(request):
         ]
         specs = [[{"secondary_y": True}]] * num_graphs
 
+        vertical_spacing = 0.05 if num_graphs <= 3 else 0.03 if num_graphs <= 5 else max(0.005, 0.1 / num_graphs)
+
         fig = make_subplots(
             rows=num_graphs,
             cols=1,
             subplot_titles=subplot_titles,
-            vertical_spacing=0.05
-            if num_graphs <= 3
-            else 0.03
-            if num_graphs <= 5
-            else 0.01,
+            vertical_spacing=vertical_spacing,
             specs=specs,
         )
 
         # X-o'qi diapazonini aniqlash
-        today = pd.to_datetime('today').normalize()  # Bugungi sana (soatsiz)
+        today = pd.to_datetime('today').normalize()
         
-        if first_anomaly_date is not None:
-            # Barcha ma'lumotlar diapazonini aniqlash
-            all_dates = []
-            for x_val, _, _, _, _, _, _ in graph_data:
-                all_dates.extend(x_val)
-            all_earthquake_dates = list(all_earthquakes_df["combined_datetime"])
-            
-            all_combined_dates = pd.to_datetime(all_dates + all_earthquake_dates, errors="coerce")
-            full_max_date = max(all_combined_dates) if len(all_combined_dates) > 0 else today
-            full_min_date = min(all_combined_dates) if len(all_combined_dates) > 0 else pd.to_datetime("2020-01-01")
-            
-            # Anomaliya boshlangan sanadan boshla
-            min_date = first_anomaly_date
-            # Maksimal sana: ma'lumotlar oxiri va bugungi sanadan kichigi
-            max_date = min(full_max_date, today)
-            
-            delta = timedelta(days=15)  # Kichik bo'shl iq qoldirish
-            
-            # Grafikni uzoqlashtirganda barcha ma'lumotlarni ko'rish uchun
-            # X-o'qining full range'ini saqlash (bugungi sanagacha)
-            global_min_date = full_min_date
-            global_max_date = min(full_max_date, today)
-            
-        else:
-            # Agar anomaliya topilmagan bo'lsa, barcha ma'lumotlarni ko'rsatish
-            all_dates = []
-            for x_val, _, _, _, _, _, _ in graph_data:
-                all_dates.extend(x_val)
-            all_earthquake_dates = list(all_earthquakes_df["combined_datetime"])
-
-            if all_dates or all_earthquake_dates:
-                all_combined_dates = pd.to_datetime(all_dates + all_earthquake_dates, errors="coerce")
-                min_date = min(all_combined_dates)
-                # Bugungi sanagacha ko'rsatish
-                max_date = min(max(all_combined_dates), today)
-                delta = (max_date - min_date) * 0.05 if (max_date - min_date) > timedelta(0) else timedelta(days=1)
-            else:
-                min_date = pd.to_datetime("2020-01-01")
-                max_date = today
+        if filter_start_date and filter_end_date:
+            try:
+                min_date = pd.to_datetime(filter_start_date)
+                max_date = pd.to_datetime(filter_end_date)
                 delta = timedelta(days=1)
+                global_min_date = min_date
+                global_max_date = max_date
+            except (ValueError, TypeError):
+                if first_anomaly_date is not None:
+                    min_date = first_anomaly_date
+                    max_date = today
+                    delta = timedelta(days=15)
+                    global_min_date = min_date
+                    global_max_date = max_date
+                else:
+                    all_dates = []
+                    for x_val, _, _, _, _, _, _ in graph_data:
+                        all_dates.extend(x_val)
+                    if all_dates:
+                        min_date = min(pd.to_datetime(all_dates))
+                        max_date = min(max(pd.to_datetime(all_dates)), today)
+                        delta = (max_date - min_date) * 0.05 if (max_date - min_date) > timedelta(0) else timedelta(days=1)
+                    else:
+                        min_date = pd.to_datetime("2020-01-01")
+                        max_date = today
+                        delta = timedelta(days=1)
+                    global_min_date = min_date
+                    global_max_date = max_date
+        else:
+            if first_anomaly_date is not None:
+                all_dates = []
+                for x_val, _, _, _, _, _, _ in graph_data:
+                    all_dates.extend(x_val)
+                all_earthquake_dates = list(all_earthquakes_df["combined_datetime"])
                 
-            global_min_date = min_date
-            global_max_date = max_date
+                all_combined_dates = pd.to_datetime(all_dates + all_earthquake_dates, errors="coerce")
+                full_max_date = max(all_combined_dates) if len(all_combined_dates) > 0 else today
+                full_min_date = min(all_combined_dates) if len(all_combined_dates) > 0 else pd.to_datetime("2020-01-01")
+                
+                min_date = first_anomaly_date
+                max_date = min(full_max_date, today)
+                delta = timedelta(days=15)
+                global_min_date = full_min_date
+                global_max_date = min(full_max_date, today)
+            else:
+                all_dates = []
+                for x_val, _, _, _, _, _, _ in graph_data:
+                    all_dates.extend(x_val)
+                all_earthquake_dates = list(all_earthquakes_df["combined_datetime"])
+
+                if all_dates or all_earthquake_dates:
+                    all_combined_dates = pd.to_datetime(all_dates + all_earthquake_dates, errors="coerce")
+                    min_date = min(all_combined_dates)
+                    max_date = min(max(all_combined_dates), today)
+                    delta = (max_date - min_date) * 0.05 if (max_date - min_date) > timedelta(0) else timedelta(days=1)
+                else:
+                    min_date = pd.to_datetime("2020-01-01")
+                    max_date = today
+                    delta = timedelta(days=1)
+                    
+                global_min_date = min_date
+                global_max_date = max_date
 
         color_pool = generate_colors(num_graphs)
         for idx, (x, y, mean, sigma, param, key, skv) in enumerate(graph_data):
@@ -1377,11 +1494,10 @@ def results_view(request):
 
             lat, lon = well_coords.get(skv, (0, 0))
             
-            # draw_magnitude_values funksiyasini yangi parametrlar bilan chaqirish
-            if not dfe.empty:
+            if not all_earthquakes_df.empty:
                 draw_magnitude_values(
                     fig, 
-                    dfe,  # Asl Excel fayli ma'lumotlari
+                    all_earthquakes_df,  # Filtrlangan Excel fayli ma'lumotlari
                     row, 
                     col, 
                     min_mag=min_mag, 
@@ -1393,7 +1509,7 @@ def results_view(request):
             # X-o'qi diapazonini belgilash
             fig.update_xaxes(
                 range=[min_date - delta, max_date + delta],
-                type = "date",
+                type="date",
                 tickformat=None,
                 showgrid=True,
                 griddash="dot",
@@ -1404,9 +1520,8 @@ def results_view(request):
             )
 
         # Layout sozlamalari
-       
         fig.update_layout(
-            title_text="Tahlil natijalari",
+            title_text="Tahlil natijalari" + (f" ({filter_start_date} - {filter_end_date})" if filter_start_date and filter_end_date else ""),
             height=total_figure_height,
             showlegend=False,
             plot_bgcolor="gainsboro",
@@ -1438,7 +1553,6 @@ def results_view(request):
                 "resetScale2d",
             ],
             "responsive": True,
-            # Zoom va pan imkoniyatlarini kengaytirish
             "showTips": True,
             "displaylogo": False,
             "toImageButtonOptions": {
@@ -1454,23 +1568,46 @@ def results_view(request):
         )
 
         # Folium xaritasini yaratish (filtrlangan zilzilalar bilan)
-        folium_map_html = add_map_data_folium(
-            selected_keys, well_coords, all_earthquakes_df, min_mag, min_mlgr
-        )
+        try:
+            folium_map_html = add_map_data_folium(
+                selected_keys, well_coords, all_earthquakes_df, min_mag, min_mlgr
+            )
+        except Exception as e:
+            logging.error(f"Folium xaritasini yaratishda xato: {e}")
+            folium_map_html = "<p>Xarita yaratishda xato yuz berdi.</p>"
 
-        # Natijani template'ga yuborish
+        # Template uchun context
+        context = {
+            "plotly_graph": plotly_html, 
+            "folium_map": folium_map_html,
+            "current_start_date": filter_start_date or "",
+            "current_end_date": filter_end_date or "",
+        }
+
+        # Ma'lumotlar diapazonini aniqlash (filtr uchun)
+        if graph_data:
+            all_dates = []
+            for x_val, _, _, _, _, _, _ in graph_data:
+                all_dates.extend(x_val)
+            if all_dates:
+                context["data_min_date"] = min(pd.to_datetime(all_dates)).strftime('%Y-%m-%d')
+                context["data_max_date"] = max(pd.to_datetime(all_dates)).strftime('%Y-%m-%d')
+
+        return render(request, "seismos_app/results.html", context)
+
+    except Exception as e:
+        logging.error(f"Results view error: {e}", exc_info=True)
         return render(
             request,
             "seismos_app/results.html",
-            {"plotly_graph": plotly_html, "folium_map": folium_map_html},
+            {"error": "Tizimda kutilmagan xato yuz berdi. Iltimos, administrator bilan bog'laning."},
         )
 
-    except Exception as e:
-        logging.error(f"Results view error: {e}")
-        return render(request, "seismos_app/results.html", {"error": f"Xatolik: {e}"})
-
     finally:
-        if conn:
-            conn.close()
-        if engine:
-            engine.dispose()
+        try:
+            if conn:
+                conn.close()
+            if engine:
+                engine.dispose()
+        except Exception as e:
+            logging.error(f"Resurslarni yopishda xato: {e}")
