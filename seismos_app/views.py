@@ -712,6 +712,8 @@ def get_all_shapefiles():
         os.path.join(settings.BASE_DIR, 'shapefiles', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'static', 'data', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'AFEAD_*.shp'),
+        os.path.join(settings.BASE_DIR, 'Export_*.shp'),
+        os.path.join(settings.BASE_DIR, 'Seysmogen_*.shp'),
     ]
 
     if hasattr(settings, 'CRACKS_SHAPEFILES_DIR'):
@@ -947,7 +949,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     try:
         folium.TileLayer(
             tiles='https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png',
+            
             attr='Map tiles by <a href="http://stamen.com">Stamen Design</a>, under <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. Data by <a href="http://openstreetmap.org">OpenStreetMap</a>, under <a href="http://creativecommons.org/licenses/by-sa/3.0">CC BY SA</a>.',
+            
             name='Terrain'
         ).add_to(m)
     except:
@@ -956,7 +960,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     try:
         folium.TileLayer(
             tiles='https://cartodb-basemaps-{s}.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png',
+            
             attr='© OpenStreetMap contributors © CARTO',
+            
             name='Light Map'
         ).add_to(m)
     except:
@@ -965,7 +971,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     try:
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            
             attr='Tiles © Esri — Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+            
             name='Satellite',
             overlay=False,
             control=True

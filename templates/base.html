@@ -11,17 +11,20 @@
 <body>
     <!-- Top-bar -->
 <header class="top-bar">
-    <div class="container d-flex align-items-center">
-        <!-- Logotip (bosilganda bosh sahifaga qaytadi) -->
+    <div class="container d-flex align-items-center justify-content-between">
+        <!-- Chapdagi logotip -->
         <a href="{% url 'index' %}" class="logo-link">
             <img src="https://seismos.uz/logo_new_uz123.png" alt="Logo" class="logo">
         </a>
 
+        <!-- O'ngdagi logotip -->
+        <a href="https://example.com" class="logo-link">
+            <img src="https://postimg.cc/SJ5sttzZ" alt="Right Logo" class="logo">
+        </a>
     </div>
 </header>
 
 <style>
-    
     .top-bar {
         background: linear-gradient(90deg, #003366, #001a33);
         padding: 10px 20px;
@@ -31,7 +34,9 @@
         width: 100%;
         top: 0;
         left: 0;
+        z-index: 1000;
     }
+
     .logo {
         height: 60px;
         width: auto;
@@ -41,6 +46,7 @@
         text-decoration: none;
     }
 </style>
+
     <div class="container mt-4" style="padding: 70px;">
         {% block content %}{% endblock %}
     </div>
