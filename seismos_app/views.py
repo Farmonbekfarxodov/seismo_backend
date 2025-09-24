@@ -871,6 +871,59 @@ def add_cracks_to_map(folium_map, cracks_gdf):
 
 
 
+def get_well_detailed_info(well_name):
+    """
+    Bitta quduq haqida batafsil ma'lumot olish
+    """
+    engine = None
+    try:
+        engine = connect_db()
+
+        query = """
+            SELECT 
+                Nomi,
+                Quduq_turlari,
+                Grunt,
+                Chuqurlik,
+                Suv_qatlami
+            FROM malumot
+            WHERE Nomi = %s
+        """
+
+        df = pd.read_sql(query, engine, params=(well_name.strip(),))
+
+        if not df.empty:
+            row = df.iloc[0]
+            return {
+                "nomi": row["Nomi"] or "Ma'lumot yo'q",
+                "quduq_turi": row["Quduq_turlari"] or "Ma'lumot yo'q",
+                "grunt": row["Grunt"] or "Ma'lumot yo'q",
+                "chuqurlik": row["Chuqurlik"] or "Ma'lumot yo'q",
+                "suv_qatlami": row["Suv_qatlami"] or "Ma'lumot yo'q",
+            }
+        else:
+            return {
+                "nomi": "Ma'lumot topilmadi",
+                "quduq_turi": "Ma'lumot topilmadi",
+                "grunt": "Ma'lumot topilmadi",
+                "chuqurlik": "Ma'lumot topilmadi",
+                "suv_qatlami": "Ma'lumot topilmadi",
+            }
+
+    except Exception as e:
+        logging.error(f"Skvajina ma'lumotlarini yuklashda xatolik ({well_name}): {e}")
+        return {
+            "nomi": "Xatolik yuz berdi",
+            "quduq_turi": "Xatolik yuz berdi",
+            "grunt": "Xatolik yuz berdi",
+            "chuqurlik": "Xatolik yuz berdi",
+            "suv_qatlami": "Xatolik yuz berdi",
+        }
+    finally:
+        if engine:
+            engine.dispose()
+
+
 
 def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, min_mlgr):
     """
@@ -994,12 +1047,48 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     # Barcha skvajinalarni xaritaga qo'shish (kulrang rangda)
     for well_name, (lat, lon) in all_wells.items():
         if well_name not in selected_well_names:
-            tooltip_text = f"<b>Skvajina:</b> {well_name}<br>(Tanlanmagan)"
+            # Bazadan to'liq ma'lumotlarni olish
+            well_info = get_well_detailed_info(well_name)  # Yangi funksiya
+
+            # HTML popup yaratish
+            popup_html = f"""
+                <div style="width: 300px; font-family: Arial; font-size: 12px;">
+                    <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Grunt:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('grunt', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Suv qatlami:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                        </table>
+                    <p style="margin-top: 10px; color: #6c757d; font-style: italic;">Tanlanmagan skvajina</p>
+                </div>
+                """
+
+            tooltip_text = f"<b>Skvajina:</b> {well_name}<br>(Tanlanmagan)<br>Batafsil ma'lumot uchun bosing"
+
             folium.Marker(
                 location=[lat, lon],
                 tooltip=tooltip_text,
-                icon=folium.Icon(color="lightblue", prefix="fa",icon="pin", opacity=0.4),
-                opacity=0.4,
+                popup=folium.Popup(popup_html, max_width=320),
+                icon=folium.Icon(color="lightblue", prefix="fa", icon="pin", opacity=0.6),
+                opacity=0.6,
             ).add_to(m)
 
 
@@ -1008,11 +1097,50 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         _, skvajina = key.split(" | ")
         lat, lon = well_coords.get(skvajina, (None, None))
         if lat is not None and lon is not None:
-            tooltip_text = f"<b>Tanlangan skvajina:</b> {skvajina}"
+            # Bazadan to'liq ma'lumotlarni olish
+            well_info = get_well_detailed_info(skvajina)  # Yangi funksiya
+
+            # Filtrlangan zilzilalar sonini hisoblash
+            well_earthquakes = len([eq for eq in filtered_earthquakes_by_well if
+                                    eq['skvajina'].iloc[0] == skvajina]) if filtered_earthquakes_by_well else 0
+
+            # HTML popup yaratish
+            popup_html = f"""
+                <div style="width: 350px; font-family: Arial; font-size: 12px;">
+                    <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr style="background-color: #e3f2fd;">
+                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Nomi:</td>
+                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Quduq turi:</td>
+                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr style="background-color: #e3f2fd;">
+                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Grunt:</td>
+                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('grunt', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Chuqurlik:</td>
+                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr style="background-color: #e3f2fd;">
+                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Suv qatlami:</td>
+                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        </table>
+                    <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
+                </div>
+                """
+
+            tooltip_text = f"<b>Tanlangan skvajina:</b> {skvajina}<br>Batafsil ma'lumot uchun bosing"
+
             folium.Marker(
                 location=[lat, lon],
                 tooltip=tooltip_text,
-                icon=folium.Icon(color="darkblue", icon="pin"),
+                popup=folium.Popup(popup_html, max_width=370),
+                icon=folium.Icon(color="blue", icon="pin"),
             ).add_to(m)
 
     # Filtrlangan zilzilalarni xaritaga qo'shish

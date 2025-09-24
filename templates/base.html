@@ -17,11 +17,21 @@
             <img src="https://seismos.uz/logo_new_uz123.png" alt="Logo" class="logo">
         </a>
 
-        <!-- O'ngdagi logotip -->
-        <a href="https://example.com" class="logo-link">
-            <img src="https://postimg.cc/SJ5sttzZ" alt="Right Logo" class="logo">
+      <!-- O'ngdagi logotip -->
+    <div class="d-flex align-items-center">
+        <a href="{% url 'index' %}" class="logo-link d-flex align-items-center">
+            <img src="{% static 'images/Picture.png' %}" alt="Right Logo" class="logo me-2"> 
+            <span class="lab-text">
+                SEYSMOPROGNOSTIK MA'LUMOTLARNI <br>
+                KOPLEKS TAHLIL QILISH <br>
+                LABARATORIYASI
+            </span>
         </a>
     </div>
+
+
+    </div>
+        
 </header>
 
 <style>
@@ -44,7 +54,14 @@
 
     .logo-link {
         text-decoration: none;
+
     }
+    .lab-text {
+    color: #F0FFFF;    
+    font-size: 14px;    
+    line-height: 1.2;   
+}
+
 </style>
 
     <div class="container mt-4" style="padding: 70px;">
