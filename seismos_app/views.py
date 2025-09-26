@@ -1082,13 +1082,16 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 """
 
             tooltip_text = f"<b>Skvajina:</b> {well_name}<br>(Tanlanmagan)<br>Batafsil ma'lumot uchun bosing"
-
+            triangle_icon = folium.DivIcon(
+                html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid lightblue;"></div>',
+                icon_size=(20, 20),
+                icon_anchor=(10, 20)
+            )
             folium.Marker(
                 location=[lat, lon],
                 tooltip=tooltip_text,
-                popup=folium.Popup(popup_html, max_width=320),
-                icon=folium.Icon(color="lightblue", prefix="fa", icon="pin", opacity=0.6),
-                opacity=0.6,
+                popup=folium.Popup(popup_html, max_width=370),
+                icon=triangle_icon,
             ).add_to(m)
 
 
@@ -1136,11 +1139,17 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
 
             tooltip_text = f"<b>Tanlangan skvajina:</b> {skvajina}<br>Batafsil ma'lumot uchun bosing"
 
+            triangle_icon = folium.DivIcon(
+                html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid blue;"></div>',
+                icon_size=(20, 20),
+                icon_anchor=(10, 20)
+            )
+
             folium.Marker(
                 location=[lat, lon],
                 tooltip=tooltip_text,
                 popup=folium.Popup(popup_html, max_width=370),
-                icon=folium.Icon(color="blue", icon="pin"),
+                icon=triangle_icon,
             ).add_to(m)
 
     # Filtrlangan zilzilalarni xaritaga qo'shish
@@ -1195,6 +1204,8 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>',
         '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>',
         '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>',
+        '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid blue; display: inline-block; margin-right: 8px;"></div>->Tanlangan skvajinalar</p>',
+        '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid lightblue; display: inline-block; margin-right: 8px;"></div>-> Tanlanmagan skvajinalar</p>',
     ]
 
     legend_html = f'''

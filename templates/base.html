@@ -10,29 +10,31 @@
 </head>
 <body>
     <!-- Top-bar -->
-<header class="top-bar">
-    <div class="container d-flex align-items-center justify-content-between">
-        <!-- Chapdagi logotip -->
-        <a href="{% url 'index' %}" class="logo-link">
-            <img src="https://seismos.uz/logo_new_uz123.png" alt="Logo" class="logo">
-        </a>
+    <header class="top-bar">
+        <div class="container d-flex align-items-center justify-content-between">
+            <!-- Chapdagi logotip -->
+            <a href="{% url 'index' %}" class="logo-link">
+                <div class="logo-box">
+                    <img src="{% static 'images/logo1.png' %}" alt="Logo" class="logo">
+                </div>
+            </a>
 
-      <!-- O'ngdagi logotip -->
-    <div class="d-flex align-items-center">
-        <a href="{% url 'index' %}" class="logo-link d-flex align-items-center">
-            <img src="{% static 'images/Picture.png' %}" alt="Right Logo" class="logo me-2"> 
-            <span class="lab-text">
-                SEYSMOPROGNOSTIK MA'LUMOTLARNI <br>
-                KOPLEKS TAHLIL QILISH <br>
-                LABARATORIYASI
-            </span>
-        </a>
+            <!-- O'ngdagi logotip -->
+            <a href="{% url 'index' %}" class="logo-link">
+                <div class="logo-box, rasm">
+                    <img src="{% static 'images/logo3.png' %}" alt="Right Logo" class="logo">
+                </div>
+            </a>
+        </div>
+    </header>
+
+    <div class="container mt-4" style="padding-top: 150px;">
+        {% block content %}{% endblock %}
     </div>
 
-
-    </div>
-        
-</header>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
 
 <style>
     .top-bar {
@@ -40,33 +42,47 @@
         padding: 10px 20px;
         border-bottom: 3px solid #002244;
         position: fixed;
-        display: flex;
         width: 100%;
         top: 0;
         left: 0;
         z-index: 1000;
     }
 
+    .logo-box {
+        width: 200px;
+        height: 75px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .rasm img {
+        width: 200px;
+    }
     .logo {
-        height: 60px;
-        width: auto;
+        width: 100%; /* Majburiy kenglik */
+        height: 100%; /* Majburiy balandlik */
+        object-fit: contain; /* Proporsiyani moslashtirish, ammo kesish mumkin */
     }
 
-    .logo-link {
-        text-decoration: none;
-
+    /* Logotiplar orasidagi masofani kamaytirish */
+    .container.d-flex {
+        gap: 10px;
     }
-    .lab-text {
-    color: #F0FFFF;    
-    font-size: 14px;    
-    line-height: 1.2;   
-}
 
+    /* Responsivlik uchun */
+    @media (max-width: 576px) {
+        .logo-box {
+            width: 150px;
+            height: 55px;
+        }
+
+        .top-bar {
+            padding: 8px 10px;
+        }
+
+        .container {
+            padding-top: 70px !important;
+        }
+    }
 </style>
-
-    <div class="container mt-4" style="padding: 70px;">
-        {% block content %}{% endblock %}
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
