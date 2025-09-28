@@ -33,7 +33,7 @@ LATITUDE_COLUMN = "Latitude"
 LONGITUDE_COLUMN = "Longitude"
 
 MAIN_MAGNITUDE_COLUMN = "Mb"
-SECONDARY_MAGNITUDE_COLUMN = "Ml"
+#SECONDARY_MAGNITUDE_COLUMN = "Ml"
 
 DEFAULT_ELEMENTS_GROUPS = {
     "gazli": ["He", "H2", "O2", "N2", "CH4", "CO2"],
@@ -1392,7 +1392,7 @@ def results_view(request):
             LATITUDE_COLUMN,
             LONGITUDE_COLUMN,
             MAIN_MAGNITUDE_COLUMN,
-            SECONDARY_MAGNITUDE_COLUMN,
+            #SECONDARY_MAGNITUDE_COLUMN,
         ]
         if not all(col in dfe.columns for col in required_cols):
             missing = [col for col in required_cols if col in dfe.columns]

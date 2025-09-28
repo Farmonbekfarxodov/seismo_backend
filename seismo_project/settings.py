@@ -22,6 +22,7 @@ DEBUG = True
 ALLOWED_HOSTS = []
 
 
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -40,12 +41,13 @@ INSTALLED_APPS = [
     'seismos_app',
     'download_base_app',
     'app_users',
+    'upload_catalog_app'
 ]
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
-    # Agar boshqa manzilda ishlayotgan bo'lsa, uni ham qo'shing
+    "http://192.168.3.61",
 ]
 
 MIDDLEWARE = [
