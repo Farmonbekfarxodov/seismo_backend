@@ -2,7 +2,10 @@ import requests
 import json
 import datetime
 
-from django.http import JsonResponse
+from django.contrib import messages
+from django.shortcuts import render,redirect,reverse
+from django.db.models import Min, Max
+
 from .models import Catalog
 
 DATA_URL = "https://api.smrm.uz/api/earthquakes/central-asia"
@@ -69,9 +72,29 @@ def save_data_to_db(data_list):
             Epicenter=item.get('epicenter')
         )
         rows_to_create.append(new_record)
+        rows_to_create.sort(key=lambda r:(r.Event_date,r.Event_time))
 
     Catalog.objects.bulk_create(rows_to_create)
     return len(rows_to_create)
+
+def catalog_list(request):
+    """
+    Catalog jadvalining oxirgi 10 ta yozuvini ko‘rsatadi.
+    """
+    all_records = Catalog.objects.all().order_by("-Event_date", "-Event_time")
+    records = all_records[:20]
+
+    date_range = Catalog.objects.aggregate(
+        start_date=Min("Event_date"),
+        end_date=Max("Event_date")
+    )
+
+    context = {
+        "records": records,
+        "start_date": date_range["start_date"],
+        "end_date": date_range["end_date"],
+    }
+    return render(request, "upload_catalog_app/catalog_list.html", context)
 
 
 def upload_catalog(request):
@@ -82,7 +105,9 @@ def upload_catalog(request):
     data = fetch_data_from_api(params)
     new_count = save_data_to_db(data)
 
-    return JsonResponse({
-        "status": "success",
-        "new_records": new_count
-    })
+    if new_count > 0:
+        messages.success(request, f"{new_count} ta yangi ma’lumot qo‘shildi.")
+    else:
+        messages.info(request, "Yangi ma’lumotlar yo‘q.")
+
+    return redirect(reverse("catalog:catalog_list"))

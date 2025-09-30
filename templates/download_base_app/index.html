@@ -1,42 +1,35 @@
-<!DOCTYPE html>
-<html lang="uz">
-<head>
-    <meta charset="UTF-8">
-    <title>Ma'lumotlarni bazaga yuklash</title>
-    <style>
-        body { font-family: Arial, sans-serif; background: #f5f5f5; display: flex; justify-content: center; align-items: center; height: 100vh; }
-        .container { background: white; padding: 25px; border-radius: 8px; width: 400px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h2 { text-align: center; margin-bottom: 20px; }
-        label { display: block; margin-top: 12px; }
-        select, input[type="date"], button { width: 100%; padding: 10px; margin-top: 6px; border: 1px solid #ccc; border-radius: 5px; }
-        button { background: #00c853; color: white; font-weight: bold; border: none; cursor: pointer; margin-top: 20px; }
-        button:hover { background: #009624; }
-        #message { margin-top: 15px; text-align: center; font-weight: bold; }
-        .success { color: green; }
-        .error { color: red; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h2>Ma'lumotlarni bazaga yuklash</h2>
+{% extends "base.html" %}
+{% load static %}
+
+{% block content %}
+<div class="container d-flex justify-content-center align-items-center" style="min-height: 80vh;">
+    <div class="bg-white p-4 rounded shadow" style="width: 400px;">
+        <h2 class="text-center mb-4">Ma'lumotlarni bazaga yuklash</h2>
         <form id="dataForm" method="POST">
             {% csrf_token %}
             <label for="stationSelect">Stansiyani tanlang:</label>
-            <select id="stationSelect" name="station">
+            <select id="stationSelect" name="station" class="form-select mb-3">
                 <option value="all">Hammasi</option>
             </select>
+
             <label for="wellSelect">Quduqni tanlang:</label>
-            <select id="wellSelect" name="well" disabled></select>
+            <select id="wellSelect" name="well" class="form-select mb-3" disabled></select>
+
             <label for="start_date">Boshlang‘ich sana:</label>
-            <input type="date" id="start_date" name="start_date" required min="2020-01-01" max="2030-12-31" data-quillbot-exclude="true" data-gramm="false">
+            <input type="date" id="start_date" name="start_date" required min="2020-01-01" max="2030-12-31" class="form-control mb-3">
+
             <label for="end_date">Yakuniy sana:</label>
-            <input type="date" id="end_date" name="end_date" required min="2020-01-01" max="2030-12-31" data-quillbot-exclude="true" data-gramm="false">
-            <button type="submit">Yuklash</button>
+            <input type="date" id="end_date" name="end_date" required min="2020-01-01" max="2030-12-31" class="form-control mb-3">
+
+            <button type="submit" class="btn btn-success w-100">Yuklash</button>
         </form>
-        <div id="message"></div>
+        <div id="message" class="mt-3 text-center fw-bold"></div>
     </div>
-    {{ stations|json_script:"stations_data" }}
-    <script>
+</div>
+
+{{ stations|json_script:"stations_data" }}
+
+<script>
     const stationSelect = document.getElementById('stationSelect');
     const wellSelect = document.getElementById('wellSelect');
     const dataForm = document.getElementById('dataForm');
@@ -57,6 +50,7 @@
     }
 
     function populateStations() {
+        stationSelect.innerHTML = '';
         const defaultOption = document.createElement('option');
         defaultOption.value = 'all';
         defaultOption.textContent = 'Hammasi';
@@ -102,7 +96,7 @@
 
     if (Object.keys(stations).length === 0) {
         messageDiv.textContent = "Stansiyalar ma'lumoti mavjud emas!";
-        messageDiv.className = 'error';
+        messageDiv.className = 'error text-danger';
         dataForm.querySelector('button[type="submit"]').disabled = true;
     } else {
         populateStations();
@@ -110,13 +104,6 @@
     }
 
     stationSelect.addEventListener('change', updateWellSelect);
-
-    // Prevent Quillbot and similar extensions from interfering with date inputs
-    document.querySelectorAll('input[type="date"]').forEach(input => {
-        input.addEventListener('focus', (event) => {
-            event.stopPropagation();
-        });
-    });
 
     dataForm.addEventListener('submit', async function(event) {
         event.preventDefault();
@@ -126,47 +113,36 @@
 
         if (!startDateInput || !endDateInput) {
             messageDiv.textContent = 'Iltimos, boshlang‘ich va yakuniy sanalarni kiriting!';
-            messageDiv.className = 'error';
+            messageDiv.className = 'text-danger';
             return;
         }
 
         const startDate = new Date(startDateInput);
         const endDate = new Date(endDateInput);
 
-        if (isNaN(startDate) || isNaN(endDate)) {
-            messageDiv.textContent = 'Noto‘g‘ri sana formati!';
-            messageDiv.className = 'error';
-            return;
-        }
-
         if (endDate < startDate) {
             messageDiv.textContent = 'Yakuniy sana boshlang‘ich sanadan keyin bo‘lishi kerak!';
-            messageDiv.className = 'error';
+            messageDiv.className = 'text-danger';
             return;
         }
 
         messageDiv.textContent = 'Yuklanmoqda...';
-        messageDiv.className = '';
+        messageDiv.className = 'text-muted';
 
         const formData = new FormData(dataForm);
         const csrfToken = formData.get('csrfmiddlewaretoken');
 
-        // Sanalarni DD-MM-YYYY formatiga o'tkazish
         const startDateFormatted = `${String(startDate.getDate()).padStart(2, '0')}-${String(startDate.getMonth() + 1).padStart(2, '0')}-${startDate.getFullYear()}`;
         const endDateFormatted = `${String(endDate.getDate()).padStart(2, '0')}-${String(endDate.getMonth() + 1).padStart(2, '0')}-${endDate.getFullYear()}`;
 
-        // Ma'lumotlarni JSON formatiga o'tkazish
         const requestData = {
             station: formData.get('station'),
             well: formData.get('well'),
             start_date: startDateFormatted,
-            end_date: endDateFormatted,     
+            end_date: endDateFormatted,
         };
 
-        console.log('Formatted data:', requestData);
-        
         try {
-            console.log('Sending request to:', '/upload/upload/');
             const response = await fetch('/upload/upload/', {
                 method: 'POST',
                 headers: {
@@ -175,31 +151,24 @@
                 },
                 body: JSON.stringify(requestData)
             });
-            console.log('Response status:', response.status);
 
             if (!response.ok) {
                 const responseText = await response.text();
-                console.log('Server javobi:', responseText);
                 throw new Error(`HTTP xatosi! Status: ${response.status}, Server javobi: ${responseText}`);
             }
 
             const result = await response.json();
-            console.log('Response JSON:', result);
-
             if (result.success) {
                 messageDiv.textContent = result.message;
-                messageDiv.className = 'success';
+                messageDiv.className = 'text-success';
             } else {
                 messageDiv.textContent = result.message;
-                messageDiv.className = 'error';
+                messageDiv.className = 'text-danger';
             }
         } catch (error) {
-            console.error('An unexpected error occurred:', error);
             messageDiv.textContent = 'Xatolik yuz berdi: ' + error.message;
-            messageDiv.className = 'error';
+            messageDiv.className = 'text-danger';
         }
-        console.log('Final messageDiv content:', messageDiv.textContent);
     });
 </script>
-</body>
-</html>
+{% endblock %}
