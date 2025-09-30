@@ -15,9 +15,9 @@ from math import pi, sin, cos, atan2, sqrt
 from django.conf import settings
 from django.shortcuts import render, redirect
 from django.core.files.storage import FileSystemStorage
+from jinja2.utils import missing
 from sqlalchemy import create_engine, text, exc
 from plotly.subplots import make_subplots
-
 
 # Setup logging
 logging.basicConfig(
@@ -27,13 +27,13 @@ logging.basicConfig(
 )
 
 # --- Constants ---
-DATE_COLUMN = "Date"
-TIME_COLUMN = "Time"
+DATE_COLUMN = "Event_date"
+TIME_COLUMN = "Event_time"
 LATITUDE_COLUMN = "Latitude"
 LONGITUDE_COLUMN = "Longitude"
 
 MAIN_MAGNITUDE_COLUMN = "Mb"
-#SECONDARY_MAGNITUDE_COLUMN = "Ml"
+
 
 DEFAULT_ELEMENTS_GROUPS = {
     "gazli": ["He", "H2", "O2", "N2", "CH4", "CO2"],
@@ -575,7 +575,7 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
 
     # Asl ma'lumotlarni qayta ishlash
     df = original_df.copy()
-    
+
     # Vaqt ustunini yaratish
     df["combined_datetime"] = pd.to_datetime(
         df[DATE_COLUMN].astype(str) + " " + df[TIME_COLUMN].astype(str),
@@ -583,11 +583,11 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
         errors="coerce"
     )
     df.dropna(subset=["combined_datetime"], inplace=True)
-    
+
     # Mb qiymatlarini raqamga aylantirish
     df[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(df[MAIN_MAGNITUDE_COLUMN], errors="coerce")
     df.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
-    
+
     # Masofani hisoblash
     df["R(km)"] = np.round(
         destenc_vectorized(well_lat, well_lon, df[LATITUDE_COLUMN], df[LONGITUDE_COLUMN])
@@ -595,17 +595,18 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
     df["M/lgR"] = np.where(
         df["R(km)"] > 1, df[MAIN_MAGNITUDE_COLUMN] / np.log10(df["R(km)"]), np.nan
     )
-    
+
     # Filtrlash: min_mag va min_mlgr bo'yicha
     valid_earthquakes = df[
-        (df[MAIN_MAGNITUDE_COLUMN] >= min_mag) & 
+        (df[MAIN_MAGNITUDE_COLUMN] >= min_mag) &
         (df["M/lgR"] >= min_mlgr)
     ].copy()
-    
+    logging.info(f"Filtrlangan zilzilalar:{len(valid_earthquakes)}ta")  # Bu sizning log xabaringiz
+
     if valid_earthquakes.empty:
         logging.info(f"draw_magnitude_values: No valid earthquakes for row {row_index}")
         return [0, 1]
-    
+
     # Y-o'qi diapazonini belgilash
     max_mag_for_y_axis = valid_earthquakes[MAIN_MAGNITUDE_COLUMN].max() * 1.1
     min_mag_for_y_axis = 0
@@ -1157,8 +1158,12 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         for idx, row in all_filtered_earthquakes.iterrows():
             mag_val = row.get(MAIN_MAGNITUDE_COLUMN, None)
             date_val = row.get(DATE_COLUMN, "Nomalum")
+            try:
+                date_val = pd.to_datetime(date_val).strftime("%d.%m.%Y")
+            except Exception:
+                date_val = "Nomalum"
             if isinstance(date_val, (pd.Timestamp, datetime.datetime)):
-                date_val = date_val.strftime("%Y-%m-%d")
+                date_val = date_val.strftime("%d.%m.%Y")
             distance_val = row.get("R(km)", "Nomalum")
             mlgr_val = row.get("M/lgR", "Nomalum")
             depth_val = row.get("Depth", "Nomalum")
@@ -1265,48 +1270,36 @@ def selection_view(request):
 
 
 def parametrs_view(request):
-    """
-    Handles input for seismic parametrs and file upload.
-    """
+
     if request.method == "POST":
         try:
             min_mag = float(request.POST["min_mag"])
             btn_value = float(request.POST["sigma"])
             min_mlgr = float(request.POST["min_mlgr"])
 
-            if "excel_file" not in request.FILES:
-                return render(
-                    request,
-                    "seismos_app/parametrs.html",
-                    {"error": "Iltimos, Excel faylni yuklang."},
-                )
-
-            file = request.FILES["excel_file"]
-            fs = FileSystemStorage()
-            filename = fs.save(file.name, file)
-
+            #catalog jadvalidan foydalanish
             request.session.update(
                 {
-                    "excel_file": filename,
-                    "min_mag": min_mag,
-                    "btn_value": btn_value,
-                    "min_mlgr": min_mlgr,
+                    "use_catalog":True,
+                    "min_mag":min_mag,
+                    "btn_value":btn_value,
+                    "min_mlgr":min_mlgr
                 }
             )
             return redirect("seismos:results")
         except ValueError:
-            logging.error("Invalid input for numeric parametrs.")
+            logging.error("Invalid input for numeric parametrs")
             return render(
                 request,
                 "seismos_app/parametrs.html",
-                {"error": "Iltimos, barcha sonli maydonlarga to'g'ri qiymat kiriting."},
+                {"error":"Iltimos barcha sonli maydonlarga to'gri qiymat kiriting"}
             )
         except Exception as e:
-            logging.error(f"Parameter input or file upload error: {e}")
+            logging.error(f"Parametr input error:{e}")
             return render(
                 request,
                 "seismos_app/parametrs.html",
-                {"error": f"Xato yuz berdi: {e}. Iltimos, qayta urinib ko'ring."},
+                {"error":f"Xato yuz berdi:{e},Iltimos qayta urinib ko'ring"}
             )
     return render(request, "seismos_app/parametrs.html")
 
@@ -1322,12 +1315,12 @@ def results_view(request):
     min_mag = request.session.get("min_mag")
     btn_value = request.session.get("btn_value")
     min_mlgr = request.session.get("min_mlgr")
-    excel_file = request.session.get("excel_file")
+    use_catalog = request.session.get("use_catalog",False)
 
     # Input validatsiyasi
     if not all([
         selected_keys,
-        excel_file,
+        use_catalog,
         min_mag is not None,
         btn_value is not None,
         min_mlgr is not None,
@@ -1346,7 +1339,7 @@ def results_view(request):
     # Sana filtrini olish va validatsiya qilish
     filter_start_date = request.GET.get('start_date')
     filter_end_date = request.GET.get('end_date')
-    
+
     # Sana filtrlari bo'sh bo'lsa, standart qiymatlarga o'tkazish
     if filter_start_date and filter_end_date:
         try:
@@ -1370,39 +1363,100 @@ def results_view(request):
     conn = None
 
     try:
-        # Excel faylini tekshirish
-        if not excel_file:
+        #Malumotlar bazasidan catalog jadvalidan olish
+        try:
+            engine = connect_db()
+            if not engine:
+                return render(
+                    request,
+                    "seismos_app/results.html",
+                    {"error":"Malumotlar bazasiga ulanish imkonsiz"},
+                )
+            conn = engine.connect()
+        except Exception as e:
+            logging.error(f"Malumotlar bzasiga ulanish xatosi:{e}")
             return render(
                 request,
                 "seismos_app/results.html",
-                {"error": "Excel fayli tanlanmagan."},
+                {"error":f"Malumotlar bazasiga ulanishda xato:{e}"}
             )
-        file_path = os.path.join(settings.MEDIA_ROOT, excel_file)
-        if not os.path.exists(file_path):
-            return render(
-                request,
-                "seismos_app/results.html",
-                {"error": "Yuklangan Excel fayli topilmadi."},
+        #catalog jadvalidan malumotlarni olish
+        try:
+            query = "SELECT `Event_date`, `Event_time`, `Latitude`, `Longitude`, `Depth`, `Mb` FROM catalog "
+            dfe = pd.read_sql(query,engine)
+            dfe[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(
+                dfe[MAIN_MAGNITUDE_COLUMN], errors='coerce'
             )
+            # NaN qatorlarni o'chirish
+            dfe.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
 
-        dfe = pd.read_excel(file_path)
+            # Faqat to'g'ri o'zgartirilgan ma'lumotlar o'tadimi?
+            if dfe.empty:
+                logging.warning("Magnitudani raqamga aylantirishdan keyin zilzila ma'lumotlari bo'sh.")
+        except Exception as e:
+            logging.error(f"Catalog jadvalidan malumot olishda xato {e}")
+            return render(
+                request,
+                "seismos_app/results.html",
+                {"error":f"Catalog jadvalidan malumot olishda xato{e}"}
+            )
         required_cols = [
             DATE_COLUMN,
             TIME_COLUMN,
             LATITUDE_COLUMN,
             LONGITUDE_COLUMN,
             MAIN_MAGNITUDE_COLUMN,
-            #SECONDARY_MAGNITUDE_COLUMN,
+            "Depth"
         ]
         if not all(col in dfe.columns for col in required_cols):
-            missing = [col for col in required_cols if col in dfe.columns]
+            missing = [col for col in required_cols if col not in dfe.columns]
             return render(
                 request,
                 "seismos_app/results.html",
                 {
-                    "error": f"Excel faylida kerakli ustunlar yo'q: {', '.join(missing)}."
-                },
+                    "error":f"Catalog jadvalida kerakli ustunlar yo'q:{','.join(missing)}"
+                }
             )
+        # Zilzilalar ma'lumotlarini filtrlash
+        all_earthquakes_df = dfe.copy()
+
+        # TIME_COLUMN timedelta ko‘rinishda bo‘lsa, faqat vaqt qismi (HH:MM:SS) qilib o‘girib olamiz
+        all_earthquakes_df[TIME_COLUMN] = (
+            pd.to_timedelta(all_earthquakes_df[TIME_COLUMN])
+            .dt.total_seconds()
+            .astype(int)
+        )
+        all_earthquakes_df[TIME_COLUMN] = pd.to_datetime(
+            all_earthquakes_df[TIME_COLUMN], unit="s"
+        ).dt.strftime("%H:%M:%S")
+
+        # Sana va vaqtni birlashtiramiz
+        all_earthquakes_df["combined_datetime"] = pd.to_datetime(
+            all_earthquakes_df[DATE_COLUMN].astype(str)
+            + " "
+            + all_earthquakes_df[TIME_COLUMN].astype(str),
+            format="%Y-%m-%d %H:%M:%S",
+            errors="coerce",
+        )
+
+        # Noto‘g‘ri datetime bo‘lgan qatorlarni olib tashlash
+        all_earthquakes_df.dropna(subset=["combined_datetime"], inplace=True)
+
+        # Zilzila ma'lumotlarini sana bo‘yicha filtrlash
+        if filter_start_date and filter_end_date:
+            try:
+                start_date = pd.to_datetime(filter_start_date)
+                end_date = pd.to_datetime(filter_end_date)
+
+                earthquake_mask = (
+                        (all_earthquakes_df["combined_datetime"] >= start_date)
+                        & (all_earthquakes_df["combined_datetime"] <= end_date)
+                )
+                all_earthquakes_df = all_earthquakes_df[earthquake_mask]
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Zilzilalar uchun sana filtri xatosi: {e}")
+
+        logging.info(f"Filtrlangan zilzilalar: {len(all_earthquakes_df)} ta")
 
         # Ma'lumotlar bazasidan ma'lumot olish
         lst_stansiya, well_coords = fetch_data()
@@ -1434,7 +1488,7 @@ def results_view(request):
         first_anomaly_date = None
 
         # Ma'lumotlarni bazadan olish va filtrlaish
-        # `results_view` ichidagi ma'lumotlarni olish va filtrlaish qismi
+
         for key in selected_keys:
             for param in selected_params:
                 ssdi_id = lst_stansiya.get(key, {}).get(param)
@@ -1450,21 +1504,21 @@ def results_view(request):
                 if not data:
                     logging.warning(f"{key} - {param} uchun ma'lumot topilmadi")
                     continue
-                
+
                 df_temp = pd.DataFrame(data, columns=['date', 'value'])
                 df_temp['date'] = pd.to_datetime(df_temp['date'], errors='coerce')
                 df_temp.dropna(subset=['date', 'value'], inplace=True)
-                
+
                 if filter_start_date and filter_end_date:
                     try:
                         start_date = pd.to_datetime(filter_start_date, format="%Y-%m-%d")
                         end_date = pd.to_datetime(filter_end_date, format="%Y-%m-%d")
                         df_filtered = df_temp[(df_temp['date'] >= start_date) & (df_temp['date'] <= end_date)]
-                        
+
                         if len(df_filtered) == 0:
                             logging.warning(f"{key} - {param} uchun filtrlangan ma'lumot yo'q")
                             continue
-                        
+
                         x_val = df_filtered['date'].tolist()  # O'ZGARTIRISH: Series -> List
                         y_val = df_filtered['value'].tolist()
                     except (ValueError, TypeError) as e:
@@ -1481,11 +1535,11 @@ def results_view(request):
 
                 y_series = pd.Series(y_val, index=x_val)  # Bu hali ham Series uchun ishlaydi
                 mean, sigma = np.mean(y_val), np.std(y_val)
-                
+
                 if sigma == 0:
                     logging.warning(f"{key} - {param} uchun sigma nolga teng")
                     continue
-                
+
                 stansiya, skvajina = key.split(" | ")
                 graph_data.append((x_val, y_val, mean, sigma, param, key, skvajina))
 
@@ -1511,28 +1565,7 @@ def results_view(request):
                 {"error": "Tanlangan sana oralig'ida hech qanday mos keluvchi ma'lumot topilmadi."},
             )
 
-        # Excel fayldagi zilzilalar ma'lumotlarini yuklash va filtrlaish
-        all_earthquakes_df = dfe.copy()
-        all_earthquakes_df["combined_datetime"] = pd.to_datetime(
-            all_earthquakes_df[DATE_COLUMN].astype(str)
-            + " "
-            + all_earthquakes_df[TIME_COLUMN].astype(str),
-            format="mixed",
-            errors="coerce",
-        )
-        all_earthquakes_df.dropna(subset=["combined_datetime"], inplace=True)
-        
-        # Zilzilalarni ham sana bo'yicha filtrlaish
-        if filter_start_date and filter_end_date:
-            try:
-                start_date = pd.to_datetime(filter_start_date)
-                end_date = pd.to_datetime(filter_end_date)
-                earthquake_mask = (all_earthquakes_df["combined_datetime"] >= start_date) & (all_earthquakes_df["combined_datetime"] <= end_date)
-                all_earthquakes_df = all_earthquakes_df[earthquake_mask]
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Zilzilalar uchun sana filtri xatosi: {e}")
 
-        logging.info(f"Filtrlangan zilzilalar: {len(all_earthquakes_df)} ta")
 
         # Grafiklar chizish
         num_graphs = len(graph_data)
@@ -1561,7 +1594,7 @@ def results_view(request):
 
         # X-o'qi diapazonini aniqlash
         today = pd.to_datetime('today').normalize()
-        
+
         if filter_start_date and filter_end_date:
             try:
                 min_date = pd.to_datetime(filter_start_date)
@@ -1596,11 +1629,11 @@ def results_view(request):
                 for x_val, _, _, _, _, _, _ in graph_data:
                     all_dates.extend(x_val)
                 all_earthquake_dates = list(all_earthquakes_df["combined_datetime"])
-                
+
                 all_combined_dates = pd.to_datetime(all_dates + all_earthquake_dates, errors="coerce")
                 full_max_date = max(all_combined_dates) if len(all_combined_dates) > 0 else today
                 full_min_date = min(all_combined_dates) if len(all_combined_dates) > 0 else pd.to_datetime("2020-01-01")
-                
+
                 min_date = first_anomaly_date
                 max_date = min(full_max_date, today)
                 delta = timedelta(days=15)
@@ -1621,7 +1654,7 @@ def results_view(request):
                     min_date = pd.to_datetime("2020-01-01")
                     max_date = today
                     delta = timedelta(days=1)
-                    
+
                 global_min_date = min_date
                 global_max_date = max_date
 
@@ -1640,16 +1673,16 @@ def results_view(request):
             )
 
             lat, lon = well_coords.get(skv, (0, 0))
-            
+
             if not all_earthquakes_df.empty:
                 draw_magnitude_values(
-                    fig, 
-                    all_earthquakes_df,  # Filtrlangan Excel fayli ma'lumotlari
-                    row, 
-                    col, 
-                    min_mag=min_mag, 
-                    well_lat=lat, 
-                    well_lon=lon, 
+                    fig,
+                    all_earthquakes_df,
+                    row,
+                    col,
+                    min_mag=min_mag,
+                    well_lat=lat,
+                    well_lon=lon,
                     min_mlgr=min_mlgr
                 )
 
@@ -1725,7 +1758,7 @@ def results_view(request):
 
         # Template uchun context
         context = {
-            "plotly_graph": plotly_html, 
+            "plotly_graph": plotly_html,
             "folium_map": folium_map_html,
             "current_start_date": filter_start_date or "",
             "current_end_date": filter_end_date or "",

@@ -2,17 +2,17 @@ from django.db import models
 
 
 class Catalog(models.Model):
-    Date = models.DateField(primary_key=True)
-    Time = models.TimeField()
-    Latitude = models.FloatField(max_length=255)
-    Longitude = models.FloatField(max_length=255)
-    Depth = models.FloatField(max_length=255)
-    Mb = models.FloatField(max_length=255)
+    Event_date = models.DateField()
+    Event_time = models.TimeField()
+    Latitude = models.FloatField()
+    Longitude = models.FloatField()
+    Depth = models.FloatField()
+    Mb = models.FloatField()
     Epicenter = models.CharField(max_length=255)
 
     class Meta:
         db_table = 'catalog'
-        managed = False
+        managed = False  # agar sizning jadvalingiz MySQL'da oldin yaratilgan bo'lsa
 
     def __str__(self):
-        return f"{self.Date}"
+        return f"{self.Event_date} {self.Event_time}"

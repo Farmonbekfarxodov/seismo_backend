@@ -1,13 +1,8 @@
 import requests
 import json
 import datetime
-import time
 
-from django.shortcuts import render
 from django.http import JsonResponse
-from django.utils import timezone
-
-
 from .models import Catalog
 
 DATA_URL = "https://api.smrm.uz/api/earthquakes/central-asia"
@@ -16,10 +11,9 @@ DATA_URL = "https://api.smrm.uz/api/earthquakes/central-asia"
 def fetch_data_from_api(params):
     all_data = []
     url = DATA_URL
-
     try:
         while url:
-            response = requests.get(url,params=params, timeout=30)
+            response = requests.get(url, params=params, timeout=30)
             response.raise_for_status()
             response_data = response.json()
 
@@ -30,17 +24,18 @@ def fetch_data_from_api(params):
                 params = {}
             else:
                 break
-            return all_data
+        return all_data
     except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
         print(f"API dan ma'lumot olishda xato: {e}")
         return None
+
 
 def save_data_to_db(data_list):
     if not data_list:
         return 0
 
-        # Bazadagi eng oxirgi API id yoki sana/vaqtni topamiz
-    last_record = Catalog.objects.order_by("-Date", "-Time").first()
+    # Oxirgi yozuvni olib kelamiz
+    last_record = Catalog.objects.order_by("-Event_date", "-Event_time").first()
     rows_to_create = []
 
     for item in data_list:
@@ -48,7 +43,7 @@ def save_data_to_db(data_list):
         try:
             formatted_date_naive = datetime.datetime.strptime(item.get("date"), "%d.%m.%Y").date()
         except (ValueError, TypeError):
-            continue  # noto‘g‘ri sana bo‘lsa, o‘tkazib yuboramiz
+            continue
 
         # Time
         try:
@@ -56,15 +51,17 @@ def save_data_to_db(data_list):
         except (ValueError, TypeError):
             formatted_time = None
 
-        # Agar eski yozuvdan keyingi bo‘lmasa → o‘tkazib yuboramiz
-        if last_record and (formatted_date_naive < last_record.Date or
-                            (formatted_date_naive == last_record.Date and formatted_time <= last_record.Time)):
+        # Oxirgi yozuvdan keyingi bo‘lmasa → o‘tkazib yuboramiz
+        if last_record and (
+            formatted_date_naive < last_record.Event_date or
+            (formatted_date_naive == last_record.Event_date and formatted_time <= last_record.Event_time)
+        ):
             continue
 
         # Yangi yozuv
         new_record = Catalog(
-            Date=formatted_date_naive,
-            Time=formatted_time,
+            Event_date=formatted_date_naive,
+            Event_time=formatted_time,
             Latitude=float(item.get('latitude')),
             Longitude=float(item.get('longitude')),
             Depth=float(item.get('depth')),
@@ -75,6 +72,7 @@ def save_data_to_db(data_list):
 
     Catalog.objects.bulk_create(rows_to_create)
     return len(rows_to_create)
+
 
 def upload_catalog(request):
     """
@@ -88,10 +86,3 @@ def upload_catalog(request):
         "status": "success",
         "new_records": new_count
     })
-
-
-
-
-
-
-
