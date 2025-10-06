@@ -1245,7 +1245,7 @@ def selection_view(request):
         if not selected_keys:
             return render(
                 request,
-                "seismos_app/selection.html",
+                "seismos_app/results1.html",
                 {
                     "wells": lst_stansiya.keys(),
                     "params": all_params,
@@ -1264,7 +1264,7 @@ def selection_view(request):
 
     return render(
         request,
-        "seismos_app/selection.html",
+        "seismos_app/results1.html",
         {"wells": lst_stansiya.keys(), "params": all_params},
     )
 
@@ -1291,17 +1291,17 @@ def parametrs_view(request):
             logging.error("Invalid input for numeric parametrs")
             return render(
                 request,
-                "seismos_app/parametrs.html",
+                "seismos_app/results1.html",
                 {"error":"Iltimos barcha sonli maydonlarga to'gri qiymat kiriting"}
             )
         except Exception as e:
             logging.error(f"Parametr input error:{e}")
             return render(
                 request,
-                "seismos_app/parametrs.html",
+                "seismos_app/results1.html",
                 {"error":f"Xato yuz berdi:{e},Iltimos qayta urinib ko'ring"}
             )
-    return render(request, "seismos_app/parametrs.html")
+    return render(request, "seismos_app/results1.html")
 
 
 def results_view(request):
@@ -1310,12 +1310,50 @@ def results_view(request):
     at the bottom of the page showing all wells and selected wells with radii.
     Now includes date filtering functionality.
     """
-    selected_keys = request.session.get("selected_keys", [])
-    selected_params = request.session.get("selected_params", [])
-    min_mag = request.session.get("min_mag")
-    btn_value = request.session.get("btn_value")
-    min_mlgr = request.session.get("min_mlgr")
-    use_catalog = request.session.get("use_catalog",False)
+
+    # Ma'lumotlarni olish (wells va params ro'yxati uchun)
+    lst_stansiya, well_coords = fetch_data()
+    all_params = []
+    for group_name, params_list in DEFAULT_ELEMENTS_GROUPS.items():
+        all_params.extend(params_list)
+    all_params = sorted(list(set(all_params)))
+
+
+    if request.method == "POST":
+        selected_keys = request.POST.getlist("wells")
+        selected_params = request.POST.getlist("params")
+        min_mag = float(request.POST.get("min_mag",4))
+        btn_value = float(request.POST.get("sigma",2))
+        min_mlgr = float(request.POST.get("min_mlgr",0))
+        filter_start_date = request.POST.get("start_date")
+        filter_end_date = request.POST.get("end_date")
+        use_catalog = True
+        request.session['use_catalog'] = True
+
+        #sessionda saqlash
+        request.session['selected_keys'] = selected_keys
+        request.session['selectes_params'] = selected_params
+        request.session['min_mag'] = min_mag
+        request.session['btn_value'] = btn_value
+        request.session['min_mlgr'] = min_mlgr
+        request.session['filter_start_date'] = filter_start_date
+        request.session['filter_end_date'] = filter_end_date
+        request.session['use_catalog']  = True
+
+    else:
+
+        selected_keys = request.session.get("selected_keys", [])
+        selected_params = request.session.get("selected_params", [])
+        min_mag = request.session.get("min_mag")
+        btn_value = request.session.get("btn_value")
+        min_mlgr = request.session.get("min_mlgr")
+        filter_start_date = request.session.get("filter_start_date")
+        filter_end_date = request.session.get("filter_end_date")
+        use_catalog = request.session.get("use_catalog",False)
+
+
+
+
 
     # Input validatsiyasi
     if not all([
@@ -1327,18 +1365,24 @@ def results_view(request):
     ]):
         return render(
             request,
-            "seismos_app/results.html",
+            "seismos_app/results1.html",
             {
+                "wells" : lst_stansiya.keys(),
+                "params" : all_params,
+                "selected_wells" : selected_keys,
+                "selected_params" : selected_params,
+                "current_min_mag" : min_mag,
+                "current_sigma" : btn_value,
+                "current_min_mlgr" : min_mlgr,
+                "current_start_date" : filter_start_date or "",
+                "current_end_date" :filter_end_date or "",
                 "error": "To'liq ma'lumotlar mavjud emas. Iltimos, oldingi qadamlarga qayting."
             },
         )
 
     if not selected_params:
         selected_params = sorted(list(set(sum(DEFAULT_ELEMENTS_GROUPS.values(), []))))
-
-    # Sana filtrini olish va validatsiya qilish
-    filter_start_date = request.GET.get('start_date')
-    filter_end_date = request.GET.get('end_date')
+        request.session['selected_params'] = selected_params
 
     # Sana filtrlari bo'sh bo'lsa, standart qiymatlarga o'tkazish
     if filter_start_date and filter_end_date:
@@ -1348,15 +1392,37 @@ def results_view(request):
             if start_date > end_date:
                 return render(
                     request,
-                    "seismos_app/results.html",
-                    {"error": "Boshlang'ich sana oxirgi sanadan katta bo'lmasligi kerak."},
+                    "seismos_app/results1.html",
+                    {
+                        "wells": lst_stansiya.keys(),
+                        "params": all_params,
+                        "selected_wells": selected_keys,
+                        "selected_params": selected_params,
+                        "current_min_mag": min_mag,
+                        "current_sigma": btn_value,
+                        "current_min_mlgr": min_mlgr,
+                        "current_start_date": filter_start_date,
+                        "current_end_date": filter_end_date,
+                        "error": "Boshlang'ich sana oxirgi sanadan katta bo'lmasligi kerak."
+                    },
                 )
         except (ValueError, TypeError) as e:
             logging.warning(f"Sana filtri xatosi: {e}")
             return render(
                 request,
-                "seismos_app/results.html",
-                {"error": f"Noto'g'ri sana formati: {e}"},
+                "seismos_app/results1.html",
+                {
+                    "wells": lst_stansiya.keys(),
+                    "params": all_params,
+                    "selected_wells": selected_keys,
+                    "selected_params": selected_params,
+                    "current_min_mag": min_mag,
+                    "current_sigma": btn_value,
+                    "current_min_mlgr": min_mlgr,
+                    "current_start_date": filter_start_date,
+                    "current_end_date": filter_end_date,
+                    "error": f"Noto'g'ri sana formati: {e}"
+                },
             )
 
     engine = None
@@ -1369,7 +1435,7 @@ def results_view(request):
             if not engine:
                 return render(
                     request,
-                    "seismos_app/results.html",
+                    "seismos_app/results1.html",
                     {"error":"Malumotlar bazasiga ulanish imkonsiz"},
                 )
             conn = engine.connect()
@@ -1377,7 +1443,7 @@ def results_view(request):
             logging.error(f"Malumotlar bzasiga ulanish xatosi:{e}")
             return render(
                 request,
-                "seismos_app/results.html",
+                "seismos_app/results1.html",
                 {"error":f"Malumotlar bazasiga ulanishda xato:{e}"}
             )
         #catalog jadvalidan malumotlarni olish
@@ -1397,7 +1463,7 @@ def results_view(request):
             logging.error(f"Catalog jadvalidan malumot olishda xato {e}")
             return render(
                 request,
-                "seismos_app/results.html",
+                "seismos_app/results1.html",
                 {"error":f"Catalog jadvalidan malumot olishda xato{e}"}
             )
         required_cols = [
@@ -1412,7 +1478,7 @@ def results_view(request):
             missing = [col for col in required_cols if col not in dfe.columns]
             return render(
                 request,
-                "seismos_app/results.html",
+                "seismos_app/results1.html",
                 {
                     "error":f"Catalog jadvalida kerakli ustunlar yo'q:{','.join(missing)}"
                 }
@@ -1463,7 +1529,7 @@ def results_view(request):
         if not lst_stansiya or not well_coords:
             return render(
                 request,
-                "seismos_app/results.html",
+                "seismos_app/results1.html",
                 {"error": "Bazadan ma'lumotlar olinmadi."},
             )
 
@@ -1480,7 +1546,7 @@ def results_view(request):
             logging.error(f"Ma'lumotlar bazasiga ulanish xatosi: {e}")
             return render(
                 request,
-                "seismos_app/results.html",
+                "seismos_app/results1.html",
                 {"error": f"Ma'lumotlar bazasiga ulanishda xato: {e}"},
             )
 
@@ -1561,7 +1627,7 @@ def results_view(request):
         if not graph_data:
             return render(
                 request,
-                "seismos_app/results.html",
+                "seismos_app/results1.html",
                 {"error": "Tanlangan sana oralig'ida hech qanday mos keluvchi ma'lumot topilmadi."},
             )
 
@@ -1732,7 +1798,7 @@ def results_view(request):
                 "autoScale2d",
                 "resetScale2d",
             ],
-            "responsive": True,
+            "responsive": False,
             "showTips": True,
             "displaylogo": False,
             "toImageButtonOptions": {
@@ -1758,10 +1824,17 @@ def results_view(request):
 
         # Template uchun context
         context = {
-            "plotly_graph": plotly_html,
-            "folium_map": folium_map_html,
+            "wells":lst_stansiya.keys(),
+            "params": all_params,
+            "selected_wells": selected_keys,
+            "current_min_mag": min_mag,
+            "current_sigma": btn_value,
+            "current_min_mlgr": min_mlgr,
             "current_start_date": filter_start_date or "",
             "current_end_date": filter_end_date or "",
+            "plotly_graph": plotly_html,
+            "folium_map": folium_map_html,
+
         }
 
         # Ma'lumotlar diapazonini aniqlash (filtr uchun)
@@ -1773,13 +1846,13 @@ def results_view(request):
                 context["data_min_date"] = min(pd.to_datetime(all_dates)).strftime('%Y-%m-%d')
                 context["data_max_date"] = max(pd.to_datetime(all_dates)).strftime('%Y-%m-%d')
 
-        return render(request, "seismos_app/results.html", context)
+        return render(request, "seismos_app/results1.html", context)
 
     except Exception as e:
         logging.error(f"Results view error: {e}", exc_info=True)
         return render(
             request,
-            "seismos_app/results.html",
+            "seismos_app/results1.html",
             {"error": "Tizimda kutilmagan xato yuz berdi. Iltimos, administrator bilan bog'laning."},
         )
 
