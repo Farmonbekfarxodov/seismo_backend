@@ -1401,80 +1401,121 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             except Exception as e:
                 logging.error(f"Aylana chizishda xato ({skvajina}): {e}")
 
-    # Filtrlangan zilzilalarni xaritaga qo'shish
-    if not all_filtered_earthquakes.empty:
-        for idx, row in all_filtered_earthquakes.iterrows():
-            mag_val = row.get(MAIN_MAGNITUDE_COLUMN, None)
-            date_val = row.get(DATE_COLUMN, "Nomalum")
-            try:
-                date_val = pd.to_datetime(date_val).strftime("%d.%m.%Y")
-            except Exception:
-                date_val = "Nomalum"
-            if isinstance(date_val, (pd.Timestamp, datetime.datetime)):
-                date_val = date_val.strftime("%d.%m.%Y")
-            distance_val = row.get("R(km)", "Nomalum")
-            mlgr_val = row.get("M/lgR", "Nomalum")
-            depth_val = row.get("Depth", "Nomalum")
+        # Filtrlangan zilzilalarni xaritaga qo'shish
+        if not all_filtered_earthquakes.empty:
+            for idx, row in all_filtered_earthquakes.iterrows():
+                lat = row.get(LATITUDE_COLUMN, None)
+                lon = row.get(LONGITUDE_COLUMN, None)
+                mag_val = row.get(MAIN_MAGNITUDE_COLUMN, None)
+                date_val = row.get(DATE_COLUMN, "Nomalum")
+                try:
+                    date_val = pd.to_datetime(date_val).strftime("%d.%m.%Y")
+                except Exception:
+                    date_val = "Nomalum"
+                if isinstance(date_val, (pd.Timestamp, datetime.datetime)):
+                    date_val = date_val.strftime("%d.%m.%Y")
+                distance_val = row.get("R(km)", "Nomalum")
+                mlgr_val = row.get("M/lgR", "Nomalum")
+                depth_val = row.get("Depth", "Nomalum")
 
-            if mag_val is not None and not np.isnan(mag_val) and mag_val > 0:
-                tooltip_html = f"""
-                <b>Filtrlangan zilzila</b><br>
-                Sana: {date_val}<br>
-                Magnituda (Mb): {mag_val:.2f}<br>
-                Chuqurlik (km): {depth_val}<br>
-                Masofa (km): {distance_val:.1f}<br>
-                M/lgR: {mlgr_val:.2f}<br>
-                """
-                if mag_val >= 6:
-                    color = "darkred"
-                    radius = mag_val * 3
-                elif mag_val >= 5:
-                    color = "red"
-                    radius = mag_val * 2.5
-                elif mag_val >= 4:
-                    color = "orange"
-                    radius = mag_val * 2
-                else:
-                    color = "yellow"
-                    radius = mag_val * 1.5
+                if mag_val is not None and not np.isnan(
+                        mag_val) and mag_val > 0 and lat is not None and lon is not None:
+                    # Tooltip uchun HTML
+                    tooltip_html = f"""
+                        <b>Zilzila</b><br>
+                        Sana: {date_val}<br>
+                        Magnituda (Mb): {mag_val:.2f}<br>
+                        Chuqurlik (km): {depth_val}<br>
+                        Masofa (km): {distance_val:.1f}<br>
+                        M/lgR: {mlgr_val:.2f}<br>
+                    """
+                    # Magnitudaga qarab rang va radius
+                    if mag_val >= 6:
+                        color = "darkred"
+                        radius = mag_val * 3
+                    elif mag_val >= 5:
+                        color = "red"
+                        radius = mag_val * 2.5
+                    elif mag_val >= 4:
+                        color = "orange"
+                        radius = mag_val * 2
+                    else:
+                        color = "yellow"
+                        radius = mag_val * 1.5
 
-                folium.CircleMarker(
-                    location=[row[LATITUDE_COLUMN], row[LONGITUDE_COLUMN]],
-                    radius=radius,
-                    color=color,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=0.7,
-                    stroke=True,
-                    weight=2,
-                    tooltip=tooltip_html,
-                ).add_to(m)
+                    # CircleMarker qo'shish (tooltip bilan)
+                    marker = folium.CircleMarker(
+                        location=[lat, lon],
+                        radius=radius,
+                        color=color,
+                        fill=True,
+                        fill_color=color,
+                        fill_opacity=0.7,
+                        stroke=True,
+                        weight=2,
+                        tooltip=tooltip_html
+                    ).add_to(m)
 
-    # Dinamik Legend (yer yoriqlari va zilzilalar bilan)
-    legend_items = [
-        '<p><b>Xarita elementlari:</b></p>',
-        '<p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>',
-        '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>',
-        '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>',
-        '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>',
-        '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid blue; display: inline-block; margin-right: 8px;"></div>->Tanlangan skvajinalar</p>',
-        '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid lightblue; display: inline-block; margin-right: 8px;"></div>-> Tanlanmagan skvajinalar</p>',
-    ]
+                    # JavaScript kodi: Click bo'lganda radius aylanasini chizish yoki o'chirish
+                    js_code = f"""
+                    <script>
+                    document.addEventListener("DOMContentLoaded", function() {{
+                        var map = window.map || Object.values(window).find(v => v instanceof L.Map);
+                        var marker = L.circleMarker([{lat}, {lon}], {{
+                            radius: {radius},
+                            color: '{color}',
+                            fillColor: '{color}',
+                            fillOpacity: 0.7
+                        }}).addTo(map).bindTooltip(`{tooltip_html}`, {{sticky: true}});
 
-    legend_html = f'''
-    <div style="position: fixed; 
-                bottom: 50px; left: 50px; width: 160px; height: 160px; 
-                background-color: white; border:2px solid grey; z-index:9999; 
-                font-size:12px; padding: 10px; overflow-y: auto;">
-    {''.join(legend_items)}
-    </div>
-    '''
-    m.get_root().html.add_child(folium.Element(legend_html))
+                        marker.on('click', function() {{
+                            if (window.currentCircle && window.currentCircle._latlng.lat === {lat} && window.currentCircle._latlng.lng === {lon}) {{
+                                map.removeLayer(window.currentCircle);
+                                window.currentCircle = null;
+                            }} else {{
+                                if (window.currentCircle) {{
+                                    map.removeLayer(window.currentCircle);
+                                }}
+                                var R_km = Math.pow(10, {mag_val} / {min_mlgr});
+                                var circle = L.circle([{lat}, {lon}], {{
+                                    radius: R_km * 1000,  // km to meters
+                                    color: '#66ccff',
+                                    weight: 2,
+                                    fill: false
+                                }}).addTo(map);
+                                window.currentCircle = circle;
+                            }}
+                        }});
+                    }});
+                    </script>
+                    """
+                    m.get_root().html.add_child(folium.Element(js_code))
 
-    # Layer control qo'shish
-    folium.LayerControl().add_to(m)
+        # Dinamik Legend
+        legend_items = [
+            '<p><b>Xarita elementlari:</b></p>',
+            '<p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>',
+            '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>',
+            '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>',
+            '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>',
+            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid blue; display: inline-block; margin-right: 8px;"></div> Tanlangan skvajinalar</p>',
+            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid lightblue; display: inline-block; margin-right: 8px;"></div> Tanlanmagan skvajinalar</p>',
+        ]
 
-    return m._repr_html_()
+        legend_html = f'''
+        <div style="position: fixed; 
+                    bottom: 50px; left: 50px; width: 160px; height: 160px; 
+                    background-color: white; border:2px solid grey; z-index:9999; 
+                    font-size:12px; padding: 10px; overflow-y: auto;">
+        {''.join(legend_items)}
+        </div>
+        '''
+        m.get_root().html.add_child(folium.Element(legend_html))
+
+        # Layer control qo'shish
+        folium.LayerControl().add_to(m)
+
+        return m._repr_html_()
 
 def selection_view(request):
     """

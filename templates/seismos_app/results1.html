@@ -176,14 +176,8 @@
                        name="min_mlgr" placeholder="M/lgR kiriting"
                        value="{{ current_min_mlgr|default:'0.0' }}" required>
 
-                <!-- SANA ORALIG‘I -->
-                <input type="date" class="form-control" name="start_date"
-                       value="{{ current_start_date|default:'' }}">
-                <input type="date" class="form-control" name="end_date"
-                       value="{{ current_end_date|default:'' }}">
-
                 <select name="median_window" class="form-control">
-                    <option value="">-- Mediana oynasini tanlamaslik (ixtiyoriy) --</option>
+                    <option value="">Mediana</option>
                     {% for val in median_values %}
                         <option value="{{ val }}"
                             {% if val|stringformat:"s" == current_median_window|stringformat:"s" %}
@@ -193,6 +187,14 @@
                         </option>
                     {% endfor %}
                 </select>
+
+                <!-- SANA ORALIG‘I -->
+                <input type="date" class="form-control" name="start_date"
+                       value="{{ current_start_date|default:'' }}">
+                <input type="date" class="form-control" name="end_date"
+                       value="{{ current_end_date|default:'' }}">
+
+
 
                 <!-- YUBORISH TUGMASI -->
                 <button type="submit" class="btn btn-primary">
