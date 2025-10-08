@@ -573,7 +573,7 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
         logging.info(f"draw_magnitude_values: original_df is empty for row {row_index}")
         return [0, 1]
 
-    # Asl ma'lumotlarni qayta ishlash
+    # Asl ma'lumotlarni qayta ishlashw
     df = original_df.copy()
 
     # Vaqt ustunini yaratish
@@ -713,8 +713,8 @@ def get_all_shapefiles():
         os.path.join(settings.BASE_DIR, 'shapefiles', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'static', 'data', 'AFEAD_*.shp'),
         os.path.join(settings.BASE_DIR, 'AFEAD_*.shp'),
-        os.path.join(settings.BASE_DIR, 'Export_*.shp'),
-        os.path.join(settings.BASE_DIR, 'Seysmogen_*.shp'),
+        os.path.join(settings.BASE_DIR, 'Export_Output*.shp'),
+        os.path.join(settings.BASE_DIR, 'Seysmogen_zonalar*.shp'),
     ]
 
     if hasattr(settings, 'CRACKS_SHAPEFILES_DIR'):
@@ -732,6 +732,222 @@ def get_all_shapefiles():
             logging.info(f" -{os.path.basename(path)}")
 
         return shapefile_paths
+
+
+def get_seismogenic_shapefiles():
+    """
+    Seysmogen zonalar uchun shapefilelarni qidirish
+    """
+    shapefile_paths = []
+
+    search_paths = [
+        # Seysmogen zonalar uchun
+        os.path.join(settings.BASE_DIR, 'static', 'shapefiles', 'Seysmogen_*.shp'),
+        os.path.join(settings.BASE_DIR, 'media', 'shapefiles', 'Seysmogen_*.shp'),
+        os.path.join(settings.BASE_DIR, 'data', 'Seysmogen_*.shp'),
+        os.path.join(settings.BASE_DIR, 'shapefiles', 'Seysmogen_*.shp'),
+        os.path.join(settings.BASE_DIR, 'static', 'data', 'Seysmogen_*.shp'),
+        os.path.join(settings.BASE_DIR, 'Seysmogen_*.shp'),
+
+        # Export formatidagi fayllar
+        os.path.join(settings.BASE_DIR, 'Export_*.shp'),
+    ]
+
+    if hasattr(settings, 'CRACKS_SHAPEFILES_DIR'):
+        search_paths.append(os.path.join(settings.CRACKS_SHAPEFILES_DIR, '*.shp'))
+
+    for search_path in search_paths:
+        found_files = glob.glob(search_path)
+        shapefile_paths.extend(found_files)
+
+    # Dublikatlarni olib tashlash
+    shapefile_paths = list(set(shapefile_paths))
+
+    logging.info(f"Topilgan seysmogen zonalar shapefilelari: {len(shapefile_paths)} ta")
+    for path in shapefile_paths:
+        logging.info(f" - {os.path.basename(path)}")
+
+    return shapefile_paths
+
+def load_seismogenic_zones():
+    """
+    Seysmogen zonalar shapefilelarini yuklash
+    """
+    shapefile_paths = get_seismogenic_shapefiles()  # Mavjud funksiyadan foydalanish
+
+    if not shapefile_paths:
+        logging.warning("Hech qanday shapefile topilmadi")
+        return None
+
+    all_zones = []
+
+    for shapefile_path in shapefile_paths:
+        try:
+            # Faqat Seysmogen va Export fayllarini yuklash
+            filename = os.path.basename(shapefile_path)
+            if 'SEYSMOGEN' not in filename.upper() and 'SEISMOGEN' not in filename.upper() and 'EXPORT' not in filename.upper():
+                continue
+
+            gdf = gpd.read_file(shapefile_path)
+
+            if gdf.crs is None:
+                gdf.set_crs('EPSG:4326', inplace=True)
+            elif gdf.crs.to_string() != 'EPSG:4326':
+                gdf = gdf.to_crs('EPSG:4326')
+
+            # Geometry tekshiruvi
+            if gdf.empty or 'geometry' not in gdf.columns or gdf.geometry.isnull().all():
+                logging.warning(f"{filename} faylida geometriya mavjud emas yoki bo‘sh")
+                continue
+
+            gdf['source_file'] = filename
+            all_zones.append(gdf)
+
+            logging.info(f"Seysmogen zona yuklandi: {filename} - {len(gdf)} ta")
+
+        except Exception as e:
+            logging.error(f"Shapefile {shapefile_path} yuklashda xato: {e}")
+            continue
+
+    if not all_zones:
+        logging.warning("Hech qanday seysmogen zona yuklanmadi")
+        return None
+
+    try:
+        combined_gdf = gpd.GeoDataFrame(pd.concat(all_zones, ignore_index=True))
+        logging.info(f"Umumiy seysmogen zonalar: {len(combined_gdf)} ta")
+        return combined_gdf
+    except Exception as e:
+        logging.error(f"Seysmogen zonalarni birlashtirishda xato: {e}")
+        return None
+
+
+def add_seismogenic_zones_to_map(folium_map, zones_gdf):
+    """
+    Folium xaritasiga seysmogen zonalarni pushti rangda qo'shadi.
+    GeometryCollection, Polygon, LineString, MultiPolygon va MultiLineString turlarini qo'llab-quvvatlaydi.
+    """
+
+    if zones_gdf is None or zones_gdf.empty:
+        logging.warning("Seysmogen zonalar ma'lumotlari bo'sh")
+        return {}
+
+    pink_color = "#FFC0CB"  # Pushti rang
+    legend_data = {"Seysmogen zonalar": pink_color}
+
+    try:
+        for idx, row in zones_gdf.iterrows():
+            geometry = row.geometry
+            if geometry is None:
+                continue
+
+            # Zona nomini aniqlash
+            zone_name = "Noma'lum zona"
+            for col in ['TYPE', 'ZONE', 'CATEGORY', 'CLASS', 'NAME', 'ZONA', 'NOMI']:
+                if col in row.index and pd.notnull(row[col]):
+                    zone_name = str(row[col])
+                    break
+
+            # Popup matni
+            popup_text = f"""
+            <div style='width: 250px; font-family: Arial; font-size: 12px;'>
+                <h4 style='color: #2c3e50; margin-bottom: 10px;'>Seysmogen Zona</h4>
+                <table style='width: 100%; border-collapse: collapse;'>
+                    <tr style='background-color: #f8f9fa;'>
+                        <td style='padding: 5px; border: 1px solid #dee2e6; font-weight: bold;'>Nomi:</td>
+                        <td style='padding: 5px; border: 1px solid #dee2e6;'>{zone_name}</td>
+                    </tr>
+                </table>
+            </div>
+            """
+
+            tooltip_text = f"Seysmogen zona: {zone_name}"
+
+            # --- Geometriya turini aniqlash va chizish ---
+            if geometry.geom_type == 'Polygon':
+                coords = [[y, x] for x, y in geometry.exterior.coords]
+                folium.Polygon(
+                    locations=coords,
+                    color=pink_color,
+                    fill=True,
+                    fillColor=pink_color,
+                    fillOpacity=0.5,
+                    weight=2,
+                    popup=folium.Popup(popup_text, max_width=300),
+                    tooltip=tooltip_text
+                ).add_to(folium_map)
+
+            elif geometry.geom_type == 'MultiPolygon':
+                for poly in geometry.geoms:
+                    coords = [[y, x] for x, y in poly.exterior.coords]
+                    folium.Polygon(
+                        locations=coords,
+                        color=pink_color,
+                        fill=True,
+                        fillColor=pink_color,
+                        fillOpacity=0.5,
+                        weight=2,
+                        popup=folium.Popup(popup_text, max_width=300),
+                        tooltip=tooltip_text
+                    ).add_to(folium_map)
+
+            elif geometry.geom_type == 'LineString':
+                coords = [[y, x] for x, y in geometry.coords]
+                folium.PolyLine(
+                    coords,
+                    color=pink_color,
+                    weight=3,
+                    opacity=0.8,
+                    popup=folium.Popup(popup_text, max_width=300),
+                    tooltip=tooltip_text
+                ).add_to(folium_map)
+
+            elif geometry.geom_type == 'MultiLineString':
+                for line in geometry.geoms:
+                    coords = [[y, x] for x, y in line.coords]
+                    folium.PolyLine(
+                        coords,
+                        color=pink_color,
+                        weight=3,
+                        opacity=0.8,
+                        popup=folium.Popup(popup_text, max_width=300),
+                        tooltip=tooltip_text
+                    ).add_to(folium_map)
+
+            elif geometry.geom_type == 'GeometryCollection':
+                for geom in geometry.geoms:
+                    if geom.geom_type == 'Polygon':
+                        coords = [[y, x] for x, y in geom.exterior.coords]
+                        folium.Polygon(
+                            locations=coords,
+                            color=pink_color,
+                            fill=True,
+                            fillColor=pink_color,
+                            fillOpacity=0.5,
+                            weight=2,
+                            popup=folium.Popup(popup_text, max_width=300),
+                            tooltip=tooltip_text
+                        ).add_to(folium_map)
+
+                    elif geom.geom_type == 'LineString':
+                        coords = [[y, x] for x, y in geom.coords]
+                        folium.PolyLine(
+                            coords,
+                            color=pink_color,
+                            weight=3,
+                            opacity=0.8,
+                            popup=folium.Popup(popup_text, max_width=300),
+                            tooltip=tooltip_text
+                        ).add_to(folium_map)
+
+            else:
+                logging.warning(f"Tasdiqlanmagan geometriya turi: {geometry.geom_type}")
+
+        return legend_data
+
+    except Exception as e:
+        logging.error(f"Seysmogen zonalarni xaritaga qo'shishda xato: {e}")
+        return {}
 
 def load_all_cracks_shapefiles():
     shapefile_paths = get_all_shapefiles()
@@ -1045,6 +1261,16 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     else:
         logging.warning("Yer yoriqlari yuklanmadi")
 
+    # SEYSMOGEN ZONALARNI QO'SHISH
+    logging.info("Seysmogen zonalarni yuklash boshlandi...")
+    seismogenic_zones = load_seismogenic_zones()
+    zone_colors = {}
+    if seismogenic_zones is not None:
+        zone_colors = add_seismogenic_zones_to_map(m, seismogenic_zones)
+        logging.info(f"Seysmogen zonalar xaritaga qo'shildi: {len(seismogenic_zones)} ta")
+    else:
+        logging.warning("Seysmogen zonalar yuklanmadi")
+
     # Barcha skvajinalarni xaritaga qo'shish (kulrang rangda)
     for well_name, (lat, lon) in all_wells.items():
         if well_name not in selected_well_names:
@@ -1094,6 +1320,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 popup=folium.Popup(popup_html, max_width=370),
                 icon=triangle_icon,
             ).add_to(m)
+
 
 
     # Tanlangan skvajinalarni xaritaga qo'shish (pushti rangda)
@@ -1152,6 +1379,27 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 popup=folium.Popup(popup_html, max_width=370),
                 icon=triangle_icon,
             ).add_to(m)
+            # --- Radiuslar faqat shu quduq uchun bir marta ---
+            try:
+                mlgr_val = min_mlgr if min_mlgr > 0 else 0.5
+                radii_data = [
+                    (5, "#66ccff"),
+                    (6, "#3399ff"),
+                    (7, "#0033cc"),
+                ]
+                for M_value, color in radii_data:
+                    #print(M_value,mlgr_val)
+                    R_km = float(10 ** (M_value / mlgr_val))
+                    folium.Circle(
+                        radius=R_km*1000,
+                        location=[lat, lon],
+                        color=color,
+                        fill=False,
+                        weight=2,
+                        tooltip=f"M={M_value}, R={R_km:.1f} km (M/lgR={mlgr_val})",
+                    ).add_to(m)
+            except Exception as e:
+                logging.error(f"Aylana chizishda xato ({skvajina}): {e}")
 
     # Filtrlangan zilzilalarni xaritaga qo'shish
     if not all_filtered_earthquakes.empty:
@@ -1234,6 +1482,8 @@ def selection_view(request):
     """
     lst_stansiya, _ = fetch_data()
     all_params = []
+    median_values = [3,5,7,31,91,183,365,731]
+
     for group_name, params_list in DEFAULT_ELEMENTS_GROUPS.items():
         all_params.extend(params_list)
     all_params = sorted(list(set(all_params)))
@@ -1249,6 +1499,7 @@ def selection_view(request):
                 {
                     "wells": lst_stansiya.keys(),
                     "params": all_params,
+                    "median_values": median_values,
                     "error": "Kamida bitta quduq tanlang.",
                 },
             )
@@ -1265,7 +1516,7 @@ def selection_view(request):
     return render(
         request,
         "seismos_app/results1.html",
-        {"wells": lst_stansiya.keys(), "params": all_params},
+        {"wells": lst_stansiya.keys(), "params": all_params,"median_values":median_values},
     )
 
 
@@ -1318,30 +1569,36 @@ def results_view(request):
         all_params.extend(params_list)
     all_params = sorted(list(set(all_params)))
 
-
     if request.method == "POST":
         selected_keys = request.POST.getlist("wells")
         selected_params = request.POST.getlist("params")
-        min_mag = float(request.POST.get("min_mag",4))
-        btn_value = float(request.POST.get("sigma",2))
-        min_mlgr = float(request.POST.get("min_mlgr",0))
+        min_mag = float(request.POST.get("min_mag", 4))
+        btn_value = float(request.POST.get("sigma", 2))
+        min_mlgr = float(request.POST.get("min_mlgr", 0))
         filter_start_date = request.POST.get("start_date")
         filter_end_date = request.POST.get("end_date")
+        median_window_raw = request.POST.get("median_window", "").strip()
+
+        if not median_window_raw:
+            median_window = None  # Bo'sh bo'lsa None
+        else:
+            median_window = int(median_window_raw)  # Bor bo'lsa int
+
         use_catalog = True
         request.session['use_catalog'] = True
 
-        #sessionda saqlash
+        # sessionda saqlash
         request.session['selected_keys'] = selected_keys
-        request.session['selectes_params'] = selected_params
+        request.session['selected_params'] = selected_params
         request.session['min_mag'] = min_mag
         request.session['btn_value'] = btn_value
         request.session['min_mlgr'] = min_mlgr
         request.session['filter_start_date'] = filter_start_date
         request.session['filter_end_date'] = filter_end_date
-        request.session['use_catalog']  = True
+        request.session['median_window'] = median_window  # None yoki int
+        request.session['use_catalog'] = True
 
     else:
-
         selected_keys = request.session.get("selected_keys", [])
         selected_params = request.session.get("selected_params", [])
         min_mag = request.session.get("min_mag")
@@ -1349,12 +1606,8 @@ def results_view(request):
         min_mlgr = request.session.get("min_mlgr")
         filter_start_date = request.session.get("filter_start_date")
         filter_end_date = request.session.get("filter_end_date")
-        use_catalog = request.session.get("use_catalog",False)
-
-
-
-
-
+        use_catalog = request.session.get("use_catalog", False)
+        median_window = request.session.get("median_window", None)
     # Input validatsiyasi
     if not all([
         selected_keys,
@@ -1367,15 +1620,15 @@ def results_view(request):
             request,
             "seismos_app/results1.html",
             {
-                "wells" : lst_stansiya.keys(),
-                "params" : all_params,
-                "selected_wells" : selected_keys,
-                "selected_params" : selected_params,
-                "current_min_mag" : min_mag,
-                "current_sigma" : btn_value,
-                "current_min_mlgr" : min_mlgr,
-                "current_start_date" : filter_start_date or "",
-                "current_end_date" :filter_end_date or "",
+                "wells": lst_stansiya.keys(),
+                "params": all_params,
+                "selected_wells": selected_keys,
+                "selected_params": selected_params,
+                "current_min_mag": min_mag,
+                "current_sigma": btn_value,
+                "current_min_mlgr": min_mlgr,
+                "current_start_date": filter_start_date or "",
+                "current_end_date": filter_end_date or "",
                 "error": "To'liq ma'lumotlar mavjud emas. Iltimos, oldingi qadamlarga qayting."
             },
         )
@@ -1429,14 +1682,14 @@ def results_view(request):
     conn = None
 
     try:
-        #Malumotlar bazasidan catalog jadvalidan olish
+        # Malumotlar bazasidan catalog jadvalidan olish
         try:
             engine = connect_db()
             if not engine:
                 return render(
                     request,
                     "seismos_app/results1.html",
-                    {"error":"Malumotlar bazasiga ulanish imkonsiz"},
+                    {"error": "Malumotlar bazasiga ulanish imkonsiz"},
                 )
             conn = engine.connect()
         except Exception as e:
@@ -1444,12 +1697,12 @@ def results_view(request):
             return render(
                 request,
                 "seismos_app/results1.html",
-                {"error":f"Malumotlar bazasiga ulanishda xato:{e}"}
+                {"error": f"Malumotlar bazasiga ulanishda xato:{e}"}
             )
-        #catalog jadvalidan malumotlarni olish
+        # catalog jadvalidan malumotlarni olish
         try:
             query = "SELECT `Event_date`, `Event_time`, `Latitude`, `Longitude`, `Depth`, `Mb` FROM catalog "
-            dfe = pd.read_sql(query,engine)
+            dfe = pd.read_sql(query, engine)
             dfe[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(
                 dfe[MAIN_MAGNITUDE_COLUMN], errors='coerce'
             )
@@ -1464,7 +1717,7 @@ def results_view(request):
             return render(
                 request,
                 "seismos_app/results1.html",
-                {"error":f"Catalog jadvalidan malumot olishda xato{e}"}
+                {"error": f"Catalog jadvalidan malumot olishda xato{e}"}
             )
         required_cols = [
             DATE_COLUMN,
@@ -1480,13 +1733,13 @@ def results_view(request):
                 request,
                 "seismos_app/results1.html",
                 {
-                    "error":f"Catalog jadvalida kerakli ustunlar yo'q:{','.join(missing)}"
+                    "error": f"Catalog jadvalida kerakli ustunlar yo'q:{','.join(missing)}"
                 }
             )
         # Zilzilalar ma'lumotlarini filtrlash
         all_earthquakes_df = dfe.copy()
 
-        # TIME_COLUMN timedelta ko‘rinishda bo‘lsa, faqat vaqt qismi (HH:MM:SS) qilib o‘girib olamiz
+        # TIME_COLUMN timedelta ko'rinishda bo'lsa, faqat vaqt qismi (HH:MM:SS) qilib o'girib olamiz
         all_earthquakes_df[TIME_COLUMN] = (
             pd.to_timedelta(all_earthquakes_df[TIME_COLUMN])
             .dt.total_seconds()
@@ -1505,10 +1758,13 @@ def results_view(request):
             errors="coerce",
         )
 
-        # Noto‘g‘ri datetime bo‘lgan qatorlarni olib tashlash
+        # Noto'g'ri datetime bo'lgan qatorlarni olib tashlash
         all_earthquakes_df.dropna(subset=["combined_datetime"], inplace=True)
 
-        # Zilzila ma'lumotlarini sana bo‘yicha filtrlash
+        # Zilzila ma'lumotlarini sana bo'yicha filtrlash
+        fixed_start_date = pd.to_datetime("2020-01-01")
+        today = pd.to_datetime("today").normalize()
+
         if filter_start_date and filter_end_date:
             try:
                 start_date = pd.to_datetime(filter_start_date)
@@ -1521,6 +1777,10 @@ def results_view(request):
                 all_earthquakes_df = all_earthquakes_df[earthquake_mask]
             except (ValueError, TypeError) as e:
                 logging.warning(f"Zilzilalar uchun sana filtri xatosi: {e}")
+        else:
+            all_earthquakes_df = all_earthquakes_df[
+                all_earthquakes_df["combined_datetime"] >= fixed_start_date
+            ]
 
         logging.info(f"Filtrlangan zilzilalar: {len(all_earthquakes_df)} ta")
 
@@ -1554,7 +1814,6 @@ def results_view(request):
         first_anomaly_date = None
 
         # Ma'lumotlarni bazadan olish va filtrlaish
-
         for key in selected_keys:
             for param in selected_params:
                 ssdi_id = lst_stansiya.get(key, {}).get(param)
@@ -1585,21 +1844,21 @@ def results_view(request):
                             logging.warning(f"{key} - {param} uchun filtrlangan ma'lumot yo'q")
                             continue
 
-                        x_val = df_filtered['date'].tolist()  # O'ZGARTIRISH: Series -> List
+                        x_val = df_filtered['date'].tolist()
                         y_val = df_filtered['value'].tolist()
                     except (ValueError, TypeError) as e:
                         logging.warning(f"Sana filtri xatosi {key} - {param}: {e}")
-                        x_val = df_temp['date'].tolist()  # O'ZGARTIRISH: Series -> List
+                        x_val = df_temp['date'].tolist()
                         y_val = df_temp['value'].tolist()
                 else:
-                    x_val = df_temp['date'].tolist()  # O'ZGARTIRISH: Series -> List
+                    x_val = df_temp['date'].tolist()
                     y_val = df_temp['value'].tolist()
 
                 if len(y_val) == 0:
                     logging.warning(f"{key} - {param} uchun y_val bo'sh")
                     continue
 
-                y_series = pd.Series(y_val, index=x_val)  # Bu hali ham Series uchun ishlaydi
+                y_series = pd.Series(y_val, index=x_val)
                 mean, sigma = np.mean(y_val), np.std(y_val)
 
                 if sigma == 0:
@@ -1614,13 +1873,13 @@ def results_view(request):
                 lower_bound = mean - btn_value * sigma
                 anomalies = y_series[
                     (y_series > upper_bound) | (y_series < lower_bound)
-                ]
+                    ]
                 if not anomalies.empty:
                     anomaly_start_date = anomalies.index[0]
                     logging.info(f"Anomaliya topildi: {key} - {param}, sana: {anomaly_start_date}")
                     if (
-                        first_anomaly_date is None
-                        or anomaly_start_date < first_anomaly_date
+                            first_anomaly_date is None
+                            or anomaly_start_date < first_anomaly_date
                     ):
                         first_anomaly_date = anomaly_start_date
 
@@ -1631,13 +1890,14 @@ def results_view(request):
                 {"error": "Tanlangan sana oralig'ida hech qanday mos keluvchi ma'lumot topilmadi."},
             )
 
-
-
-        # Grafiklar chizish
+        # Grafiklar chizish - O'ZGARTIRILGAN QISM
         num_graphs = len(graph_data)
-        single_graph_height = 500
+
+        # Har bir grafik uchun kattaroq balandlik
+        single_graph_height = 600  # 500 dan 700 ga oshirildi
         total_figure_height = num_graphs * single_graph_height
-        max_total_height = 20000
+        max_total_height = 30000  # Maksimal balandlik ham oshirildi
+
         if total_figure_height > max_total_height:
             scale_factor = max_total_height / total_figure_height
             single_graph_height = int(single_graph_height * scale_factor)
@@ -1648,7 +1908,8 @@ def results_view(request):
         ]
         specs = [[{"secondary_y": True}]] * num_graphs
 
-        vertical_spacing = 0.05 if num_graphs <= 3 else 0.03 if num_graphs <= 5 else max(0.005, 0.1 / num_graphs)
+        # Grafiklar orasidagi bo'shliqni kamaytirish
+        vertical_spacing = 0.04 if num_graphs <= 3 else 0.02 if num_graphs <= 5 else max(0.005, 0.08 / num_graphs)
 
         fig = make_subplots(
             rows=num_graphs,
@@ -1682,7 +1943,8 @@ def results_view(request):
                     if all_dates:
                         min_date = min(pd.to_datetime(all_dates))
                         max_date = min(max(pd.to_datetime(all_dates)), today)
-                        delta = (max_date - min_date) * 0.05 if (max_date - min_date) > timedelta(0) else timedelta(days=1)
+                        delta = (max_date - min_date) * 0.05 if (max_date - min_date) > timedelta(0) else timedelta(
+                            days=1)
                     else:
                         min_date = pd.to_datetime("2020-01-01")
                         max_date = today
@@ -1728,8 +1990,43 @@ def results_view(request):
         for idx, (x, y, mean, sigma, param, key, skv) in enumerate(graph_data):
             row, col = idx + 1, 1
             trace_color = color_pool[idx]
+            if median_window and median_window > 0:
+                # x va y qiymatlaridan DataFrame yasaymiz
+                df_temp_med = pd.DataFrame({'date': x, 'value': y})
+
+                # Kunlik medianani hisoblaymiz (agar bir kunda bir nechta qiymatlar bo‘lsa)
+                df_temp_med['date'] = pd.to_datetime(df_temp_med['date'])
+                df_daily_median = (
+                    df_temp_med.groupby(df_temp_med['date'].dt.date)['value']
+                    .median()
+                    .reset_index()
+                    .rename(columns={'value': 'daily_median'})
+                )
+
+                # Agar median_window belgilangan bo‘lsa, o‘sha oynada silliqlash
+                df_daily_median['rolling_median'] = (
+                    df_daily_median['daily_median']
+                    .rolling(window=median_window, min_periods=1, center=True)
+                    .median()
+                )
+
+                # Grafikda shu qiymatlar chiziladi
+                x = pd.to_datetime(df_daily_median['date']).tolist()
+                y = df_daily_median['rolling_median'].tolist()
+
+                # Yangi statistikalar
+                mean = np.mean(y)
+                sigma = np.std(y)
+
             y_all = plot_data_with_anomalies(
                 fig, x, y, mean, sigma, btn_value, row, col, trace_color, param, key
+            )
+
+            fig.update_yaxes(
+                title_text=f"{param} Qiymati",
+                range=[min(y_all) * 0.9, max(y_all) * 1.1],
+                row=row,
+                col=col,
             )
             fig.update_yaxes(
                 title_text=f"{param} Qiymati",
@@ -1752,6 +2049,12 @@ def results_view(request):
                     min_mlgr=min_mlgr
                 )
 
+            fixed_start_date = pd.to_datetime("2020-01-01")
+            if min_date < fixed_start_date or pd.isna(min_date):
+                min_date = fixed_start_date
+            else:
+                min_date = fixed_start_date
+
             # X-o'qi diapazonini belgilash
             fig.update_xaxes(
                 range=[min_date - delta, max_date + delta],
@@ -1765,10 +2068,13 @@ def results_view(request):
                 autorange=False,
             )
 
-        # Layout sozlamalari
+        # Layout sozlamalari - O'ZGARTIRILGAN QISM
         fig.update_layout(
-            title_text="Tahlil natijalari" + (f" ({filter_start_date} - {filter_end_date})" if filter_start_date and filter_end_date else ""),
+            title_text="Tahlil natijalari" + (
+                f" ({filter_start_date} - {filter_end_date})" if filter_start_date and filter_end_date else ""),
             height=total_figure_height,
+            width=None,  # None qilib qo'yildi - bu responsive bo'lishi uchun
+            autosize=True,  # True qilib qo'yildi
             showlegend=False,
             plot_bgcolor="gainsboro",
             hovermode="x unified",
@@ -1783,8 +2089,7 @@ def results_view(request):
                 font=dict(size=10),
             ),
             title=dict(font=dict(size=20), x=0.5, xanchor="center"),
-            margin=dict(l=20, r=20, t=80, b=20),
-            autosize=True,
+            margin=dict(l=60, r=60, t=100, b=60),  # Margin'lar oshirildi
         )
 
         config = {
@@ -1798,15 +2103,15 @@ def results_view(request):
                 "autoScale2d",
                 "resetScale2d",
             ],
-            "responsive": False,
+            "responsive": True,  # Responsive qilib qo'yildi
             "showTips": True,
             "displaylogo": False,
             "toImageButtonOptions": {
                 "format": "png",
                 "filename": "seismic_analysis",
-                "height": 500,
-                "width": 700,
-                "scale": 1
+                "height": 900,  # Export hajmi oshirildi
+                "width": 1400,  # Export hajmi oshirildi
+                "scale": 2  # Sifat yaxshilandi
             }
         }
         plotly_html = fig.to_html(
@@ -1824,7 +2129,7 @@ def results_view(request):
 
         # Template uchun context
         context = {
-            "wells":lst_stansiya.keys(),
+            "wells": lst_stansiya.keys(),
             "params": all_params,
             "selected_wells": selected_keys,
             "current_min_mag": min_mag,
@@ -1834,7 +2139,8 @@ def results_view(request):
             "current_end_date": filter_end_date or "",
             "plotly_graph": plotly_html,
             "folium_map": folium_map_html,
-
+            "current_median_window": median_window or "",
+            "median_values": [3, 5, 7, 31, 91, 183, 365, 731],
         }
 
         # Ma'lumotlar diapazonini aniqlash (filtr uchun)

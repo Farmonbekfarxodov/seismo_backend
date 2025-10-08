@@ -92,116 +92,175 @@
         max-width: 1200px;
         height: 600px;
     }
+
+    /* YANGI: Grafik uchun to'liq kenglik */
+    .w-100 {
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
+    /* YANGI: Plotly grafik container */
+    .plotly-graph-container {
+        width: 100% !important;
+        max-width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        overflow-x: hidden;
+    }
+
+    /* YANGI: Container va padding'larni olib tashlash */
+    .full-width-graph {
+        width: 100vw !important;
+        position: relative;
+        left: 50%;
+        right: 50%;
+        margin-left: -50vw !important;
+        margin-right: -50vw !important;
+        padding: 0 !important;
+    }
+
+    /* YANGI: Plotly ichidagi SVG elementi */
+    .js-plotly-plot .plotly .main-svg {
+        width: 100% !important;
+    }
 </style>
 
 <div class="w-100 m-0 p-0">
     <div class="px-3 py-2 text-center">
         <h2>SEYSMOPROGNOSTIK TAHLIL</h2>
     </div>
- <form method="post" action="{% url 'seismos:results' %}" class="filter-panel">
-    {% csrf_token %}
-    <div class="mx-3">
-        <div class="menu-row">
-            <!-- Skvajinalar multi-select (2 ustunli) -->
-            <details {% if selected_wells %}open{% endif %}>
-                <summary>Skvajinalar</summary>
-                <div class="option-list wells-list">
-                    {% for well in wells %}
-                    <label>
-                        <input type="checkbox" name="wells" value="{{ well }}"
-                               {% if well in selected_wells %}checked{% endif %}> {{ well }}
-                    </label>
+
+    <form method="post" action="{% url 'seismos:results' %}" class="filter-panel">
+        {% csrf_token %}
+        <div class="mx-3">
+            <div class="menu-row">
+                <!-- SKVAJINALAR BLOKI -->
+                <details {% if selected_wells %}open{% endif %}>
+                    <summary>Skvajinalar</summary>
+                    <div class="option-list wells-list">
+                        {% for well in wells %}
+                        <label>
+                            <input type="checkbox" name="wells" value="{{ well }}"
+                                   {% if well in selected_wells %}checked{% endif %}> {{ well }}
+                        </label>
+                        {% endfor %}
+                    </div>
+                </details>
+
+                <!-- PARAMETRLAR BLOKI -->
+                <details {% if selected_params %}open{% endif %}>
+                    <summary>Parametrlar</summary>
+                    <div class="option-list">
+                        {% for param in params %}
+                        <label>
+                            <input type="checkbox" name="params" value="{{ param }}"
+                                   {% if param in selected_params %}checked{% endif %}> {{ param }}
+                        </label>
+                        {% endfor %}
+                    </div>
+                </details>
+
+                <!-- MAGNITUDA -->
+                <input type="number" step="0.1" min="0" class="form-control"
+                       name="min_mag" placeholder="Magnituda kiriting"
+                       value="{{ current_min_mag|default:'4.0' }}" required>
+
+                <!-- SIGMA -->
+                <input type="number" step="0.1" min="0" class="form-control"
+                       name="sigma" placeholder="Sigma kiriting"
+                       value="{{ current_sigma|default:'2.0' }}" required>
+
+                <!-- M/lgR -->
+                <input type="number" step="0.1" class="form-control"
+                       name="min_mlgr" placeholder="M/lgR kiriting"
+                       value="{{ current_min_mlgr|default:'0.0' }}" required>
+
+                <!-- SANA ORALIG‘I -->
+                <input type="date" class="form-control" name="start_date"
+                       value="{{ current_start_date|default:'' }}">
+                <input type="date" class="form-control" name="end_date"
+                       value="{{ current_end_date|default:'' }}">
+
+                <select name="median_window" class="form-control">
+                    <option value="">-- Mediana oynasini tanlamaslik (ixtiyoriy) --</option>
+                    {% for val in median_values %}
+                        <option value="{{ val }}"
+                            {% if val|stringformat:"s" == current_median_window|stringformat:"s" %}
+                                selected
+                            {% endif %}>
+                            {{ val }} kunlik
+                        </option>
                     {% endfor %}
-                </div>
-            </details>
+                </select>
 
-            <!-- Parametrlar multi-select -->
-            <details {% if selected_params %}open{% endif %}>
-                <summary>Parametrlar</summary>
-                <div class="option-list">
-                    {% for param in params %}
-                    <label>
-                        <input type="checkbox" name="params" value="{{ param }}"
-                               {% if param in selected_params %}checked{% endif %}> {{ param }}
-                    </label>
-                    {% endfor %}
-                </div>
-            </details>
-
-            <!-- Magnituda input -->
-            <input type="number" step="0.1" min="0" class="form-control"
-                   name="min_mag" placeholder="Magnituda kiriting"
-                   value="{{ current_min_mag|default:'' }}" required>
-
-            <!-- Sigma input -->
-            <input type="number" step="0.1" min="0" class="form-control"
-                   name="sigma" placeholder="Sigma kiriting"
-                   value="{{ current_sigma|default:'' }}" required>
-
-            <!-- M/lgR input -->
-            <input type="number" step="0.1" class="form-control"
-                   name="min_mlgr" placeholder="M/lgR kiriting"
-                   value="{{ current_min_mlgr|default:'' }}" required>
-
-            <!-- Boshlanish sanasi -->
-            <input type="date" id="start_date" class="form-control"
-                   name="start_date" value="{{ current_start_date }}">
-
-            <!-- Tugash sanasi -->
-            <input type="date" id="end_date" class="form-control"
-                   name="end_date" value="{{ current_end_date }}">
-
-            <button type="submit" class="btn btn-primary">
-                <i class="fas fa-chart-line"></i> Grafik chizish
-            </button>
+                <!-- YUBORISH TUGMASI -->
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-chart-line"></i> Grafik chizish
+                </button>
+            </div>
         </div>
-    </div>
-</form>
+    </form>
 
-{% if error %}
-    <div class="alert alert-danger mx-3">{{ error }}</div>
-{% else %}
-    <div class="mx-3">
-        <div class="alert alert-info">
-            <i class="fas fa-info-circle"></i>
-            Mavjud ma'lumotlar oralig'i:
-            {% if data_min_date and data_max_date %}
-                {{ data_min_date }} - {{ data_max_date }}
-            {% else %}
-                Ma'lumot topilmadi.
-            {% endif %}
-            {% if current_start_date and current_end_date %}
-                <br><strong>Tanlangan oraliq:</strong> {{ current_start_date }} - {{ current_end_date }}
-            {% endif %}
-        </div>
-    </div>
-
-    {% if plotly_graph %}
-    <div class="w-100">
-        {{ plotly_graph | safe }}
-    </div>
-
-    <div class="container mt-4">
-        <div class="px-3 py-2">
-            <h2>Barcha skvajinalar xaritasi</h2>
-        </div>
-        <div id="folium-map-container">
-            {{ folium_map | safe }}
-        </div>
-    </div>
+    {% if error %}
+        <div class="alert alert-danger mx-3">{{ error }}</div>
     {% else %}
-    <div class="alert alert-warning mx-3">
-        Tanlangan parametrlar uchun ma'lumot topilmadi. Boshqa parametrlarni tanlang yoki sana oralig'ini o'zgartiring.
-    </div>
+        <div class="mx-3">
+            <div class="alert alert-info">
+                <i class="fas fa-info-circle"></i>
+                Mavjud ma'lumotlar oralig'i:
+                {% if data_min_date and data_max_date %}
+                    {{ data_min_date }} - {{ data_max_date }}
+                {% else %}
+                    Ma'lumot topilmadi.
+                {% endif %}
+                {% if current_start_date and current_end_date %}
+                    <br><strong>Tanlangan oraliq:</strong> {{ current_start_date }} - {{ current_end_date }}
+                {% endif %}
+            </div>
+        </div>
+
+        {% if plotly_graph %}
+            <div class="full-width-graph">
+                <div class="plotly-graph-container">
+                    {{ plotly_graph | safe }}
+                </div>
+            </div>
+        {% else %}
+            <div class="alert alert-warning mx-3">
+                Tanlangan parametrlar uchun ma'lumot topilmadi. Boshqa parametrlarni tanlang yoki sana oralig'ini o'zgartiring.
+            </div>
+        {% endif %}
+
+        <div class="container mt-4">
+            <div class="px-3 py-2">
+                <h2>Barcha skvajinalar xaritasi</h2>
+            </div>
+            <div id="folium-map-container">
+                {{ folium_map | safe }}
+            </div>
+        </div>
     {% endif %}
-{% endif %}
 </div>
+
 <!-- SCRIPT SECTION -->
 <script>
 document.addEventListener("DOMContentLoaded", () => {
+    // YANGI: Plotly grafikni to'liq kenglikka sozlash
+    const plotlyDiv = document.querySelector('.js-plotly-plot');
+    if (plotlyDiv) {
+        // Plotly grafikni yangilash
+        Plotly.Plots.resize(plotlyDiv);
+
+        // Window o'lchamini o'zgartirganda grafikni yangilash
+        window.addEventListener('resize', function() {
+            Plotly.Plots.resize(plotlyDiv);
+        });
+    }
+
     // Date validation
-    const start = document.getElementById("start_date");
-    const end = document.getElementById("end_date");
+    const start = document.querySelector('input[name="start_date"]');
+    const end = document.querySelector('input[name="end_date"]');
 
     if (start && end) {
         const validate = () => {
@@ -222,12 +281,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // Form submit oldidan validatsiya
         const form = start.closest('form');
-        form.addEventListener('submit', (e) => {
-            validate();
-            if (!form.checkValidity()) {
-                e.preventDefault();
-            }
-        });
+        if (form) {
+            form.addEventListener('submit', (e) => {
+                validate();
+                if (!form.checkValidity()) {
+                    e.preventDefault();
+                }
+            });
+        }
     }
 
     // Update count function
@@ -251,7 +312,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const checkboxes = details.querySelectorAll('input[type="checkbox"]');
         checkboxes.forEach(checkbox => {
             checkbox.addEventListener('change', () => {
-                updateSelectedCount(details.closest('details'));
+                updateSelectedCount(checkbox.closest('details'));
             });
         });
     });
