@@ -8,17 +8,10 @@ class CustomUser(AbstractUser):
     Bu model foydalanuvchining shaxsiy ma'lumotlarini o'z ichiga oladi.
     """
     
-    # username uchun maxsus validator. Faqat harflar, sonlar va _,-,.,@,+, belgilari bo'lishi mumkin.
-    def validate_username(value):
-        if not re.match(r'^[a-zA-Z0-9_.-@+]+$', value):
-            raise ValidationError(
-                "Foydalanuvchi nomi faqat harflar, sonlar va _,-,.,@,+ belgilardan iborat bo'lishi kerak."
-            )
 
     username = models.CharField(
         max_length=150,
         unique=True,
-        validators=[validate_username],
         error_messages={
             'unique': "Bu foydalanuvchi nomi allaqachon mavjud."
         },

@@ -1613,9 +1613,9 @@ def results_view(request):
     if request.method == "POST":
         selected_keys = request.POST.getlist("wells")
         selected_params = request.POST.getlist("params")
-        min_mag = float(request.POST.get("min_mag", 4))
-        btn_value = float(request.POST.get("sigma", 2))
-        min_mlgr = float(request.POST.get("min_mlgr", 0))
+        min_mag = float(request.POST.get("min_mag"))
+        btn_value = float(request.POST.get("sigma"))
+        min_mlgr = float(request.POST.get("min_mlgr"))
         filter_start_date = request.POST.get("start_date")
         filter_end_date = request.POST.get("end_date")
         median_window_raw = request.POST.get("median_window", "").strip()
