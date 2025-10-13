@@ -1683,10 +1683,16 @@ def results_view(request):
     user_start_date = None
     user_end_date = None
 
-    if filter_start_date and filter_end_date:
+    if filter_start_date:
         try:
             user_start_date = pd.to_datetime(filter_start_date)
-            user_end_date = pd.to_datetime(filter_end_date)
+
+            # Agar tugash sanasi kiritilmagan bo'lsa, bugungi sanani olish
+            if filter_end_date:
+                user_end_date = pd.to_datetime(filter_end_date)
+            else:
+                user_end_date = pd.Timestamp.today().normalize()
+
             if user_start_date > user_end_date:
                 return render(
                     request,
@@ -1722,6 +1728,10 @@ def results_view(request):
                     "error": f"Noto'g'ri sana formati: {e}"
                 },
             )
+    else:
+        # Agar boshlang'ich sana ham kiritilmagan bo'lsa
+        user_start_date = None
+        user_end_date = None
 
     # Default sanalar (foydalanuvchi kiritmasa)
     default_start_date = pd.to_datetime("2020-01-01")
@@ -2000,7 +2010,13 @@ def results_view(request):
             )
 
         # Layout sozlamalari
-        title_suffix = f" ({filter_start_date} - {filter_end_date})" if filter_start_date and filter_end_date else " (2020 - hozir)"
+        if filter_start_date:
+            if filter_end_date:
+                title_suffix = f" ({filter_start_date} - {filter_end_date})"
+            else:
+                title_suffix = f" ({filter_start_date} - {pd.Timestamp.today().strftime('%Y-%m-%d')})"
+        else:
+            title_suffix = " (2020 - hozir)"
 
         fig.update_layout(
             title_text="Tahlil natijalari" + title_suffix,
