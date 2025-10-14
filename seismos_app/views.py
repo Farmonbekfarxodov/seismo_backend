@@ -326,7 +326,6 @@ def plot_data_with_anomalies(
     """
     Ma'lumotlarning butun chizig'ini chizadi va anomaliya qismlarini qizil rangda belgilaydi.
     """
-    
     if isinstance(x_val, pd.Series):
         x_val = x_val.tolist()
     if isinstance(y_val, pd.Series):
@@ -335,28 +334,39 @@ def plot_data_with_anomalies(
     if len(x_val) != len(y_val):
         logging.error(f"x_val va y_val uzunliklari mos emas: {len(x_val)} vs {len(y_val)}")
         return [mean]
-    
 
+    # NaN qiymatlarni filtrlash va tartiblash
+    valid_mask = ~pd.isna(y_val) & ~pd.isna(x_val)
+    x_val = [x for i, x in enumerate(x_val) if valid_mask[i]]
+    y_val = [y for i, y in enumerate(y_val) if valid_mask[i]]
+
+    if len(x_val) == 0:
+        logging.warning(f"{key_name} - {element_name} uchun valid ma'lumot yo'q")
+        return [mean]
+
+    # x_val ni tartiblash (vaqt bo'yicha)
+    sorted_indices = np.argsort(x_val)
+    x_val = [x_val[i] for i in sorted_indices]
+    y_val = [y_val[i] for i in sorted_indices]
+
+    # Chegaralarni hisoblash
     upper_bound = mean + btn_value * sigma
     lower_bound = mean - btn_value * sigma
 
-    y_all_values = list(y_val)
+    y_all_values = [y for y in y_val if not np.isnan(y)]  # NaN larni olib tashlash
     y_all_values.extend([upper_bound, lower_bound, mean])
 
     yaxis_index = (row_idx - 1) * 1 + col_idx
     yref = "y" if yaxis_index == 1 else f"y{2 * row_idx - 1}"
 
-    # UB (Upper Bound) chizig'i
+    # UB, MEAN va LB chiziqlarini chizish
     fig.add_shape(
         type="line",
         x0=min(x_val),
         x1=max(x_val),
         y0=upper_bound,
         y1=upper_bound,
-        line=dict(
-            color="green",
-            width=1.5,
-        ),
+        line=dict(color="green", width=1.5),
         row=row_idx,
         col=col_idx,
         yref=yref,
@@ -374,17 +384,13 @@ def plot_data_with_anomalies(
         col=col_idx,
     )
 
-    # MEAN chizig'i
     fig.add_shape(
         type="line",
         x0=min(x_val),
         x1=max(x_val),
         y0=mean,
         y1=mean,
-        line=dict(
-            color="magenta",
-            width=1.5,
-        ),
+        line=dict(color="magenta", width=1.5),
         row=row_idx,
         col=col_idx,
         yref=yref,
@@ -402,17 +408,13 @@ def plot_data_with_anomalies(
         col=col_idx,
     )
 
-    # LB (Lower Bound) chizig'i
     fig.add_shape(
         type="line",
         x0=min(x_val),
         x1=max(x_val),
         y0=lower_bound,
         y1=lower_bound,
-        line=dict(
-            color="blue",
-            width=1.5,
-        ),
+        line=dict(color="blue", width=1.5),
         row=row_idx,
         col=col_idx,
         yref=yref,
@@ -430,7 +432,7 @@ def plot_data_with_anomalies(
         col=col_idx,
     )
 
-    # Asosiy grafik
+    # Asosiy grafik (connectgaps=False saqlangan)
     fig.add_trace(
         go.Scatter(
             x=x_val,
@@ -441,6 +443,7 @@ def plot_data_with_anomalies(
             showlegend=True,
             hoverinfo="x+y",
             hovertemplate=f"Vaqt: %{{x|%d-%m-%Y}}<br>{element_name} Qiymati: %{{y}}<extra></extra>",
+            connectgaps=False  # Bo'shliqlarni tutashtirmaslik
         ),
         row=row_idx,
         col=col_idx,
@@ -468,61 +471,33 @@ def plot_data_with_anomalies(
         intersect_x = None
         intersect_y = None
 
+        # Upper bound bilan kesishishni tekshirish
         if (y_prev < upper_bound <= y_curr) or (y_curr < upper_bound <= y_prev):
             if abs(y_curr - y_prev) > 1e-9:
                 ratio = (upper_bound - y_prev) / (y_curr - y_prev)
-                intersect_x = x_prev + (x_curr - x_prev) * ratio
-                intersect_y = upper_bound
+                if 0 <= ratio <= 1:  # Faqat mos keladigan kesishishni qabul qilish
+                    intersect_x = x_prev + (x_curr - x_prev) * ratio
+                    intersect_y = upper_bound
 
+        # Lower bound bilan kesishishni tekshirish
         if (y_prev > lower_bound >= y_curr) or (y_curr > lower_bound >= y_prev):
             if abs(y_curr - y_prev) > 1e-9:
                 ratio = (lower_bound - y_prev) / (y_curr - y_prev)
                 new_intersect_x = x_prev + (x_curr - x_prev) * ratio
                 new_intersect_y = lower_bound
-
-                if intersect_x is None or (
-                    intersect_x
-                    and abs((new_intersect_x - x_prev).total_seconds())
-                    < abs((intersect_x - x_prev).total_seconds())
-                ):
+                if intersect_x is None and 0 <= ratio <= 1:
+                    intersect_x = new_intersect_x
+                    intersect_y = new_intersect_y
+                elif intersect_x and abs((new_intersect_x - x_prev).total_seconds()) < abs((intersect_x - x_prev).total_seconds()) and 0 <= ratio <= 1:
                     intersect_x = new_intersect_x
                     intersect_y = new_intersect_y
 
-        if is_anomalous_curr != is_anomalous_prev and intersect_x is not None:
-            if is_anomalous_prev:
-                current_anomalous_segment_x.append(intersect_x)
-                current_anomalous_segment_y.append(intersect_y)
-                if current_anomalous_segment_x:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=current_anomalous_segment_x,
-                            y=current_anomalous_segment_y,
-                            mode="lines",
-                            line=dict(color="red", width=3),
-                            showlegend=False,
-                            hoverinfo="x+y",
-                            hovertemplate="Vaqt: %{x|%d-%m-%Y}<br>Anomaliya: %{y}<extra></extra>",
-                        ),
-                        row=row_idx,
-                        col=col_idx,
-                        secondary_y=False,
-                    )
-                current_anomalous_segment_x = []
-                current_anomalous_segment_y = []
-
-            if is_anomalous_curr:
-                current_anomalous_segment_x.append(intersect_x)
-                current_anomalous_segment_y.append(intersect_y)
-                current_anomalous_segment_x.append(x_curr)
-                current_anomalous_segment_y.append(y_curr)
-
-        elif is_anomalous_curr:
-            current_anomalous_segment_x.append(x_curr)
-            current_anomalous_segment_y.append(y_curr)
-        elif not is_anomalous_curr and is_anomalous_prev:
-            current_anomalous_segment_x.append(x_curr)
-            current_anomalous_segment_y.append(y_curr)
-            if current_anomalous_segment_x:
+        # Anomaliya o'tishini tekshirish
+        if is_anomalous_curr != is_anomalous_prev:
+            if is_anomalous_prev and len(current_anomalous_segment_x) > 1:  # Oxirgi segmentni yopish uchun len > 1
+                if intersect_x is not None:
+                    current_anomalous_segment_x.append(intersect_x)
+                    current_anomalous_segment_y.append(intersect_y)
                 fig.add_trace(
                     go.Scatter(
                         x=current_anomalous_segment_x,
@@ -532,20 +507,30 @@ def plot_data_with_anomalies(
                         showlegend=False,
                         hoverinfo="x+y",
                         hovertemplate="Vaqt: %{x|%d-%m-%Y}<br>Anomaliya: %{y}<extra></extra>",
+                        connectgaps=False  # Qo'shimcha: anomaliya segmentlarida ham bo'shliqlarni tutashtirmaslik
                     ),
                     row=row_idx,
                     col=col_idx,
                     secondary_y=False,
                 )
-            current_anomalous_segment_x = []
-            current_anomalous_segment_y = []
-        else:
-            current_anomalous_segment_x = []
-            current_anomalous_segment_y = []
+                current_anomalous_segment_x = []
+                current_anomalous_segment_y = []
+
+            if is_anomalous_curr:
+                if intersect_x is not None:
+                    current_anomalous_segment_x.append(intersect_x)
+                    current_anomalous_segment_y.append(intersect_y)
+                current_anomalous_segment_x.append(x_curr)
+                current_anomalous_segment_y.append(y_curr)
+
+        elif is_anomalous_curr:
+            current_anomalous_segment_x.append(x_curr)
+            current_anomalous_segment_y.append(y_curr)
 
         is_anomalous_prev = is_anomalous_curr
 
-    if current_anomalous_segment_x:
+    # Oxirgi segmentni to‘g‘ri yopish
+    if is_anomalous_prev and len(current_anomalous_segment_x) > 1:
         fig.add_trace(
             go.Scatter(
                 x=current_anomalous_segment_x,
@@ -555,6 +540,7 @@ def plot_data_with_anomalies(
                 showlegend=False,
                 hoverinfo="x+y",
                 hovertemplate="Vaqt: %{x|%d-%m-%Y}<br>Anomaliya: %{y}<extra></extra>",
+                connectgaps=False
             ),
             row=row_idx,
             col=col_idx,
@@ -565,30 +551,20 @@ def plot_data_with_anomalies(
 
 
 def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, well_lat=0, well_lon=0, min_mlgr=0):
-    """
-    Barcha Mb magnitudalarni ikkinchi Y-o'qda vertikal chiziqlar orqali chizadi.
-    original_df - asl Excel fayli ma'lumotlari
-    """
     if original_df is None or original_df.empty:
         logging.info(f"draw_magnitude_values: original_df is empty for row {row_index}")
         return [0, 1]
 
-    # Asl ma'lumotlarni qayta ishlashw
     df = original_df.copy()
-
-    # Vaqt ustunini yaratish
     df["combined_datetime"] = pd.to_datetime(
         df[DATE_COLUMN].astype(str) + " " + df[TIME_COLUMN].astype(str),
         format="mixed",
         errors="coerce"
     )
     df.dropna(subset=["combined_datetime"], inplace=True)
-
-    # Mb qiymatlarini raqamga aylantirish
     df[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(df[MAIN_MAGNITUDE_COLUMN], errors="coerce")
     df.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
 
-    # Masofani hisoblash
     df["R(km)"] = np.round(
         destenc_vectorized(well_lat, well_lon, df[LATITUDE_COLUMN], df[LONGITUDE_COLUMN])
     )
@@ -596,18 +572,15 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
         df["R(km)"] > 1, df[MAIN_MAGNITUDE_COLUMN] / np.log10(df["R(km)"]), np.nan
     )
 
-    # Filtrlash: min_mag va min_mlgr bo'yicha
     valid_earthquakes = df[
         (df[MAIN_MAGNITUDE_COLUMN] >= min_mag) &
         (df["M/lgR"] >= min_mlgr)
     ].copy()
-    logging.info(f"Filtrlangan zilzilalar:{len(valid_earthquakes)}ta")  # Bu sizning log xabaringiz
 
     if valid_earthquakes.empty:
         logging.info(f"draw_magnitude_values: No valid earthquakes for row {row_index}")
         return [0, 1]
 
-    # Y-o'qi diapazonini belgilash
     max_mag_for_y_axis = valid_earthquakes[MAIN_MAGNITUDE_COLUMN].max() * 1.1
     min_mag_for_y_axis = 0
 
@@ -619,7 +592,6 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
         col=col_index,
     )
 
-    # Vertikal chiziqlar uchun ma'lumotlar
     stem_x = []
     stem_y = []
     hover_texts = []
@@ -632,11 +604,7 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
 
         stem_x.extend([row["combined_datetime"], row["combined_datetime"], None])
         stem_y.extend([0, mag_val, None])
-
-        hover_text = (f"Vaqt: {time_str}<br>"
-                     f"Mb: {mag_val:.2f}<br>"
-                     f"Masofa: {distance:.1f} km<br>"
-                     f"M/lgR: {mlgr_val:.2f}")
+        hover_text = (f"Vaqt: {time_str}<br>Mb: {mag_val:.2f}<br>Masofa: {distance:.1f} km<br>M/lgR: {mlgr_val:.2f}")
         hover_texts.extend(["", hover_text, ""])
 
     if stem_x:
@@ -659,10 +627,7 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
         )
 
     fig.update_xaxes(
-        showgrid=True,
-        gridwidth=0.15,
-        gridcolor="black",
-        griddash="dot",
+        matches=f'x{row_index}',  # X-o'qni boshqa subplotlar bilan moslashtirish
         row=row_index,
         col=col_index,
     )
