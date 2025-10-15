@@ -124,6 +124,41 @@
     .js-plotly-plot .plotly .main-svg {
         width: 100% !important;
     }
+
+    /* Spinnerning o‘zi */
+    .spinner {
+        border: 8px solid #f3f3f3;
+        border-top: 8px solid #3498db;
+        border-radius: 50%;
+        width: 60px;
+        height: 60px;
+        animation: spin 1s linear infinite;
+    }
+
+    /* Aylanish animatsiyasi */
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+
+    /* To‘liq ekranli overlay */
+    #overlay {
+        display: none; /* dastlab ko‘rinmasin */
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background-color: rgba(255, 255, 255, 0.85);
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        color: #3498db;
+        font-weight: bold;
+    }
 </style>
 
 <div class="w-100 m-0 p-0">
@@ -194,10 +229,8 @@
                 <input type="date" class="form-control" name="end_date"
                        value="{{ current_end_date|default:'' }}">
 
-
-
                 <!-- YUBORISH TUGMASI -->
-                <button type="submit" class="btn btn-primary">
+                <button type="submit" class="btn btn-primary" id="submitButton">
                     <i class="fas fa-chart-line"></i> Grafik chizish
                 </button>
             </div>
@@ -245,16 +278,19 @@
     {% endif %}
 </div>
 
+<!-- Spinner Overlay -->
+<div id="overlay">
+    <div class="spinner"></div>
+    <div style="margin-top: 15px;">Yuklanmoqda...</div>
+</div>
+
 <!-- SCRIPT SECTION -->
 <script>
 document.addEventListener("DOMContentLoaded", () => {
     // YANGI: Plotly grafikni to'liq kenglikka sozlash
     const plotlyDiv = document.querySelector('.js-plotly-plot');
     if (plotlyDiv) {
-        // Plotly grafikni yangilash
         Plotly.Plots.resize(plotlyDiv);
-
-        // Window o'lchamini o'zgartirganda grafikni yangilash
         window.addEventListener('resize', function() {
             Plotly.Plots.resize(plotlyDiv);
         });
@@ -281,7 +317,6 @@ document.addEventListener("DOMContentLoaded", () => {
         start.addEventListener("change", validate);
         end.addEventListener("change", validate);
 
-        // Form submit oldidan validatsiya
         const form = start.closest('form');
         if (form) {
             form.addEventListener('submit', (e) => {
@@ -332,6 +367,27 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
     });
+
+    // Spinner funksiyalari
+    function showSpinner() {
+        document.getElementById('overlay').style.display = 'flex';
+    }
+
+    function hideSpinner() {
+        document.getElementById('overlay').style.display = 'none';
+    }
+
+    // "Grafik chizish" tugmasi bosilganda spinnerni boshqarish
+    const submitButton = document.getElementById('submitButton');
+    if (submitButton) {
+        submitButton.addEventListener('click', (e) => {
+            showSpinner(); // Tugma bosilganda spinnerni yoqish
+            // An'anaviy POST uchun spinner server javobini kutadi
+        });
+    }
+
+    // Sahifa yuklanganda spinnerni o'chirish (serverdan javob kelganda)
+    hideSpinner(); // Sahifa qayta yuklanganda spinnerni avtomatik o'chirish
 });
 </script>
 
