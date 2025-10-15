@@ -789,16 +789,30 @@ def load_seismogenic_zones():
 
 def add_seismogenic_zones_to_map(folium_map, zones_gdf):
     """
-    Folium xaritasiga seysmogen zonalarni pushti rangda qo'shadi.
-    GeometryCollection, Polygon, LineString, MultiPolygon va MultiLineString turlarini qo'llab-quvvatlaydi.
+    Folium xaritasiga seysmogen zonalarni pushti rangda qo'shadi va
+    har bir zona markaziga rim raqamini joylashtiradi.
     """
 
     if zones_gdf is None or zones_gdf.empty:
         logging.warning("Seysmogen zonalar ma'lumotlari bo'sh")
         return {}
 
-    pink_color = "#FFC0CB"  # Pushti rang
+    pink_color = "#FFC0CB"
     legend_data = {"Seysmogen zonalar": pink_color}
+
+    # Rim raqamlariga o'zgartirish funksiyasi
+    def to_roman(num):
+        """Butun sonni rim raqamiga o'zgartiradi"""
+        val = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
+        syms = ['M', 'CM', 'D', 'CD', 'C', 'XC', 'L', 'XL', 'X', 'IX', 'V', 'IV', 'I']
+        roman_num = ''
+        i = 0
+        while num > 0:
+            for _ in range(num // val[i]):
+                roman_num += syms[i]
+                num -= val[i]
+            i += 1
+        return roman_num
 
     try:
         for idx, row in zones_gdf.iterrows():
@@ -806,29 +820,47 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
             if geometry is None:
                 continue
 
+            # Zona raqamini aniqlash (OBJECTID dan)
+            zone_number = None
+            if 'OBJECTID' in row.index and pd.notnull(row['OBJECTID']):
+                try:
+                    zone_number = int(row['OBJECTID'])
+                except:
+                    zone_number = idx + 1
+            else:
+                zone_number = idx + 1
+
+            # Rim raqamiga o'zgartirish
+            roman_number = to_roman(zone_number)
+
             # Zona nomini aniqlash
-            zone_name = "Noma'lum zona"
-            for col in ['TYPE', 'ZONE', 'CATEGORY', 'CLASS', 'NAME', 'ZONA', 'NOMI']:
-                if col in row.index and pd.notnull(row[col]):
-                    zone_name = str(row[col])
-                    break
+
+            zone_name = f"Zona {roman_number}"  # Default qiymat
+            if 'seysmogen_' in row.index and pd.notnull(row['seysmogen_']):
+                zone_name = str(row['seysmogen_'])
+
 
             # Popup matni
             popup_text = f"""
             <div style='width: 250px; font-family: Arial; font-size: 12px;'>
-                <h4 style='color: #2c3e50; margin-bottom: 10px;'>Seysmogen Zona</h4>
+                <h4 style='color: #2c3e50; margin-bottom: 8px;'>Seysmogen Zona {roman_number}</h4>
                 <table style='width: 100%; border-collapse: collapse;'>
                     <tr style='background-color: #f8f9fa;'>
-                        <td style='padding: 5px; border: 1px solid #dee2e6; font-weight: bold;'>Nomi:</td>
+                        <td style='padding: 5px; border: 1px solid #dee2e6; font-weight: bold;'>Zona:</td>
                         <td style='padding: 5px; border: 1px solid #dee2e6;'>{zone_name}</td>
                     </tr>
+                    
                 </table>
             </div>
             """
 
-            tooltip_text = f"Seysmogen zona: {zone_name}"
+            tooltip_text = roman_number
 
-            # --- Geometriya turini aniqlash va chizish ---
+            # Geometriya markazini hisoblash
+            centroid = geometry.centroid
+            centroid_coords = [centroid.y, centroid.x]
+
+            # --- Geometriyani chizish ---
             if geometry.geom_type == 'Polygon':
                 coords = [[y, x] for x, y in geometry.exterior.coords]
                 folium.Polygon(
@@ -907,6 +939,26 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
 
             else:
                 logging.warning(f"Tasdiqlanmagan geometriya turi: {geometry.geom_type}")
+
+            # --- Rim raqamini xaritaga qo'shish ---
+            folium.Marker(
+                location=centroid_coords,
+                icon=folium.DivIcon(html=f"""
+                    <div style="
+                        font-size: 16px;
+                        font-weight: bold;
+                        color: #8B008B;
+                        text-shadow: 
+                            -1px -1px 0 white,
+                            1px -1px 0 white,
+                            -1px 1px 0 white,
+                            1px 1px 0 white,
+                            0 0 3px white;
+                        font-family: 'Times New Roman', serif;
+                        pointer-events: none;
+                    ">{roman_number}</div>
+                """)
+            ).add_to(folium_map)
 
         return legend_data
 
