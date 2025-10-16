@@ -9,7 +9,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
 
-# Stansiya va quduqlar ro'yxati (API_code va DB_name)
+# ✅ Stansiya va quduqlar ro'yxati (API_code va DB_name)
 STATIONS_AND_WELLS = {
     "SMRM": {
         "name": "SMRM",
@@ -88,7 +88,7 @@ STATIONS_AND_WELLS = {
     "XRB": {
         "name": "Xarabek",
         "wells": [
-            {"api_well": "Xaрабек", "db_well": "Xarabek"},
+            {"api_well": "Xaрабek", "db_well": "Xarabek"},
             {"api_well": "Bobur bulog'i", "db_well": "Bobur bulog'i"}
         ]
     },
@@ -109,6 +109,7 @@ STATIONS_AND_WELLS = {
         ]
     },
 }
+
 
 LOGIN_URL = "https://api.geofizik.uz/api/login"
 DATA_URL = "https://api.geofizik.uz/api/hydrogen-seismologies"
@@ -131,7 +132,7 @@ def fetch_data_from_api(params, token):
     headers = {"Authorization": f"Bearer {token}"}
     all_data = []
     url = DATA_URL
-    
+
     try:
         while url:
             response = requests.get(url, params=params, headers=headers, timeout=30)
@@ -151,58 +152,63 @@ def fetch_data_from_api(params, token):
         return None
 
 
+# ✅ Sana turini tekshirish va normalizatsiya qilish funksiyasi
+def _parse_to_datetime(value):
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, dt.date):
+        return dt.datetime.combine(value, dt.time())
+    try:
+        return dt.datetime.strptime(value, '%d.%m.%Y')
+    except Exception:
+        return None
 
 
 def save_data_to_db(connection, data_list, db):
     """
     data_list dan olingan ma'lumotlarni faqat yangi sanalar uchun alldata jadvaliga yozadi.
     ssdi_id qiymati all_izmereniya jadvalidan olinadi.
-    alldata jadvali: date, 1, 2, ..., 560 ustunlardan iborat.
     """
     if not data_list:
-        print("Ma'lumotlar ro‘yxati bo‘sh.")
+        print("⚠️ Ma'lumotlar ro‘yxati bo‘sh.")
         return 0
 
     cursor = connection.cursor()
 
-    # 1. Bazadagi eng so‘nggi sanani olish
+    # Bazadagi eng so‘nggi sanani olish
     cursor.execute("SELECT MAX(date) FROM alldata")
     last_date_row = cursor.fetchone()
-    last_date = last_date_row[0] if last_date_row and last_date_row[0] else None
+    raw_last_date = last_date_row[0] if last_date_row and last_date_row[0] else None
+    last_date = _parse_to_datetime(raw_last_date)
 
     if last_date:
-        print(f"Bazadagi eng so‘nggi sana: {last_date.strftime('%d.%m.%Y')}")
+        print(f"🕓 Bazadagi eng so‘nggi sana: {last_date.strftime('%d.%m.%Y')}")
     else:
-        print("Bazada sana topilmadi, barcha ma'lumotlar qo‘shiladi.")
+        print("⚠️ Bazada sana topilmadi, barcha ma'lumotlar qo‘shiladi.")
 
     added_count = 0
 
-    # ✅ Ma'lumotlarni sana bo‘yicha o‘sish tartibida saralash
-    try:
-        data_list.sort(key=lambda x: dt.datetime.strptime(x.get('date'), '%d.%m.%Y'))
-    except Exception as e:
-        print(f"Sana bo‘yicha saralashda xatolik: {e}")
-
-    # 2. Ketma-ket bazaga yozish
+    # Ma'lumotlarni sanaga qarab saralash
+    parsed_items = []
     for item in data_list:
-        try:
-            formatted_date = dt.datetime.strptime(item.get('date'), '%d.%m.%Y')
-        except (ValueError, TypeError):
-            print("Sana formati noto‘g‘ri, o'tkazib yuborildi.")
-            continue
+        parsed_date = _parse_to_datetime(item.get('date'))
+        if parsed_date:
+            parsed_items.append((parsed_date, item))
+    parsed_items.sort(key=lambda x: x[0])
 
-        # faqat bazadagi oxirgi sanadan keyingilarni olish
-        if last_date and formatted_date <= last_date:
+    for parsed_date, item in parsed_items:
+        if last_date and parsed_date <= last_date:
             continue
 
         station_code = item.get('station_code')
         well_api = item.get('well_code')
 
         if not station_code or not well_api:
-            print("station_code yoki well_code topilmadi.")
             continue
 
-        # ✅ API well nomini DB well nomiga o‘tkazish
+        # API well nomini DB well nomiga o‘tkazish
         db_well = None
         station_info = STATIONS_AND_WELLS.get(station_code)
         if station_info:
@@ -212,11 +218,10 @@ def save_data_to_db(connection, data_list, db):
                     break
 
         if not db_well:
-            print(f"{station_code}/{well_api} uchun db_well topilmadi.")
+            print(f"⚠️ {station_code}/{well_api} uchun db_well topilmadi.")
             continue
 
-        # Ustun qiymatlarini saqlash uchun dict
-        values_dict = {'date': formatted_date}
+        values_dict = {'date': parsed_date}
 
         for key, value in item.items():
             if key in ['date', 'station_code', 'well_code']:
@@ -224,7 +229,6 @@ def save_data_to_db(connection, data_list, db):
             if value in [None, 0, '']:
                 continue
 
-            # all_izmereniya dan ssdi_id topish
             cursor.execute("""
                 SELECT ssdi_id FROM all_izmereniya
                 WHERE skvajina=%s AND izmereniya=%s
@@ -232,7 +236,6 @@ def save_data_to_db(connection, data_list, db):
             result = cursor.fetchone()
 
             if not result:
-                print(f"{db_well}/{key} uchun ssdi_id topilmadi.")
                 continue
 
             ssdi_id = str(result[0])
@@ -244,15 +247,18 @@ def save_data_to_db(connection, data_list, db):
         columns = ", ".join(f"`{col}`" for col in values_dict.keys())
         placeholders = ", ".join(["%s"] * len(values_dict))
         sql = f"INSERT INTO alldata ({columns}) VALUES ({placeholders})"
-        cursor.execute(sql, tuple(values_dict.values()))
-        added_count += 1
+
+        try:
+            cursor.execute(sql, tuple(values_dict.values()))
+            added_count += 1
+        except Exception as e:
+            print(f"❌ INSERT xato ({parsed_date}): {e}")
 
     connection.commit()
     cursor.close()
 
     print(f"✅ {added_count} ta yangi sana bo‘yicha yozuv qo‘shildi.")
     return added_count
-
 
 
 def index(request):
@@ -267,7 +273,6 @@ def upload(request):
     elif request.method == 'POST':
         try:
             data = json.loads(request.body)
-
             station_code = data.get('station')
             well_code = data.get('well')
             start_date = data.get('start_date')
@@ -278,8 +283,7 @@ def upload(request):
 
             auth_token = get_auth_token()
             if not auth_token:
-                return JsonResponse(
-                    {"success": False, "message": "Login muvaffaqiyatsiz yoki serverga ulanishda xato."}, status=401)
+                return JsonResponse({"success": False, "message": "Login xato yoki token olinmadi."}, status=401)
 
             all_data = []
             api_stations_to_fetch = []
@@ -291,8 +295,7 @@ def upload(request):
             else:
                 station_info = STATIONS_AND_WELLS.get(station_code)
                 if not station_info:
-                    return JsonResponse({"success": False, "message": f"Noto'g'ri stansiya kodi: {station_code}"},
-                                        status=400)
+                    return JsonResponse({"success": False, "message": f"Noto'g'ri stansiya kodi: {station_code}"}, status=400)
 
                 if well_code == "all_wells":
                     for well in station_info["wells"]:
@@ -311,13 +314,12 @@ def upload(request):
                 fetched_data = fetch_data_from_api(params, auth_token)
 
                 if fetched_data is None:
-                    return JsonResponse({"success": False, "message": "API'dan ma'lumot olishda xato yuz berdi."},
-                                        status=500)
+                    return JsonResponse({"success": False, "message": "API'dan ma'lumot olishda xato."}, status=500)
 
                 all_data.extend(fetched_data)
                 time.sleep(1)
 
-            # ✅ MySQLga ulanish va yozish
+            # ✅ MySQL ulanish
             connection = mysql.connector.connect(
                 host='localhost',
                 user='root',
@@ -331,11 +333,8 @@ def upload(request):
             return JsonResponse({"success": True, "message": f"{rows_inserted} ta yozuv bazaga saqlandi."})
 
         except json.JSONDecodeError:
-            return JsonResponse({"success": False, "message": "Noto'g'ri JSON formatida ma'lumot yuborildi."},
-                                status=400)
+            return JsonResponse({"success": False, "message": "Noto‘g‘ri JSON format."}, status=400)
         except Exception as e:
-            return JsonResponse({"success": False, "message": f"Kutilmagan xatolik: {type(e).__name__}: {str(e)}"},
-                                status=500)
+            return JsonResponse({"success": False, "message": f"Kutilmagan xatolik: {type(e).__name__}: {str(e)}"}, status=500)
 
-    return JsonResponse({"success": False, "message": "Noto'g'ri so'rov usuli."}, status=405)
-
+    return JsonResponse({"success": False, "message": "Noto‘g‘ri so‘rov usuli."}, status=405)

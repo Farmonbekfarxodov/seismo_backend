@@ -15,23 +15,37 @@
             <!-- Chapdagi logotip -->
             <a href="{% url 'index' %}" class="logo-link">
                 <div class="logo-box">
-                    <img src="{% static 'images/logo1.png' %}" alt="Logo" class="logo">
+                    <img src="{% static 'images/logo6.png' %}" alt="Logo" class="logo">
                 </div>
             </a>
 
             <!-- O'ngdagi logotip -->
             <a href="{% url 'index' %}" class="logo-link">
-                <div class="logo-box, rasm">
-                    <img src="{% static 'images/logo3.png' %}" alt="Right Logo" class="logo">
+                <div class="logo-box">
+                    <img src="{% static 'images/logo5.png' %}" alt="Right Logo" class="logo">
                 </div>
             </a>
         </div>
     </header>
 
-    <div class="container mt-4" style="padding-top: 150px;">
+    <div class="container mt-4" style="padding-top: 11.5rem;">
         {% block content %}{% endblock %}
     </div>
+    <script>
+    let lastScrollY = window.scrollY;
+    const navbar = document.getElementById("top-bar");
 
+    window.addEventListener("scroll", () => {
+      if (window.scrollY > lastScrollY) {
+        // Pastga qarab scroll qilyapti
+        navbar.classList.add("hide");
+      } else {
+        // Yuqoriga qarab scroll qilyapti
+        navbar.classList.remove("hide");
+      }
+      lastScrollY = window.scrollY;
+    });
+  </script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
@@ -45,7 +59,11 @@
         width: 100%;
         top: 0;
         left: 0;
+        transition: top 0.3s;
         z-index: 1000;
+    }
+     .top-bar.hidden {
+      top: -100px; /* Nav yashiriladi */
     }
 
     .logo-box {
@@ -56,19 +74,14 @@
         justify-content: center;
     }
 
-    .rasm img {
-        width: 200px;
-    }
+
     .logo {
         width: 100%; /* Majburiy kenglik */
         height: 100%; /* Majburiy balandlik */
         object-fit: contain; /* Proporsiyani moslashtirish, ammo kesish mumkin */
     }
 
-    /* Logotiplar orasidagi masofani kamaytirish */
-    .container.d-flex {
-        gap: 10px;
-    }
+
 
     /* Responsivlik uchun */
     @media (max-width: 576px) {
