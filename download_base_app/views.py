@@ -1,14 +1,13 @@
+import mysql.connector
 import requests
 import json
-import datetime
+import datetime as dt
 import time
 
 from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.utils import timezone
 
-from .models import HydrogenSeismology
 
 # Stansiya va quduqlar ro'yxati (API_code va DB_name)
 STATIONS_AND_WELLS = {
@@ -152,68 +151,108 @@ def fetch_data_from_api(params, token):
         return None
 
 
-def save_data_to_db(data_list):
+
+
+def save_data_to_db(connection, data_list, db):
+    """
+    data_list dan olingan ma'lumotlarni faqat yangi sanalar uchun alldata jadvaliga yozadi.
+    ssdi_id qiymati all_izmereniya jadvalidan olinadi.
+    alldata jadvali: date, 1, 2, ..., 560 ustunlardan iborat.
+    """
     if not data_list:
+        print("Ma'lumotlar ro‘yxati bo‘sh.")
         return 0
-    
-    rows_to_create = []
+
+    cursor = connection.cursor()
+
+    # 1. Bazadagi eng so‘nggi sanani olish
+    cursor.execute("SELECT MAX(date) FROM alldata")
+    last_date_row = cursor.fetchone()
+    last_date = last_date_row[0] if last_date_row and last_date_row[0] else None
+
+    if last_date:
+        print(f"Bazadagi eng so‘nggi sana: {last_date.strftime('%d.%m.%Y')}")
+    else:
+        print("Bazada sana topilmadi, barcha ma'lumotlar qo‘shiladi.")
+
+    added_count = 0
+
+    # ✅ Ma'lumotlarni sana bo‘yicha o‘sish tartibida saralash
+    try:
+        data_list.sort(key=lambda x: dt.datetime.strptime(x.get('date'), '%d.%m.%Y'))
+    except Exception as e:
+        print(f"Sana bo‘yicha saralashda xatolik: {e}")
+
+    # 2. Ketma-ket bazaga yozish
     for item in data_list:
         try:
-            formatted_date_naive = datetime.datetime.strptime(item.get('date'), '%d.%m.%Y')
-            formatted_date = timezone.make_aware(formatted_date_naive, timezone.get_current_timezone())
+            formatted_date = dt.datetime.strptime(item.get('date'), '%d.%m.%Y')
         except (ValueError, TypeError):
-            formatted_date = None
+            print("Sana formati noto‘g‘ri, o'tkazib yuborildi.")
+            continue
 
-        api_station_code = item.get('station_code')
-        api_well_code = item.get('well_code')
+        # faqat bazadagi oxirgi sanadan keyingilarni olish
+        if last_date and formatted_date <= last_date:
+            continue
 
-        db_station_name = None
-        db_well_name = None
+        station_code = item.get('station_code')
+        well_api = item.get('well_code')
 
-        
-        station_info = STATIONS_AND_WELLS.get(api_station_code)
+        if not station_code or not well_api:
+            print("station_code yoki well_code topilmadi.")
+            continue
+
+        # ✅ API well nomini DB well nomiga o‘tkazish
+        db_well = None
+        station_info = STATIONS_AND_WELLS.get(station_code)
         if station_info:
-            db_station_name = station_info["name"]
             for well in station_info["wells"]:
-                if well["api_well"] == api_well_code:
-                    db_well_name = well["db_well"]
+                if well["api_well"] == well_api:
+                    db_well = well["db_well"]
                     break
 
-        if not db_station_name or not db_well_name:
-            continue  
-        
-        new_record = HydrogenSeismology(
-            station_code=db_station_name,  
-            well_code=db_well_name,        
-            date=formatted_date,
-            he=item.get('he'),
-            h2=item.get('h2'),
-            o2=item.get('o2'),
-            n2=item.get('n2'),
-            ch4=item.get('ch4'),
-            co2=item.get('co2'),
-            c2h6=item.get('c2h6'),
-            ph=item.get('ph'),
-            eh=item.get('eh'),
-            hco3=item.get('hco3'),
-            ci2=item.get('ci2'),
-            sio2=item.get('sio2'),
-            f=item.get('f'),
-            i=item.get('i'),
-            b2o3=item.get('b2o3'),
-            dis_rn=item.get('dis_rn'),
-            nep_rn=item.get('nep_rn'),
-            he2=item.get('he2'),
-            t0=item.get('t0'),
-            q=item.get('q'),
-            p=item.get('p'),
-            eocc=item.get('eocc'),
-            nep_t0=item.get('nep_t0')
-        )
-        rows_to_create.append(new_record)
-        
-    HydrogenSeismology.objects.bulk_create(rows_to_create)
-    return len(rows_to_create)
+        if not db_well:
+            print(f"{station_code}/{well_api} uchun db_well topilmadi.")
+            continue
+
+        # Ustun qiymatlarini saqlash uchun dict
+        values_dict = {'date': formatted_date}
+
+        for key, value in item.items():
+            if key in ['date', 'station_code', 'well_code']:
+                continue
+            if value in [None, 0, '']:
+                continue
+
+            # all_izmereniya dan ssdi_id topish
+            cursor.execute("""
+                SELECT ssdi_id FROM all_izmereniya
+                WHERE skvajina=%s AND izmereniya=%s
+            """, (db_well, key))
+            result = cursor.fetchone()
+
+            if not result:
+                print(f"{db_well}/{key} uchun ssdi_id topilmadi.")
+                continue
+
+            ssdi_id = str(result[0])
+            values_dict[ssdi_id] = value
+
+        if len(values_dict) <= 1:
+            continue
+
+        columns = ", ".join(f"`{col}`" for col in values_dict.keys())
+        placeholders = ", ".join(["%s"] * len(values_dict))
+        sql = f"INSERT INTO alldata ({columns}) VALUES ({placeholders})"
+        cursor.execute(sql, tuple(values_dict.values()))
+        added_count += 1
+
+    connection.commit()
+    cursor.close()
+
+    print(f"✅ {added_count} ta yangi sana bo‘yicha yozuv qo‘shildi.")
+    return added_count
+
 
 
 def index(request):
@@ -228,7 +267,7 @@ def upload(request):
     elif request.method == 'POST':
         try:
             data = json.loads(request.body)
-            
+
             station_code = data.get('station')
             well_code = data.get('well')
             start_date = data.get('start_date')
@@ -239,11 +278,12 @@ def upload(request):
 
             auth_token = get_auth_token()
             if not auth_token:
-                return JsonResponse({"success": False, "message": "Login muvaffaqiyatsiz yoki serverga ulanishda xato."}, status=401)
+                return JsonResponse(
+                    {"success": False, "message": "Login muvaffaqiyatsiz yoki serverga ulanishda xato."}, status=401)
 
             all_data = []
             api_stations_to_fetch = []
-            
+
             if station_code == "all":
                 for st_code, station_info in STATIONS_AND_WELLS.items():
                     for well in station_info["wells"]:
@@ -251,8 +291,9 @@ def upload(request):
             else:
                 station_info = STATIONS_AND_WELLS.get(station_code)
                 if not station_info:
-                    return JsonResponse({"success": False, "message": f"Noto'g'ri stansiya kodi: {station_code}"}, status=400)
-                
+                    return JsonResponse({"success": False, "message": f"Noto'g'ri stansiya kodi: {station_code}"},
+                                        status=400)
+
                 if well_code == "all_wells":
                     for well in station_info["wells"]:
                         api_stations_to_fetch.append({"station_code": station_code, "well_code": well["api_well"]})
@@ -261,26 +302,40 @@ def upload(request):
 
             for fetch_item in api_stations_to_fetch:
                 params = {
-                    'station_code': fetch_item["station_code"], 
-                    'well_code': fetch_item["well_code"], 
-                    'date_start': start_date, 
+                    'station_code': fetch_item["station_code"],
+                    'well_code': fetch_item["well_code"],
+                    'date_start': start_date,
                     'date_end': end_date
                 }
-                
+
                 fetched_data = fetch_data_from_api(params, auth_token)
-                
+
                 if fetched_data is None:
-                    return JsonResponse({"success": False, "message": "API'dan ma'lumot olishda xato yuz berdi. Iltimos, server loglarini tekshiring."}, status=500)
-                
+                    return JsonResponse({"success": False, "message": "API'dan ma'lumot olishda xato yuz berdi."},
+                                        status=500)
+
                 all_data.extend(fetched_data)
                 time.sleep(1)
 
-            rows_inserted = save_data_to_db(all_data)
+            # ✅ MySQLga ulanish va yozish
+            connection = mysql.connector.connect(
+                host='localhost',
+                user='root',
+                password='1111',
+                database='seismik'
+            )
+
+            rows_inserted = save_data_to_db(connection, all_data, 'seismik')
+            connection.close()
+
             return JsonResponse({"success": True, "message": f"{rows_inserted} ta yozuv bazaga saqlandi."})
-        
+
         except json.JSONDecodeError:
-            return JsonResponse({"success": False, "message": "Noto'g'ri JSON formatida ma'lumot yuborildi."}, status=400)
+            return JsonResponse({"success": False, "message": "Noto'g'ri JSON formatida ma'lumot yuborildi."},
+                                status=400)
         except Exception as e:
-            return JsonResponse({"success": False, "message": f"Kutilmagan xatolik: {type(e).__name__}: {str(e)}"}, status=500)
-            
+            return JsonResponse({"success": False, "message": f"Kutilmagan xatolik: {type(e).__name__}: {str(e)}"},
+                                status=500)
+
     return JsonResponse({"success": False, "message": "Noto'g'ri so'rov usuli."}, status=405)
+
