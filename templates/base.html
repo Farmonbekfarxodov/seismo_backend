@@ -2,27 +2,75 @@
 <!DOCTYPE html>
 <html lang="uz">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Seysmik Tahlil</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="{% static 'css/style.css' %}">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="{% static 'css/style.css' %}" />
+    <style>
+        .top-bar {
+            background: linear-gradient(90deg, #003366, #001a33);
+            padding: 10px 20px;
+            border-bottom: 3px solid #002244;
+            position: fixed;
+            width: 100%;
+            top: 0;
+            left: 0;
+            transition: top 0.3s ease;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+        }
+        .top-bar.hide {
+            top: -100px; /* Top-bar yashirinadi */
+        }
+
+        .logo-box {
+            width: 200px;
+            height: 75px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .logo {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        /* Responsivlik uchun */
+        @media (max-width: 576px) {
+            .logo-box {
+                width: 150px;
+                height: 55px;
+            }
+
+            .top-bar {
+                padding: 8px 10px;
+            }
+
+            .container {
+                padding-top: 70px !important;
+            }
+        }
+    </style>
 </head>
 <body>
     <!-- Top-bar -->
-    <header class="top-bar">
+    <header id="top-bar" class="top-bar">
         <div class="container d-flex align-items-center justify-content-between">
             <!-- Chapdagi logotip -->
             <a href="{% url 'index' %}" class="logo-link">
                 <div class="logo-box">
-                    <img src="{% static 'images/logo6.png' %}" alt="Logo" class="logo">
+                    <img src="{% static 'images/logo6.png' %}" alt="Logo" class="logo" />
                 </div>
             </a>
 
             <!-- O'ngdagi logotip -->
             <a href="{% url 'index' %}" class="logo-link">
                 <div class="logo-box">
-                    <img src="{% static 'images/logo5.png' %}" alt="Right Logo" class="logo">
+                    <img src="{% static 'images/logo5.png' %}" alt="Right Logo" class="logo" />
                 </div>
             </a>
         </div>
@@ -31,71 +79,26 @@
     <div class="container mt-4" style="padding-top: 11.5rem;">
         {% block content %}{% endblock %}
     </div>
-    <script>
-    let lastScrollY = window.scrollY;
-    const navbar = document.getElementById("top-bar");
 
-    window.addEventListener("scroll", () => {
-      if (window.scrollY > lastScrollY) {
-        // Pastga qarab scroll qilyapti
-        navbar.classList.add("hide");
-      } else {
-        // Yuqoriga qarab scroll qilyapti
-        navbar.classList.remove("hide");
-      }
-      lastScrollY = window.scrollY;
-    });
-  </script>
+    <script>
+        let lastScrollY = window.scrollY;
+        const topBar = document.getElementById("top-bar");
+
+        window.addEventListener("scroll", () => {
+            let currentScroll = window.scrollY;
+
+            if (currentScroll > lastScrollY) {
+                // Pastga scroll — top-bar chiqsin
+                topBar.classList.remove("hide");
+            } else {
+                // Yuqoriga scroll — top-bar yashirinadi
+                topBar.classList.add("hide");
+            }
+
+            lastScrollY = currentScroll;
+        });
+    </script>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
-
-<style>
-    .top-bar {
-        background: linear-gradient(90deg, #003366, #001a33);
-        padding: 10px 20px;
-        border-bottom: 3px solid #002244;
-        position: fixed;
-        width: 100%;
-        top: 0;
-        left: 0;
-        transition: top 0.3s;
-        z-index: 1000;
-    }
-     .top-bar.hidden {
-      top: -100px; /* Nav yashiriladi */
-    }
-
-    .logo-box {
-        width: 200px;
-        height: 75px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-
-    .logo {
-        width: 100%; /* Majburiy kenglik */
-        height: 100%; /* Majburiy balandlik */
-        object-fit: contain; /* Proporsiyani moslashtirish, ammo kesish mumkin */
-    }
-
-
-
-    /* Responsivlik uchun */
-    @media (max-width: 576px) {
-        .logo-box {
-            width: 150px;
-            height: 55px;
-        }
-
-        .top-bar {
-            padding: 8px 10px;
-        }
-
-        .container {
-            padding-top: 70px !important;
-        }
-    }
-</style>
