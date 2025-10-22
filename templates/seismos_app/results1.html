@@ -166,7 +166,7 @@
         <h2>SEYSMOPROGNOSTIK TAHLIL</h2>
     </div>
 
-    <form method="post" action="{% url 'seismos:results' %}" class="filter-panel">
+    <form method="post" action="{% url 'seismos:results' %}"  target="_blank" class="filter-panel">
         {% csrf_token %}
         <div class="mx-3">
             <div class="menu-row">
@@ -278,11 +278,11 @@
     {% endif %}
 </div>
 
-<!-- Spinner Overlay -->
-<div id="overlay">
-    <div class="spinner"></div>
-    <div style="margin-top: 15px;">Yuklanmoqda...</div>
-</div>
+{#<!-- Spinner Overlay -->#}
+{#<div id="overlay">#}
+{#    <div class="spinner"></div>#}
+{#    <div style="margin-top: 15px;">Yuklanmoqda...</div>#}
+{#</div>#}
 
 <!-- SCRIPT SECTION -->
 <script>

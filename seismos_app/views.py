@@ -1404,7 +1404,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                     (6, "#3399ff"),
                     (7, "#0033cc"),
                 ]
-                for M_value, color in radii_data:
+                for     M_value, color in radii_data:
                     #print(M_value,mlgr_val)
                     R_km = float(10 ** (M_value / mlgr_val))
                     folium.Circle(
@@ -1751,7 +1751,7 @@ def results_view(request):
         user_end_date = None
 
     # Default sanalar (foydalanuvchi kiritmasa)
-    default_start_date = pd.to_datetime("2020-01-01")
+    default_start_date = pd.to_datetime("1984-01-01")
     today = pd.to_datetime("today").normalize()
 
     # X-o'qi uchun sanalar
