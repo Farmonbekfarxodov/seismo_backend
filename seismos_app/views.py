@@ -1236,9 +1236,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     try:
         folium.TileLayer(
             tiles='https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png',
-            
+
             attr='Map tiles by <a href="http://stamen.com">Stamen Design</a>, under <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. Data by <a href="http://openstreetmap.org">OpenStreetMap</a>, under <a href="http://creativecommons.org/licenses/by-sa/3.0">CC BY SA</a>.',
-            
+
             name='Terrain'
         ).add_to(m)
     except:
@@ -1247,9 +1247,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     try:
         folium.TileLayer(
             tiles='https://cartodb-basemaps-{s}.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png',
-            
+
             attr='© OpenStreetMap contributors © CARTO',
-            
+
             name='Light Map'
         ).add_to(m)
     except:
@@ -1258,9 +1258,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     try:
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            
+
             attr='Tiles © Esri — Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
-            
+
             name='Satellite',
             overlay=False,
             control=True
@@ -1288,7 +1288,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     else:
         logging.warning("Seysmogen zonalar yuklanmadi")
 
-    # Barcha skvajinalarni xaritaga qo'shish (kulrang rangda)
+    # Barcha skvajinalarni xaritaga qo'shish
     for well_name, (lat, lon) in all_wells.items():
         if well_name not in selected_well_names:
             # Bazadan to'liq ma'lumotlarni olish
@@ -1338,87 +1338,82 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 icon=triangle_icon,
             ).add_to(m)
 
+        # Tanlangan skvajinalarni xaritaga qo'shish
+        for key in selected_keys:
+            _, skvajina = key.split(" | ")
+            lat, lon = well_coords.get(skvajina, (None, None))
+            if lat is not None and lon is not None:
+                # Bazadan to'liq ma'lumotlarni olish
+                well_info = get_well_detailed_info(skvajina)
 
-
-    # Tanlangan skvajinalarni xaritaga qo'shish (pushti rangda)
-    for key in selected_keys:
-        _, skvajina = key.split(" | ")
-        lat, lon = well_coords.get(skvajina, (None, None))
-        if lat is not None and lon is not None:
-            # Bazadan to'liq ma'lumotlarni olish
-            well_info = get_well_detailed_info(skvajina)  # Yangi funksiya
-
-            # Filtrlangan zilzilalar sonini hisoblash
-            well_earthquakes = len([eq for eq in filtered_earthquakes_by_well if
-                                    eq['skvajina'].iloc[0] == skvajina]) if filtered_earthquakes_by_well else 0
-
-            # HTML popup yaratish
-            popup_html = f"""
-                <div style="width: 350px; font-family: Arial; font-size: 12px;">
-                    <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <tr style="background-color: #e3f2fd;">
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Nomi:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Quduq turi:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #e3f2fd;">
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Grunt:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('grunt', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Chuqurlik:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #e3f2fd;">
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Suv qatlami:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
+                # HTML popup yaratish
+                popup_html = f"""
+                    <div style="width: 350px; font-family: Arial; font-size: 12px;">
+                        <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tr style="background-color: #e3f2fd;">
+                                <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Nomi:</td>
+                                <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Quduq turi:</td>
+                                <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                            </tr>
+                            <tr style="background-color: #e3f2fd;">
+                                <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Grunt:</td>
+                                <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('grunt', 'Ma\'lumot yo\'q')}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Chuqurlik:</td>
+                                <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')}</td>
+                            </tr>
+                            <tr style="background-color: #e3f2fd;">
+                                <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Suv qatlami:</td>
+                                <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
+                            </tr>
                         </table>
-                    <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
-                </div>
+                        <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
+                    </div>
                 """
 
-            tooltip_text = f"<b>Tanlangan skvajina:</b> {skvajina}<br>Batafsil ma'lumot uchun bosing"
+                tooltip_text = f"<b>Tanlangan skvajina:</b> {skvajina}<br>Batafsil ma'lumot uchun bosing"
 
-            triangle_icon = folium.DivIcon(
-                html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid blue;"></div>',
-                icon_size=(20, 20),
-                icon_anchor=(10, 20)
-            )
+                triangle_icon = folium.DivIcon(
+                    html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid blue;"></div>',
+                    icon_size=(20, 20),
+                    icon_anchor=(10, 20)
+                )
 
-            folium.Marker(
-                location=[lat, lon],
-                tooltip=tooltip_text,
-                popup=folium.Popup(popup_html, max_width=370),
-                icon=triangle_icon,
-            ).add_to(m)
-            # --- Radiuslar faqat shu quduq uchun bir marta ---
-            try:
-                mlgr_val = min_mlgr if min_mlgr > 0 else 0.5
-                radii_data = [
-                    (5, "#66ccff"),
-                    (6, "#3399ff"),
-                    (7, "#0033cc"),
-                ]
-                for     M_value, color in radii_data:
-                    #print(M_value,mlgr_val)
-                    R_km = float(10 ** (M_value / mlgr_val))
-                    folium.Circle(
-                        radius=R_km*1000,
-                        location=[lat, lon],
-                        color=color,
-                        fill=False,
-                        weight=2,
-                        tooltip=f"M={M_value}, R={R_km:.1f} km (M/lgR={mlgr_val})",
-                    ).add_to(m)
-            except Exception as e:
-                logging.error(f"Aylana chizishda xato ({skvajina}): {e}")
+                folium.Marker(
+                    location=[lat, lon],
+                    tooltip=tooltip_text,
+                    popup=folium.Popup(popup_html, max_width=370),
+                    icon=triangle_icon,
+                ).add_to(m)
 
-        # Filtrlangan zilzilalarni xaritaga qo'shish
+                # --- Radiuslar har bir tanlangan skvajina uchun ---
+                try:
+                    mlgr_val = min_mlgr if min_mlgr > 0 else 0.5
+                    radii_data = [
+                        (5, "#66ccff"),
+                        (6, "#3399ff"),
+                        (7, "#0033cc"),
+                    ]
+                    for M_value, color in radii_data:
+                        R_km = float(10 ** (M_value / mlgr_val))
+                        folium.Circle(
+                            radius=R_km * 1000,
+                            location=[lat, lon],
+                            color=color,
+                            fill=False,
+                            weight=2,
+                            tooltip=f"M={M_value}, R={R_km:.1f} km (M/lgR={mlgr_val})",
+                        ).add_to(m)
+                        logging.info(f"Radius qo'shildi: {skvajina} - M={M_value}, R={R_km:.1f} km")
+                except Exception as e:
+                    logging.error(f"Aylana chizishda xato ({skvajina}): {e}")
+
+        # LOOP DAN TASHQARIDA - Filtrlangan zilzilalarni xaritaga qo'shish
         if not all_filtered_earthquakes.empty:
             for idx, row in all_filtered_earthquakes.iterrows():
                 lat = row.get(LATITUDE_COLUMN, None)
@@ -1437,7 +1432,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
 
                 if mag_val is not None and not np.isnan(
                         mag_val) and mag_val > 0 and lat is not None and lon is not None:
-                    # Tooltip uchun HTML
                     tooltip_html = f"""
                         <b>Zilzila</b><br>
                         Sana: {date_val}<br>
@@ -1446,7 +1440,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                         Masofa (km): {distance_val:.1f}<br>
                         M/lgR: {mlgr_val:.2f}<br>
                     """
-                    # Magnitudaga qarab rang va radius
+
                     if mag_val >= 6:
                         color = "darkred"
                         radius = mag_val * 3
@@ -1460,7 +1454,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                         color = "yellow"
                         radius = mag_val * 1.5
 
-                    # CircleMarker qo'shish (tooltip bilan)
                     marker = folium.CircleMarker(
                         location=[lat, lon],
                         radius=radius,
@@ -1473,7 +1466,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                         tooltip=tooltip_html
                     ).add_to(m)
 
-                    # JavaScript kodi: Click bo'lganda radius aylanasini chizish yoki o'chirish
                     js_code = f"""
                     <script>
                     document.addEventListener("DOMContentLoaded", function() {{
@@ -1495,7 +1487,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                                 }}
                                 var R_km = Math.pow(10, {mag_val} / {min_mlgr});
                                 var circle = L.circle([{lat}, {lon}], {{
-                                    radius: R_km * 1000,  // km to meters
+                                    radius: R_km * 1000,
                                     color: '#66ccff',
                                     weight: 2,
                                     fill: false
@@ -1508,7 +1500,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                     """
                     m.get_root().html.add_child(folium.Element(js_code))
 
-        # Dinamik Legend
+        # LOOP DAN TASHQARIDA - Legend
         legend_items = [
             '<p><b>Xarita elementlari:</b></p>',
             '<p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>',
@@ -1533,7 +1525,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         folium.LayerControl().add_to(m)
 
         return m._repr_html_()
-
 def selection_view(request):
     """
     Handles the selection of wells and parametrs for analysis.
@@ -2036,7 +2027,7 @@ def results_view(request):
             title_suffix = " (2020 - hozir)"
 
         fig.update_layout(
-            title_text="Tahlil natijalari" + title_suffix,
+            title_text="Tahlil natijalari",
             height=total_figure_height,
             width=None,
             autosize=True,
