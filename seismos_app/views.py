@@ -12,6 +12,8 @@ import glob
 
 from datetime import timedelta
 from math import pi, sin, cos, atan2, sqrt
+
+from dateutil.relativedelta import relativedelta
 from django.conf import settings
 from django.shortcuts import render, redirect
 from django.core.files.storage import FileSystemStorage
@@ -1765,7 +1767,7 @@ def results_view(request):
 
     # X-o'qi uchun sanalar
     x_axis_start = user_start_date if user_start_date else default_start_date
-    x_axis_end = user_end_date if user_end_date else today
+    x_axis_end = user_end_date if user_end_date else today + relativedelta(months=2)
 
     engine = None
     conn = None
@@ -2040,7 +2042,8 @@ def results_view(request):
             if filter_end_date:
                 title_suffix = f" ({filter_start_date} - {filter_end_date})"
             else:
-                title_suffix = f" ({filter_start_date} - {pd.Timestamp.today().strftime('%Y-%m-%d')})"
+                title_suffix = f" ({filter_start_date} - {(today + relativedelta(months=2)).strftime('%Y-%m-%d')})"  # Title da ham ko'rsatish
+
         else:
             title_suffix = " (2020 - hozir)"
 
