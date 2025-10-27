@@ -1658,6 +1658,24 @@ def results_view(request):
         use_catalog = request.session.get("use_catalog", False)
         median_window = request.session.get("median_window", None)
 
+    # Tanlangan skvajinalar nomini olish
+    selected_well_names = []
+    for key in selected_keys:
+         if " | " in key:
+            _, well_name = key.split(" | ")
+            selected_well_names.append(well_name)
+
+    # Page title uchun skvajinalar nomini birlashtirish
+    if selected_well_names:
+        if len(selected_well_names) == 1:
+            page_title = f"{selected_well_names[0]} - Seysmik Tahlil"
+        elif len(selected_well_names) <= 3:
+            page_title = f"{', '.join(selected_well_names)} - Seysmik Tahlil"
+        else:
+            page_title = f"{', '.join(selected_well_names[:3])} va boshqalar - Seysmik Tahlil"
+    else:
+        page_title = "Seysmik Tahlil"
+
     # Input validatsiyasi
     if not all([
         selected_keys,
@@ -2088,6 +2106,8 @@ def results_view(request):
             "wells": lst_stansiya.keys(),
             "params": all_params,
             "selected_wells": selected_keys,
+            "selected_well_names": selected_well_names,
+            "page_title": page_title,
             "current_min_mag": min_mag,
             "current_sigma": btn_value,
             "current_min_mlgr": min_mlgr,
