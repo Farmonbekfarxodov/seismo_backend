@@ -1160,12 +1160,14 @@ def get_well_detailed_info(well_name):
             engine.dispose()
 
 
-
 def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, min_mlgr):
     """
     Folium yordamida interaktiv xarita yaratadi va unga barcha
     skvajinalar, tanlangan skvajinalar, filtrlangan zilzilalar va
     BARCHA yer yoriqlarini qo'shadi.
+
+    YANGI: Dastlab aylanalar ko'rsatiladi, hover da popup ma'lumotlari,
+    click da faqat aylanalar toggle qilinadi
     """
     all_wells = get_all_wells_coordinates()
 
@@ -1231,16 +1233,14 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         location=[center_lat, center_lon],
         zoom_start=8,
         tiles="OpenStreetMap",
-        attr = "© OpenStreetMap contributors"
+        attr="© OpenStreetMap contributors"
     )
 
-    # Turli xil fon xaritalari qo'shish (xatolikni oldini olish uchun try-except)
+    # Turli xil fon xaritalari qo'shish
     try:
         folium.TileLayer(
             tiles='https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png',
-
             attr='Map tiles by <a href="http://stamen.com">Stamen Design</a>, under <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. Data by <a href="http://openstreetmap.org">OpenStreetMap</a>, under <a href="http://creativecommons.org/licenses/by-sa/3.0">CC BY SA</a>.',
-
             name='Terrain'
         ).add_to(m)
     except:
@@ -1249,9 +1249,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     try:
         folium.TileLayer(
             tiles='https://cartodb-basemaps-{s}.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png',
-
             attr='© OpenStreetMap contributors © CARTO',
-
             name='Light Map'
         ).add_to(m)
     except:
@@ -1260,9 +1258,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     try:
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-
             attr='Tiles © Esri — Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
-
             name='Satellite',
             overlay=False,
             control=True
@@ -1270,7 +1266,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     except:
         logging.warning("Satellite tiles yuklanmadi")
 
-    # BARCHA YER YORIQLARINI QO'SHISH - Avtomatik
+    # YER YORIQLARINI QO'SHISH
     logging.info("Yer yoriqlarini yuklash boshlandi...")
     all_cracks = load_all_cracks_shapefiles()
     crack_colors = {}
@@ -1290,14 +1286,13 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     else:
         logging.warning("Seysmogen zonalar yuklanmadi")
 
-    # Barcha skvajinalarni xaritaga qo'shish
+    # Barcha skvajinalarni xaritaga qo'shish (TANLANMAGANLAR)
     for well_name, (lat, lon) in all_wells.items():
         if well_name not in selected_well_names:
-            # Bazadan to'liq ma'lumotlarni olish
-            well_info = get_well_detailed_info(well_name)  # Yangi funksiya
+            well_info = get_well_detailed_info(well_name)
 
-            # HTML popup yaratish
-            popup_html = f"""
+            # Tooltip (hover) - popup ma'lumotlarini ko'rsatadi
+            tooltip_html = f"""
                 <div style="width: 300px; font-family: Arial; font-size: 12px;">
                     <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
                     <table style="width: 100%; border-collapse: collapse;">
@@ -1321,212 +1316,241 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                             <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Suv qatlami:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
                         </tr>
-                        <tr>
-                        </table>
+                    </table>
                     <p style="margin-top: 10px; color: #6c757d; font-style: italic;">Tanlanmagan skvajina</p>
                 </div>
-                """
+            """
 
-            tooltip_text = f"<b>Skvajina:</b> {well_name}<br>(Tanlanmagan)<br>Batafsil ma'lumot uchun bosing"
             triangle_icon = folium.DivIcon(
                 html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid lightblue;"></div>',
                 icon_size=(20, 20),
                 icon_anchor=(10, 20)
             )
+
             folium.Marker(
                 location=[lat, lon],
-                tooltip=tooltip_text,
-                popup=folium.Popup(popup_html, max_width=370),
+                tooltip=folium.Tooltip(tooltip_html, sticky=True),
                 icon=triangle_icon,
             ).add_to(m)
 
-        # Tanlangan skvajinalarni xaritaga qo'shish
-        for key in selected_keys:
-            _, skvajina = key.split(" | ")
-            lat, lon = well_coords.get(skvajina, (None, None))
-            if lat is not None and lon is not None:
-                # Bazadan to'liq ma'lumotlarni olish
-                well_info = get_well_detailed_info(skvajina)
+    # Tanlangan skvajinalarni xaritaga qo'shish
+    for key in selected_keys:
+        _, skvajina = key.split(" | ")
+        lat, lon = well_coords.get(skvajina, (None, None))
+        if lat is not None and lon is not None:
+            well_info = get_well_detailed_info(skvajina)
 
-                # HTML popup yaratish
-                popup_html = f"""
-                    <div style="width: 350px; font-family: Arial; font-size: 12px;">
-                        <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
-                        <table style="width: 100%; border-collapse: collapse;">
-                            <tr style="background-color: #e3f2fd;">
-                                <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Nomi:</td>
-                                <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
-                            </tr>
-                            <tr>
-                                <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Quduq turi:</td>
-                                <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
-                            </tr>
-                            <tr style="background-color: #e3f2fd;">
-                                <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Grunt:</td>
-                                <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('grunt', 'Ma\'lumot yo\'q')}</td>
-                            </tr>
-                            <tr>
-                                <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Chuqurlik:</td>
-                                <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')}</td>
-                            </tr>
-                            <tr style="background-color: #e3f2fd;">
-                                <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Suv qatlami:</td>
-                                <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
-                            </tr>
-                        </table>
-                        <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
-                    </div>
-                """
+            # Tooltip (hover) - popup ma'lumotlarini ko'rsatadi
+            tooltip_html = f"""
+                <div style="width: 350px; font-family: Arial; font-size: 12px;">
+                    <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr style="background-color: #e3f2fd;">
+                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Nomi:</td>
+                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Quduq turi:</td>
+                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr style="background-color: #e3f2fd;">
+                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Grunt:</td>
+                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('grunt', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Chuqurlik:</td>
+                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr style="background-color: #e3f2fd;">
+                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Suv qatlami:</td>
+                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                    </table>
+                    <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
+                </div>
+            """
 
-                tooltip_text = f"<b>Tanlangan skvajina:</b> {skvajina}<br>Batafsil ma'lumot uchun bosing"
+            triangle_icon = folium.DivIcon(
+                html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid blue;"></div>',
+                icon_size=(20, 20),
+                icon_anchor=(10, 20)
+            )
 
-                triangle_icon = folium.DivIcon(
-                    html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid blue;"></div>',
-                    icon_size=(20, 20),
-                    icon_anchor=(10, 20)
-                )
+            folium.Marker(
+                location=[lat, lon],
+                tooltip=folium.Tooltip(tooltip_html, sticky=True),
+                icon=triangle_icon,
+            ).add_to(m)
 
-                folium.Marker(
-                    location=[lat, lon],
-                    tooltip=tooltip_text,
-                    popup=folium.Popup(popup_html, max_width=370),
-                    icon=triangle_icon,
-                ).add_to(m)
+            # JavaScript yordamida radiuslarni dastlab ko'rsatish va click bilan boshqarish
+            try:
+                mlgr_val = min_mlgr if min_mlgr > 0 else 0.5
+                radii_data = [
+                    (5, "#66ccff"),
+                    (6, "#3399ff"),
+                    (7, "#0033cc"),
+                ]
 
-                # --- Radiuslar har bir tanlangan skvajina uchun ---
-                try:
-                    mlgr_val = min_mlgr if min_mlgr > 0 else 0.5
-                    radii_data = [
-                        (5, "#66ccff"),
-                        (6, "#3399ff"),
-                        (7, "#0033cc"),
-                    ]
-                    for M_value, color in radii_data:
-                        R_km = float(10 ** (M_value / mlgr_val))
-                        folium.Circle(
-                            radius=R_km * 1000,
-                            location=[lat, lon],
-                            color=color,
-                            fill=False,
-                            weight=2,
-                            tooltip=f"M={M_value}, R={R_km:.1f} km (M/lgR={mlgr_val})",
-                        ).add_to(m)
-                        logging.info(f"Radius qo'shildi: {skvajina} - M={M_value}, R={R_km:.1f} km")
-                except Exception as e:
-                    logging.error(f"Aylana chizishda xato ({skvajina}): {e}")
+                # Har bir radius uchun ma'lumot tayyorlash
+                circles_info = []
+                for M_value, color in radii_data:
+                    R_km = float(10 ** (M_value / mlgr_val))
+                    circles_info.append({
+                        'radius': R_km * 1000,
+                        'color': color,
+                        'M': M_value,
+                        'R_km': R_km,
+                        'mlgr': mlgr_val
+                    })
 
-        # LOOP DAN TASHQARIDA - Filtrlangan zilzilalarni xaritaga qo'shish
-        if not all_filtered_earthquakes.empty:
-            for idx, row in all_filtered_earthquakes.iterrows():
-                lat = row.get(LATITUDE_COLUMN, None)
-                lon = row.get(LONGITUDE_COLUMN, None)
-                mag_val = row.get(MAIN_MAGNITUDE_COLUMN, None)
-                date_val = row.get(DATE_COLUMN, "Nomalum")
-                try:
-                    date_val = pd.to_datetime(date_val).strftime("%d.%m.%Y")
-                except Exception:
-                    date_val = "Nomalum"
-                if isinstance(date_val, (pd.Timestamp, datetime.datetime)):
-                    date_val = date_val.strftime("%d.%m.%Y")
-                distance_val = row.get("R(km)", "Nomalum")
-                mlgr_val = row.get("M/lgR", "Nomalum")
-                depth_val = row.get("Depth", "Nomalum")
+                # JavaScript kodi - radiuslarni dastlab ko'rsatish va toggle qilish
+                js_code = f"""
+                <script>
+                (function() {{
+                    var wellLat = {lat};
+                    var wellLon = {lon};
+                    var wellName = "{skvajina}";
+                    var circlesInfo = {circles_info};
+                    var circlesLayer = null;
+                    var isVisible = true;
 
-                if mag_val is not None and not np.isnan(
-                        mag_val) and mag_val > 0 and lat is not None and lon is not None:
-                    tooltip_html = f"""
-                        <b>Zilzila</b><br>
-                        Sana: {date_val}<br>
-                        Magnituda (Mb): {mag_val:.2f}<br>
-                        Chuqurlik (km): {depth_val}<br>
-                        Masofa (km): {distance_val:.1f}<br>
-                        M/lgR: {mlgr_val:.2f}<br>
-                    """
-
-                    if mag_val >= 6:
-                        color = "darkred"
-                        radius = mag_val * 3
-                    elif mag_val >= 5:
-                        color = "red"
-                        radius = mag_val * 2.5
-                    elif mag_val >= 4:
-                        color = "orange"
-                        radius = mag_val * 2
-                    else:
-                        color = "yellow"
-                        radius = mag_val * 1.5
-
-                    marker = folium.CircleMarker(
-                        location=[lat, lon],
-                        radius=radius,
-                        color=color,
-                        fill=True,
-                        fill_color=color,
-                        fill_opacity=0.7,
-                        stroke=True,
-                        weight=2,
-                        tooltip=tooltip_html
-                    ).add_to(m)
-
-                    js_code = f"""
-                    <script>
                     document.addEventListener("DOMContentLoaded", function() {{
                         var map = window.map || Object.values(window).find(v => v instanceof L.Map);
-                        var marker = L.circleMarker([{lat}, {lon}], {{
-                            radius: {radius},
-                            color: '{color}',
-                            fillColor: '{color}',
-                            fillOpacity: 0.7
-                        }}).addTo(map).bindTooltip(`{tooltip_html}`, {{sticky: true}});
+                        if (!map) {{
+                            console.error("Xarita topilmadi");
+                            return;
+                        }}
 
-                        marker.on('click', function() {{
-                            if (window.currentCircle && window.currentCircle._latlng.lat === {lat} && window.currentCircle._latlng.lng === {lon}) {{
-                                map.removeLayer(window.currentCircle);
-                                window.currentCircle = null;
-                            }} else {{
-                                if (window.currentCircle) {{
-                                    map.removeLayer(window.currentCircle);
+                        // Dastlab aylanalarni ko'rsatish
+                        circlesLayer = L.layerGroup();
+                        circlesInfo.forEach(function(info) {{
+                            var circle = L.circle([wellLat, wellLon], {{
+                                radius: info.radius,
+                                color: info.color,
+                                weight: 2,
+                                fill: false,
+                                opacity: 0.7
+                            }});
+
+                            circle.bindTooltip(
+                                "M=" + info.M + ", R=" + info.R_km.toFixed(1) + " km (M/lgR=" + info.mlgr + ")",
+                                {{permanent: false, direction: 'top'}}
+                            );
+
+                            circlesLayer.addLayer(circle);
+                        }});
+                        circlesLayer.addTo(map);
+
+                        // Barcha markerlarni topish
+                        map.eachLayer(function(layer) {{
+                            if (layer instanceof L.Marker) {{
+                                var latlng = layer.getLatLng();
+                                if (Math.abs(latlng.lat - wellLat) < 0.0001 && 
+                                    Math.abs(latlng.lng - wellLon) < 0.0001) {{
+
+                                    // Markerga click listener qo'shish (faqat aylanalarni toggle qilish)
+                                    layer.on('click', function(e) {{
+                                        L.DomEvent.stopPropagation(e);
+
+                                        if (isVisible) {{
+                                            // Aylanalarni yashirish
+                                            map.removeLayer(circlesLayer);
+                                            isVisible = false;
+                                        }} else {{
+                                            // Aylanalarni ko'rsatish
+                                            circlesLayer.addTo(map);
+                                            isVisible = true;
+                                        }}
+                                    }});
                                 }}
-                                var R_km = Math.pow(10, {mag_val} / {min_mlgr});
-                                var circle = L.circle([{lat}, {lon}], {{
-                                    radius: R_km * 1000,
-                                    color: '#66ccff',
-                                    weight: 2,
-                                    fill: false
-                                }}).addTo(map);
-                                window.currentCircle = circle;
                             }}
                         }});
                     }});
-                    </script>
-                    """
-                    m.get_root().html.add_child(folium.Element(js_code))
+                }})();
+                </script>
+                """
+                m.get_root().html.add_child(folium.Element(js_code))
 
-        # LOOP DAN TASHQARIDA - Legend
-        legend_items = [
-            '<p><b>Xarita elementlari:</b></p>',
-            '<p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>',
-            '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>',
-            '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>',
-            '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>',
-            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid blue; display: inline-block; margin-right: 8px;"></div> Tanlangan skvajinalar</p>',
-            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid lightblue; display: inline-block; margin-right: 8px;"></div> Tanlanmagan skvajinalar</p>',
-        ]
+            except Exception as e:
+                logging.error(f"Radius JavaScript kodini qo'shishda xato ({skvajina}): {e}")
 
-        legend_html = f'''
-        <div style="position: fixed; 
-                    bottom: 50px; left: 50px; width: 160px; height: 160px; 
-                    background-color: white; border:2px solid grey; z-index:9999; 
-                    font-size:12px; padding: 10px; overflow-y: auto;">
-        {''.join(legend_items)}
-        </div>
-        '''
-        m.get_root().html.add_child(folium.Element(legend_html))
+    # Filtrlangan zilzilalarni xaritaga qo'shish
+    if not all_filtered_earthquakes.empty:
+        for idx, row in all_filtered_earthquakes.iterrows():
+            lat = row.get(LATITUDE_COLUMN, None)
+            lon = row.get(LONGITUDE_COLUMN, None)
+            mag_val = row.get(MAIN_MAGNITUDE_COLUMN, None)
+            date_val = row.get(DATE_COLUMN, "Nomalum")
+            try:
+                date_val = pd.to_datetime(date_val).strftime("%d.%m.%Y")
+            except Exception:
+                date_val = "Nomalum"
+            if isinstance(date_val, (pd.Timestamp, datetime.datetime)):
+                date_val = date_val.strftime("%d.%m.%Y")
+            distance_val = row.get("R(km)", "Nomalum")
+            mlgr_val = row.get("M/lgR", "Nomalum")
+            depth_val = row.get("Depth", "Nomalum")
 
-        # Layer control qo'shish
-        folium.LayerControl().add_to(m)
+            if mag_val is not None and not np.isnan(mag_val) and mag_val > 0 and lat is not None and lon is not None:
+                tooltip_html = f"""
+                    <b>Zilzila</b><br>
+                    Sana: {date_val}<br>
+                    Magnituda (Mb): {mag_val:.2f}<br>
+                    Chuqurlik (km): {depth_val}<br>
+                    Masofa (km): {distance_val:.1f}<br>
+                    M/lgR: {mlgr_val:.2f}<br>
+                """
 
-        return m._repr_html_()
+                if mag_val >= 6:
+                    color = "darkred"
+                    radius = mag_val * 3
+                elif mag_val >= 5:
+                    color = "red"
+                    radius = mag_val * 2.5
+                elif mag_val >= 4:
+                    color = "orange"
+                    radius = mag_val * 2
+                else:
+                    color = "yellow"
+                    radius = mag_val * 1.5
+
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=radius,
+                    color=color,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.7,
+                    stroke=True,
+                    weight=2,
+                    tooltip=tooltip_html
+                ).add_to(m)
+
+    # Legend
+    legend_items = [
+        '<p><b>Xarita elementlari:</b></p>',
+        '<p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>',
+        '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>',
+        '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>',
+        '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>',
+        '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid blue; display: inline-block; margin-right: 8px;"></div> Tanlangan skvajinalar</p>',
+        '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid lightblue; display: inline-block; margin-right: 8px;"></div> Tanlanmagan skvajinalar</p>',
+    ]
+
+    legend_html = f'''
+    <div style="position: fixed; 
+                bottom: 50px; left: 50px; width: 160px; height: 160px; 
+                background-color: white; border:2px solid grey; z-index:9999; 
+                font-size:12px; padding: 10px; overflow-y: auto;">
+    {''.join(legend_items)}
+    </div>
+    '''
+    m.get_root().html.add_child(folium.Element(legend_html))
+
+    # Layer control qo'shish
+    folium.LayerControl().add_to(m)
+
+    return m._repr_html_()
 def selection_view(request):
     """
     Handles the selection of wells and parametrs for analysis.
@@ -1910,7 +1934,7 @@ def results_view(request):
                         (df_temp['date'] <= user_end_date)
                         ].copy()
                 else:
-                    # Agar kiritmasa, 2020 dan boshlab olish
+
                     df_temp = df_temp[df_temp['date'] >= default_start_date].copy()
 
                 if df_temp.empty:
