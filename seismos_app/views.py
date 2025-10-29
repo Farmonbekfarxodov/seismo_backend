@@ -20,6 +20,8 @@ from django.core.files.storage import FileSystemStorage
 from jinja2.utils import missing
 from sqlalchemy import create_engine, text, exc
 from plotly.subplots import make_subplots
+from folium.plugins import Fullscreen
+
 
 # Setup logging
 logging.basicConfig(
@@ -1236,7 +1238,14 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         attr="© OpenStreetMap contributors"
     )
 
+    Fullscreen(
+        position='topleft',  # Joylashish: 'topleft', 'topright', 'bottomleft', 'bottomright'
+        title='To\'liq ekran',  # Knopka ustiga kelganda ko'rinadigan matn
+        title_cancel='Chiqish',  # To'liq ekrandan chiqish uchun matn
+        force_separate_button=True  # Alohida knopka sifatida ko'rsatish
+    ).add_to(m)
     # Turli xil fon xaritalari qo'shish
+
     try:
         folium.TileLayer(
             tiles='https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png',
