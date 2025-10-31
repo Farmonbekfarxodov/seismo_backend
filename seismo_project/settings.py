@@ -41,7 +41,8 @@ INSTALLED_APPS = [
     'seismos_app',
     'download_base_app',
     'app_users',
-    'upload_catalog_app'
+    'upload_catalog_app',
+    'app_informativlik',
 ]
 
 CORS_ALLOWED_ORIGINS = [

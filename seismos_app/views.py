@@ -8,7 +8,8 @@ import plotly.graph_objects as go
 import folium
 import geopandas as gpd
 import glob
-
+import io
+import xlsxwriter
 
 from datetime import timedelta
 from math import pi, sin, cos, atan2, sqrt
@@ -21,6 +22,9 @@ from jinja2.utils import missing
 from sqlalchemy import create_engine, text, exc
 from plotly.subplots import make_subplots
 from folium.plugins import Fullscreen
+from scipy.stats import norm
+from matplotlib.patches import Patch
+
 
 
 # Setup logging
