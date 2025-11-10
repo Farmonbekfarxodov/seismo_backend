@@ -203,6 +203,7 @@ def normalize_string(s):
     """Stringni normalizatsiya qilish - bo'sh joylar, kichik/katta harflar"""
     if not s:
         return ""
+    s = s.replace('ʻ', "'").replace('’', "'").replace('‘', "'")
     return s.strip().lower()
 
 
