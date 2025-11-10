@@ -82,10 +82,15 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
                             anomaly_duration, std_factor,
                             timedelta_before, timedelta_after):
     """
-    Parametr uchun informativlikni hisoblaydi va informativ zilzilalar ro'yxatini qaytaradi
+    TO'G'RI MANTIQ: Parametr uchun informativlikni hisoblaydi
+
+    Asosiy g'oya:
+    1. Har bir segment o'z anomaliyalariga ega (turli mean/std)
+    2. Har bir zilzila o'z segmentidagi anomaliyalar bilan tekshiriladi
+    3. Lekin anomaliya oynasi segment chegarasidan chiqishi mumkin
 
     Returns:
-        dict: Informativlik ko'rsatkichlari + 'captured_earthquakes' (informativ zilzilalar)
+        dict: Informativlik ko'rsatkichlari + 'captured_earthquakes'
     """
     if data_series.empty or earthquakes_df.empty:
         logging.warning("Ma'lumotlar yoki zilzilalar bo'sh")
@@ -101,17 +106,11 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
     start_year = data_series.index.min().year
     end_year = data_series.index.max().year
 
-    # Yillar bo'yicha bo'laklash
+    # SEGMENT ASOSIDA HISOBLASH
     for year_start in range(start_year, end_year + 1, window_years):
         year_end = year_start + window_years - 1
 
-        # Segment uchun zilzilalarni filtrlash
-        seg_eq = earthquakes_df[
-            (earthquakes_df['Event_date'] >= f"{year_start}-01-01") &
-            (earthquakes_df['Event_date'] <= f"{year_end}-12-31")
-            ]
-
-        # Ma'lumotlar segmentini olish
+        # 1. Ma'lumotlar segmentini olish
         mask = (data_series.index >= f"{year_start}-01-01") & \
                (data_series.index <= f"{year_end}-12-31")
         segment = data_series.loc[mask].copy()
@@ -120,51 +119,92 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
             logging.info(f"Segment bo'sh: {year_start}-{year_end}")
             continue
 
-        # O'rtacha va standart chetlanishni hisoblash
+        # 2. Segment uchun mean va std
         mean_val = segment.mean()
         std_val = segment.std()
 
         if std_val == 0 or np.isnan(std_val):
-            logging.warning(f"Standart chetlanish 0 yoki NaN: {year_start}-{year_end}")
+            logging.warning(f"Std=0 yoki NaN: {year_start}-{year_end}")
             continue
 
-        # Anomaliyalarni aniqlash
+        # 3. Segment anomaliyalarini aniqlash
         segment_df = pd.DataFrame({'value': segment})
         segment_df['Anomaly'] = (
                 (segment_df['value'] > mean_val + std_factor * std_val) |
                 (segment_df['value'] < mean_val - std_factor * std_val)
         ).astype(int)
 
-        # Davomiy anomaliyalarni filtrlash
+        # 4. Qisqa anomaliyalarni filtrlash
         segment_df['Anomaly'] = filter_long_sequences(
             segment_df['Anomaly'], anomaly_duration
         )
 
-        # t va m ni hisoblash
+        # 5. Segment statistikasi
         t = int(segment_df['Anomaly'].sum())
+
+        # 6. MUHIM: Zilzilalarni KENGAYTIRILGAN OYNA bilan filtrlash
+        # Segment chegarasiga yaqin zilzilalar uchun anomaliya oynasi
+        # segment tashqarisiga chiqishi mumkin
+        segment_start = pd.Timestamp(f"{year_start}-01-01")
+        segment_end = pd.Timestamp(f"{year_end}-12-31")
+
+        # Kengaytirilgan oyna: segment + oldingi va keyingi timedelta
+        extended_start = segment_start - timedelta(days=timedelta_after)
+        extended_end = segment_end + timedelta(days=timedelta_before)
+
+        seg_eq = earthquakes_df[
+            (earthquakes_df['Event_date'] >= extended_start) &
+            (earthquakes_df['Event_date'] <= extended_end)
+            ]
+
         m = 0
 
-        # YANGI: Har bir zilzilani tekshirish va informativ bo'lsa yozib qo'yish
+        # 7. Har bir zilzilani tekshirish
         for eq_idx, eq_row in seg_eq.iterrows():
             eq_date = pd.to_datetime(eq_row['Event_date'])
-            eq_window = (
-                    (segment_df.index >= eq_date - timedelta(days=timedelta_before)) &
-                    (segment_df.index <= eq_date + timedelta(days=timedelta_after))
-            )
-            if segment_df.loc[eq_window, 'Anomaly'].any():
-                m += 1
-                # YANGI: Informativ zilzilani ro'yxatga qo'shish
-                captured_earthquake_indices.append(eq_idx)
 
-        T_i = len(segment_df)
-        n_i = len(seg_eq)
+            # MUHIM TEKSHIRUV: Zilzila segment ichida yoki chegarasida bo'lishi kerak
+            if not (segment_start <= eq_date <= segment_end):
+                continue
+
+            # Anomaliya oynasi
+            window_start = eq_date - timedelta(days=timedelta_before)
+            window_end = eq_date + timedelta(days=timedelta_after)
+
+            # MUHIM: Oyna segment ichidagi qismini olish
+            # Agar oyna segment tashqarisiga chiqsa, faqat segment ichidagi qismini tekshiramiz
+            window_start_in_segment = max(window_start, segment_df.index.min())
+            window_end_in_segment = min(window_end, segment_df.index.max())
+
+            # Agar oyna to'liq segment tashqarida bo'lsa, o'tkazib yuborish
+            if window_start_in_segment > window_end_in_segment:
+                continue
+
+            # Oyna ichidagi anomaliyalarni tekshirish
+            eq_window = (
+                    (segment_df.index >= window_start_in_segment) &
+                    (segment_df.index <= window_end_in_segment)
+            )
+
+            if eq_window.any() and segment_df.loc[eq_window, 'Anomaly'].any():
+                m += 1
+                # Dublikatlarni oldini olish
+                if eq_idx not in captured_earthquake_indices:
+                    captured_earthquake_indices.append(eq_idx)
+
+        # 8. Segment natijalarini saqlash
+        n_i = len(earthquakes_df[
+                      (earthquakes_df['Event_date'] >= segment_start) &
+                      (earthquakes_df['Event_date'] <= segment_end)
+                      ])
+
         total_t += t
         total_m += m
 
         segment_results.append({
             'year_start': year_start,
             'year_end': year_end,
-            'T': T_i,
+            'T': len(segment_df),
             't': t,
             'n': n_i,
             'm': m,
@@ -172,7 +212,7 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
             'std': float(std_val)
         })
 
-    # Umumiy hisoblar
+    # 9. Umumiy hisoblar
     T = len(data_series)
     n = len(earthquakes_df)
 
@@ -180,13 +220,13 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
     total_m = int(total_m)
 
     if T == 0 or n == 0 or total_t == 0:
-        logging.warning(f"Hisoblash uchun yetarli ma'lumot yo'q: T={T}, n={n}, total_t={total_t}")
+        logging.warning(f"Yetarli ma'lumot yo'q: T={T}, n={n}, t={total_t}")
         return None
 
     t_T = float(total_t / T)
     m_n = float(total_m / n if n > 0 else 0)
 
-    # Xi va Phi(xi) hisoblash
+    # 10. Statistik ko'rsatkichlar
     try:
         denominator = np.sqrt((1 / n) * t_T * (1 - t_T))
         if denominator == 0:
@@ -196,34 +236,31 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
             xi = float((m_n - t_T) / denominator)
             phi_xi = float(norm.cdf(xi))
     except Exception as e:
-        logging.error(f"Phi(xi) hisoblashda xato: {e}")
+        logging.error(f"Phi(xi) xato: {e}")
         phi_xi = 0.0
 
-    # q hisoblash
     try:
         if m_n == 0 or t_T == 0 or m_n == 1:
             q = 0.0
         else:
             mu = float((1 - m_n) / (0.5 + np.sqrt(0.25 + total_m * (1 - m_n))))
             delta = float((1 - mu) / (1 + 1 / n))
-
             numerator = delta * m_n * (1 - t_T)
             denominator = (1 - m_n) * t_T
-
             if numerator <= 0 or denominator <= 0:
                 q = 0.0
             else:
                 q = float(0.25 * np.log(numerator / denominator))
     except Exception as e:
-        logging.error(f"q hisoblashda xato: {e}")
+        logging.error(f"q xato: {e}")
         q = 0.0
 
-    # Ishonchlilik va Informativlik darjasini aniqlash
+    # 11. Baholash
     if phi_xi > 0.95:
-        reliability = "Anomaliya statistik jihatdan ishonchli (tasodifiy emas)"
+        reliability = "Ishonchli (tasodifiy emas)"
         reliability_level = "Yuqori"
     else:
-        reliability = "Anomaliya statistik jihatdan ishonchsiz (tasodifiy bo'lishi mumkin)"
+        reliability = "Ishonchsiz (tasodifiy bo'lishi mumkin)"
         reliability_level = "Past"
 
     if q > 0.5:
@@ -239,6 +276,13 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
         informativity = "Informativ emas"
         informativity_level = "Juda past"
 
+    # 12. LOG
+    logging.info(
+        f"Informativlik: T={T}, t={total_t}, n={n}, m={total_m}, "
+        f"t/T={t_T:.4f}, m/n={m_n:.4f}, Φ(ξ)={phi_xi:.4f}, q={q:.4f}, "
+        f"Tutilgan zilzilalar: {len(captured_earthquake_indices)}/{n}"
+    )
+
     return {
         'T': T,
         't': total_t,
@@ -253,77 +297,58 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
         'informativity': informativity,
         'informativity_level': informativity_level,
         'segment_results': segment_results,
-        'captured_earthquakes': captured_earthquake_indices  # YANGI QATOR
+        'captured_earthquakes': captured_earthquake_indices
     }
 
 
 def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
     """
     Informativlik uchun grafik yaratadi (results_view formatida)
-    Faqat informativ zilzilalar qizil rangda ko'rsatiladi
+    Har bir grafik ostida segment jadvali bilan
     """
     num_graphs = len(graph_data)
     if num_graphs == 0:
         return None
 
-    single_graph_height = 600
-    total_figure_height = num_graphs * single_graph_height
-    max_total_height = 30000
-
-    if total_figure_height > max_total_height:
-        scale_factor = max_total_height / total_figure_height
-        single_graph_height = int(single_graph_height * scale_factor)
-        total_figure_height = max_total_height
-
-    # Subplot nomlarini SKVAJINA nomi bilan yaratish
-    subplot_titles = [f"{d['skvajina']} - {d['param']}" for d in graph_data]
-    specs = [[{"secondary_y": True}]] * num_graphs
-
-    vertical_spacing = 0.04 if num_graphs <= 3 else 0.02 if num_graphs <= 5 else max(0.005, 0.08 / num_graphs)
-
-    fig = make_subplots(
-        rows=num_graphs,
-        cols=1,
-        subplot_titles=subplot_titles,
-        vertical_spacing=vertical_spacing,
-        specs=specs,
-    )
-
-    color_pool = generate_colors(num_graphs)
+    # Har bir grafik uchun HTML yaratish
+    graphs_html = []
 
     for idx, data in enumerate(graph_data):
-        row, col = idx + 1, 1
-        trace_color = color_pool[idx]
+        # Grafik uchun figure yaratish
+        fig = make_subplots(
+            rows=1,
+            cols=1,
+            specs=[[{"secondary_y": True}]],
+        )
+
+        trace_color = COLOR_PALETTE[idx % len(COLOR_PALETTE)]
 
         x_val = data['x']
         y_val = data['y']
         mean = data['mean']
         sigma = data['sigma']
         param = data['param']
+        skvajina = data['skvajina']
         key = data['key']
-        earthquakes_all = data['earthquakes_all']  # Barcha filtrlangan zilzilalar
-        captured_indices = data['captured_indices']  # Informativ zilzilalar indekslari
-        lat = data['lat']
-        lon = data['lon']
+        earthquakes_all = data['earthquakes_all']
+        captured_indices = data['captured_indices']
+        segment_results = data.get('segment_results', [])
 
-        # Parametr grafikini chizish (anomaliyalar bilan)
+        # Parametr grafikini chizish
         y_all = plot_data_with_anomalies(
             fig, x_val, y_val, mean, sigma, std_factor,
-            row, col, trace_color, param, key
+            1, 1, trace_color, param, key
         )
 
         fig.update_yaxes(
             title_text=f"{param} Qiymati",
             range=[min(y_all) * 0.9, max(y_all) * 1.1],
-            row=row,
-            col=col,
+            row=1,
+            col=1,
             secondary_y=False,
         )
 
-        # ----------------------------------------------------------------------------------
-        # ZILZILALARNI CHIZISH (Fon + Informativ)
-        # ----------------------------------------------------------------------------------
-
+        # Zilzilalarni chizish
         if not earthquakes_all.empty:
             mag_col = 'Mb' if 'Mb' in earthquakes_all.columns else MAIN_MAGNITUDE_COLUMN
             earthquakes_all[mag_col] = pd.to_numeric(
@@ -332,11 +357,7 @@ def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
             earthquakes_all.dropna(subset=[mag_col], inplace=True)
 
             if not earthquakes_all.empty:
-                # ----------------------------------------------------------------------
-                # 1. ANOMALIYAGA TUSHMAGAN ZILZILALARNI CHIZISH (FON - UZUQ CHIZIQ)
-                # ----------------------------------------------------------------------
-
-                # Fon zilzilalarini ajratib olish (captured_indices da bo'lmaganlari)
+                # Fon zilzilalar
                 background_earthquakes = earthquakes_all.loc[
                     ~earthquakes_all.index.isin(captured_indices)
                 ].copy()
@@ -351,10 +372,8 @@ def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
                         mag_val = eq_row[mag_col]
                         distance = eq_row.get('R(km)', 'N/A')
                         mlgr_val = eq_row.get('M/lgR', 'N/A')
-
                         time_str = eq_date.strftime("%d.%m.%Y")
 
-                        # Stem ma'lumotlari
                         stem_x_bg.extend([eq_date, eq_date, None])
                         stem_y_bg.extend([0, mag_val, None])
 
@@ -373,23 +392,19 @@ def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
                                 x=stem_x_bg,
                                 y=stem_y_bg,
                                 mode="lines",
-                                line=dict(color="blue", width=1.5, dash='dot'),  # UZUQ CHIZIQ
+                                line=dict(color="blue", width=1.5, dash='dot'),
                                 name=f"Fon Zilzilalar (≥{min_mag})",
                                 hoverinfo="text",
                                 text=hover_texts_bg,
                                 showlegend=True,
-                                legendgroup=f"earthquakes_{row}",
-                                yaxis=f"y{2 * row}",
+                                yaxis="y2",
                             ),
-                            row=row,
-                            col=col,
+                            row=1,
+                            col=1,
                             secondary_y=True,
                         )
 
-                # ----------------------------------------------------------------------
-                # 2. INFORMATIV ZILZILALARNI CHIZISH (QATTIQ CHIZIQ)
-                # ----------------------------------------------------------------------
-
+                # Informativ zilzilalar
                 informative_earthquakes = earthquakes_all.loc[
                     earthquakes_all.index.isin(captured_indices)
                 ].copy()
@@ -404,10 +419,8 @@ def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
                         mag_val = eq_row[mag_col]
                         distance = eq_row.get('R(km)', 'N/A')
                         mlgr_val = eq_row.get('M/lgR', 'N/A')
-
                         time_str = eq_date.strftime("%d.%m.%Y")
 
-                        # Stem ma'lumotlari
                         stem_x.extend([eq_date, eq_date, None])
                         stem_y.extend([0, mag_val, None])
 
@@ -426,38 +439,25 @@ def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
                                 x=stem_x,
                                 y=stem_y,
                                 mode="lines",
-                                line=dict(color="blue", width=3),  # QATTIQ CHIZIQ - Informativ
+                                line=dict(color="blue", width=3),
                                 name=f"Informativ Zilzilalar (≥{min_mag})",
                                 hoverinfo="text",
                                 text=hover_texts,
                                 showlegend=True,
-                                legendgroup=f"earthquakes_{row}",
-                                yaxis=f"y{2 * row}",
+                                yaxis="y2",
                             ),
-                            row=row,
-                            col=col,
+                            row=1,
+                            col=1,
                             secondary_y=True,
                         )
 
-                    # Y-o'qni moslashtirish (Fon va Informativ uchun umumiy)
-                    max_mag = earthquakes_all[mag_col].max() * 1.1
-
-                    fig.update_yaxes(
-                        range=[0, max_mag],
-                        secondary_y=True,
-                        title_text="Magnituda (Mb)",
-                        row=row,
-                        col=col,
-                    )
-                # Agar faqat fon bo'lsa
-                elif not background_earthquakes.empty:
                     max_mag = earthquakes_all[mag_col].max() * 1.1
                     fig.update_yaxes(
                         range=[0, max_mag],
                         secondary_y=True,
                         title_text="Magnituda (Mb)",
-                        row=row,
-                        col=col,
+                        row=1,
+                        col=1,
                     )
 
         # X-o'qni moslashtirish
@@ -471,8 +471,8 @@ def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
                 type="date",
                 showgrid=True,
                 griddash="dot",
-                row=row,
-                col=col,
+                row=1,
+                col=1,
             )
 
         # Grid
@@ -481,8 +481,8 @@ def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
             gridwidth=0.15,
             gridcolor="black",
             griddash="dot",
-            row=row,
-            col=col,
+            row=1,
+            col=1,
             secondary_y=False,
         )
         fig.update_yaxes(
@@ -490,49 +490,96 @@ def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
             gridwidth=0.15,
             gridcolor="gray",
             griddash="dot",
-            row=row,
-            col=col,
+            row=1,
+            col=1,
             secondary_y=True,
         )
 
-    # Layout
-    fig.update_layout(
-        title_text="Informativlik Tahlili - Parametrlar va Zilzilalar",
-        height=total_figure_height,
-        width=None,
-        autosize=True,
-        showlegend=False,  # Legend faqat pastki qatordagi trace-lar uchun ko'rsatiladi
-        plot_bgcolor="gainsboro",
-        hovermode="x unified",
-        legend=dict(
-            x=0.01, y=0.99,
-            bgcolor="rgba(255,255,255,0.9)",
-            bordercolor="rgba(0,0,0,0.3)",
-            borderwidth=1,
-            xanchor="left", yanchor="top",
-            font=dict(size=10),
-        ),
-        title=dict(font=dict(size=20), x=0.5, xanchor="center"),
-        margin=dict(l=60, r=60, t=100, b=60),
-    )
+        # Layout
+        fig.update_layout(
+            title_text=f"{skvajina} - {param}",
+            height=600,
+            width=1200,
+            autosize=True,
+            showlegend=True,
+            plot_bgcolor="gainsboro",
+            hovermode="x unified",
+            legend=dict(
+                x=0.01, y=0.99,
+                bgcolor="rgba(255,255,255,0.9)",
+                bordercolor="rgba(0,0,0,0.3)",
+                borderwidth=1,
+                xanchor="left", yanchor="top",
+                font=dict(size=10),
+            ),
+            title=dict(font=dict(size=18), x=0.5, xanchor="center"),
+            margin=dict(l=60, r=60, t=80, b=60),
+        )
 
-    config = {
-        "displayModeBar": True,
-        "scrollZoom": True,
-        "doubleClick": "reset+autosize",
-        "modeBarButtonsToAdd": ["pan2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"],
-        "responsive": True,
-        "displaylogo": False,
-        "toImageButtonOptions": {
-            "format": "png",
-            "filename": "informativity_analysis",
-            "height": 900,
-            "width": 1400,
-            "scale": 2
+        config = {
+            "displayModeBar": True,
+            "scrollZoom": True,
+            "doubleClick": "reset+autosize",
+            "modeBarButtonsToAdd": ["pan2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"],
+            "responsive": True,
+            "displaylogo": False,
         }
-    }
 
-    return fig.to_html(full_html=False, include_plotlyjs="cdn", config=config)
+        graph_html = fig.to_html(full_html=False, include_plotlyjs="cdn", config=config)
+
+        # Segment jadvali HTML
+        table_html = f"""
+        <div style="margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 8px;">
+            <h5 style="color: #28a745; margin-bottom: 15px;">📊 {skvajina} - {param} uchun Segmentlar Jadvali</h5>
+            <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                    <thead>
+                        <tr style="background: #28a745; color: white;">
+                            <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">Davr</th>
+                            <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">T (kun)</th>
+                            <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">t (anom.)</th>
+                            <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">n (zilz.)</th>
+                            <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">m (tut.)</th>
+                            <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">O'rtacha</th>
+                            <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">Std</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        """
+
+        for seg in segment_results:
+            row_bg = "#ffffff" if segment_results.index(seg) % 2 == 0 else "#f8f9fa"
+            table_html += f"""
+                <tr style="background: {row_bg};">
+                    <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{seg['year_start']}-{seg['year_end']}</td>
+                    <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{seg['T']}</td>
+                    <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{seg['t']}</td>
+                    <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{seg['n']}</td>
+                    <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{seg['m']}</td>
+                    <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{seg['mean']:.4f}</td>
+                    <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{seg['std']:.4f}</td>
+                </tr>
+            """
+
+        table_html += """
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        """
+
+        # Grafik va jadval birlashtirish
+        combined_html = f"""
+        <div style="margin-bottom: 40px; padding: 20px; background: white; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+            {graph_html}
+            {table_html}
+        </div>
+        """
+
+        graphs_html.append(combined_html)
+
+    # Barcha grafiklarni birlashtirish
+    return "\n".join(graphs_html)
 
 
 def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, min_mlgr,
@@ -550,13 +597,31 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     - show_radius: Radius doiralarini ko'rsatish (True/False)
     """
     all_wells = get_all_wells_coordinates()
-    all_filtered_earthquakes = earthquake_data
+    all_filtered_earthquakes = earthquake_data.copy()
     selected_well_names = set()
 
     for key in selected_keys:
         selected_well_names.add(key.split(" | ")[1])
 
+    # Dublikatlarni olib tashlash (faqat mavjud ustunlar bo'yicha)
+    if not all_filtered_earthquakes.empty:
+        # Asosiy ustunlar
+        essential_cols = ['Event_date', 'Latitude', 'Longitude']
 
+        # Qo'shimcha ustunlar (mavjud bo'lsa)
+        optional_cols = ['Event_time', 'Depth', 'Mb', 'M/lgR', 'R(km)']
+
+        # Mavjud ustunlarni aniqlash
+        subset_cols = [col for col in essential_cols if col in all_filtered_earthquakes.columns]
+
+        if len(subset_cols) > 0:
+            try:
+                all_filtered_earthquakes = all_filtered_earthquakes.drop_duplicates(
+                    subset=subset_cols,
+                    keep='first'
+                )
+            except Exception as e:
+                logging.warning(f"Dublikatlarni olib tashlashda xato: {e}")
 
     # Xarita markazini aniqlash
     if selected_keys:
@@ -738,101 +803,22 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 icon=triangle_icon,
             ).add_to(m)
 
-            # # Radius doiralarini qo'shish (agar show_radius=True bo'lsa)
-            # if show_radius:
-            #     try:
-            #         mlgr_val = min_mlgr if min_mlgr > 0 else 0.5
-            #         radii_data = [
-            #             (5, "#66ccff"),
-            #             (6, "#3399ff"),
-            #             (7, "#0033cc"),
-            #         ]
-            #
-            #         circles_info = []
-            #         for M_value, color in radii_data:
-            #             R_km = float(10 ** (M_value / mlgr_val))
-            #             circles_info.append({
-            #                 'radius': R_km * 1000,
-            #                 'color': color,
-            #                 'M': M_value,
-            #                 'R_km': R_km,
-            #                 'mlgr': mlgr_val
-            #             })
-            #
-            #         js_code = f"""
-            #         <script>
-            #         (function() {{
-            #             var wellLat = {lat};
-            #             var wellLon = {lon};
-            #             var wellName = "{skvajina}";
-            #             var circlesInfo = {circles_info};
-            #             var circlesLayer = null;
-            #             var isVisible = true;
-            #
-            #             document.addEventListener("DOMContentLoaded", function() {{
-            #                 var map = window.map || Object.values(window).find(v => v instanceof L.Map);
-            #                 if (!map) {{
-            #                     console.error("Xarita topilmadi");
-            #                     return;
-            #                 }}
-            #
-            #                 circlesLayer = L.layerGroup();
-            #                 circlesInfo.forEach(function(info) {{
-            #                     var circle = L.circle([wellLat, wellLon], {{
-            #                         radius: info.radius,
-            #                         color: info.color,
-            #                         weight: 2,
-            #                         fill: false,
-            #                         opacity: 0.7
-            #                     }});
-            #
-            #                     circle.bindTooltip(
-            #                         "M=" + info.M + ", R=" + info.R_km.toFixed(1) + " km (M/lgR=" + info.mlgr + ")",
-            #                         {{permanent: false, direction: 'top'}}
-            #                     );
-            #
-            #                     circlesLayer.addLayer(circle);
-            #                 }});
-            #                 circlesLayer.addTo(map);
-            #
-            #                 map.eachLayer(function(layer) {{
-            #                     if (layer instanceof L.Marker) {{
-            #                         var latlng = layer.getLatLng();
-            #                         if (Math.abs(latlng.lat - wellLat) < 0.0001 &&
-            #                             Math.abs(latlng.lng - wellLon) < 0.0001) {{
-            #
-            #                             layer.on('click', function(e) {{
-            #                                 L.DomEvent.stopPropagation(e);
-            #
-            #                                 if (isVisible) {{
-            #                                     map.removeLayer(circlesLayer);
-            #                                     isVisible = false;
-            #                                 }} else {{
-            #                                     circlesLayer.addTo(map);
-            #                                     isVisible = true;
-            #                                 }}
-            #                             }});
-            #                         }}
-            #                     }}
-            #                 }});
-            #             }});
-            #         }})();
-            #         </script>
-            #         """
-            #         m.get_root().html.add_child(folium.Element(js_code))
-
-                # except Exception as e:
-                #     logging.error(f"Radius JavaScript kodini qo'shishda xato ({skvajina}): {e}")
-
-    # Zilzilalarni xaritaga qo'shish (YANGILANGAN QISM)
+    # Zilzilalarni xaritaga qo'shish
     if not all_filtered_earthquakes.empty:
         # captured_earthquake_indices ni set ga aylantirish
         captured_set = set(captured_earthquake_indices) if captured_earthquake_indices else set()
 
+        # Magnituda ustunini aniqlash
+        mag_col = MAIN_MAGNITUDE_COLUMN
+        if 'Mb' in all_filtered_earthquakes.columns:
+            mag_col = 'Mb'
+        elif 'M' in all_filtered_earthquakes.columns:
+            mag_col = 'M'
+
         for idx, row in all_filtered_earthquakes.iterrows():
             lat = row.get(LATITUDE_COLUMN, None)
             lon = row.get(LONGITUDE_COLUMN, None)
-            mag_val = row.get(MAIN_MAGNITUDE_COLUMN, None)
+            mag_val = row.get(mag_col, None)
             date_val = row.get(DATE_COLUMN, "Nomalum")
 
             try:
@@ -875,10 +861,10 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 tooltip_html = f"""
                     <b>{tooltip_prefix} ZILZILA</b><br>
                     Sana: {date_val}<br>
-                    Magnituda (Mb): {mag_val:.2f}<br>
+                    Magnituda ({mag_col}): {mag_val:.2f}<br>
                     Chuqurlik (km): {depth_val}<br>
-                    Masofa (km): {distance_val:.1f}<br>
-                    M/lgR: {mlgr_val:.2f}<br>
+                    Masofa (km): {distance_val}<br>
+                    M/lgR: {mlgr_val}<br>
                 """
 
                 folium.CircleMarker(
@@ -920,15 +906,12 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
 
     return m._repr_html_()
 
+
 def informativity_view(request):
     """
     Informativlik tahlili - forma, natijalar va grafiklar
+    YANGI: Median → Informativlik (to'g'ri tartib)
     """
-    # Eslatma: 'fetch_data', 'connect_db', 'destenc_vectorized',
-    # 'calculate_informativity', 'create_informativity_graph',
-    # 'DEFAULT_ELEMENTS_GROUPS', 'MAIN_MAGNITUDE_COLUMN' funksiyalari va konstantalari
-    # ushbu faylning yuqori qismida mavjud deb faraz qilinadi.
-
     lst_stansiya, well_coords = fetch_data()
     all_params = sorted(list(set(sum(DEFAULT_ELEMENTS_GROUPS.values(), []))))
 
@@ -946,6 +929,7 @@ def informativity_view(request):
         "inf_min_mlgr": "",
         "inf_filter_start_date": "",
         "inf_filter_end_date": "",
+        "inf_median_window": "",
     }
 
     if request.method == "POST":
@@ -960,6 +944,11 @@ def informativity_view(request):
             timedelta_after = int(request.POST.get("timedelta_after"))
             min_mag = float(request.POST.get("min_mag"))
             min_mlgr = float(request.POST.get("min_mlgr"))
+
+            # Median window
+            median_window_raw = request.POST.get("median_window", "").strip()
+            median_window = int(median_window_raw) if median_window_raw else None
+
         except ValueError as e:
             context["error"] = f"Raqamli maydonlarda xato: {str(e)}"
             return render(request, "seismos_app/informativity_results.html", context)
@@ -967,7 +956,6 @@ def informativity_view(request):
         filter_start_date = request.POST.get("start_date", "").strip() or None
         filter_end_date = request.POST.get("end_date", "").strip() or None
 
-        # Validatsiya
         if not selected_keys:
             context["error"] = "Kamida bitta skvajina tanlang."
             return render(request, "seismos_app/informativity_results.html", context)
@@ -988,11 +976,10 @@ def informativity_view(request):
             "inf_min_mlgr": min_mlgr,
             "inf_filter_start_date": filter_start_date or "",
             "inf_filter_end_date": filter_end_date or "",
+            "inf_median_window": median_window or "",
         })
 
-        engine = None
         conn = None
-
         try:
             engine = connect_db()
             if not engine:
@@ -1001,16 +988,13 @@ def informativity_view(request):
 
             conn = engine.connect()
 
-            # Zilzilalar ma'lumotini olish
-            query = "SELECT `Event_date`, `Event_time`, `Latitude`, `Longitude`, `Depth`, `Mb` FROM catalog"
-            earthquakes_df = pd.read_sql(query, engine)
+            # Zilzilalar ma'lumotlarini yuklash
+            excel_file_path = "/home/asus/PROJECT/Seismo/static/shapefiles/USGS catalog.xlsx"
+            earthquakes_df = pd.read_excel(excel_file_path)
             earthquakes_df['Event_date'] = pd.to_datetime(earthquakes_df['Event_date'], errors='coerce')
-            # Zilzila turlari har xil bo'lishi mumkin, Mb ustunini tekshirish
+
             mag_cols = [col for col in earthquakes_df.columns if col.lower() in ['mb', 'm', 'ml']]
-            if mag_cols:
-                mag_col = mag_cols[0]
-            else:
-                mag_col = 'Mb'  # Agar topilmasa, Mb deb faraz qilamiz
+            mag_col = mag_cols[0] if mag_cols else 'Mb'
 
             earthquakes_df[mag_col] = pd.to_numeric(earthquakes_df[mag_col], errors='coerce')
             earthquakes_df.dropna(subset=['Event_date', mag_col], inplace=True)
@@ -1030,7 +1014,6 @@ def informativity_view(request):
             results = []
             graph_data = []
 
-            # Har bir skvajina va parametr uchun
             for key in selected_keys:
                 _, skvajina = key.split(" | ")
                 lat, lon = well_coords.get(skvajina, (None, None))
@@ -1039,13 +1022,11 @@ def informativity_view(request):
                     logging.warning(f"Koordinatalar topilmadi: {skvajina}")
                     continue
 
-                # Skvajinaga yaqin zilzilalarni filtrlash
+                # Zilzilalarni filtrlash
                 earthquakes_filtered = earthquakes_df.copy()
                 earthquakes_filtered['R(km)'] = np.round(
                     destenc_vectorized(lat, lon, earthquakes_filtered['Latitude'], earthquakes_filtered['Longitude'])
                 )
-
-                # 'M/lgR' ni hisoblash
                 earthquakes_filtered['M/lgR'] = np.where(
                     earthquakes_filtered['R(km)'] > 1,
                     earthquakes_filtered[mag_col] / np.log10(earthquakes_filtered['R(km)']),
@@ -1075,32 +1056,84 @@ def informativity_view(request):
                         logging.warning(f"{key} - {param} uchun ma'lumot yo'q")
                         continue
 
+                    # DataFrame yaratish
                     df_temp = pd.DataFrame(data, columns=['date', 'value'])
                     df_temp['date'] = pd.to_datetime(df_temp['date'], errors='coerce')
                     df_temp.dropna(subset=['date', 'value'], inplace=True)
-                    df_temp = df_temp.set_index('date')
 
                     # Sana filtri
                     if filter_start_date:
-                        df_temp = df_temp[df_temp.index >= pd.to_datetime(filter_start_date)]
+                        df_temp = df_temp[df_temp['date'] >= pd.to_datetime(filter_start_date)]
                     if filter_end_date:
-                        df_temp = df_temp[df_temp.index <= pd.to_datetime(filter_end_date)]
+                        df_temp = df_temp[df_temp['date'] <= pd.to_datetime(filter_end_date)]
 
                     if df_temp.empty:
                         logging.warning(f"{key} - {param} uchun filtrlangan ma'lumot yo'q")
                         continue
 
-                    # Kunlik ma'lumotlarni to'ldirish
-                    df_temp = df_temp.asfreq('D')
-                    df_temp = df_temp.interpolate(method='time', limit_direction='both')
-                    df_temp.dropna(inplace=True)
+                    # ============================================
+                    # 🔴 1-QADAM: MEDIAN HISOBLASH (agar kerak bo'lsa)
+                    # ============================================
+                    original_data_for_graph = df_temp.copy()  # Asl ma'lumot grafik uchun
+
+                    if median_window and median_window > 0:
+                        logging.info(f"🔄 {key} - {param}: {median_window} kunlik median boshlanmoqda...")
+
+                        # Kunlik medianani hisoblash
+                        df_daily_median = (
+                            df_temp.groupby(df_temp['date'].dt.date)['value']
+                            .median()
+                            .reset_index()
+                            .rename(columns={'date': 'date', 'value': 'daily_median'})
+                        )
+
+                        # Rolling median (center=True)
+                        df_daily_median['rolling_median'] = (
+                            df_daily_median['daily_median']
+                            .rolling(window=median_window, min_periods=1, center=True)
+                            .median()
+                        )
+
+                        # Yangi DataFrame yaratish (median ma'lumotlar bilan)
+                        df_temp = pd.DataFrame({
+                            'date': pd.to_datetime(df_daily_median['date']),
+                            'value': df_daily_median['rolling_median'].values
+                        })
+
+                        df_temp.dropna(subset=['value'], inplace=True)
+
+                        logging.info(f"✅ {key} - {param}: Median hisoblandi. "
+                                     f"Asl: {len(original_data_for_graph)} → Median: {len(df_temp)} nuqta")
+
+                    else:
+                        logging.info(f"ℹ️ {key} - {param}: Median qo'llanmaydi (oddiy ma'lumot)")
+
+                    # ============================================
+                    # 🔴 2-QADAM: INFORMATIVLIK HISOBLASH
+                    # (MEDIAN MA'LUMOTLARI BILAN)
+                    # ============================================
 
                     if df_temp.empty:
+                        logging.warning(f"{key} - {param} uchun ma'lumot bo'sh (median keyingi)")
                         continue
 
-                    # Informativlikni hisoblash
+                    # Index ni o'rnatish (date)
+                    df_temp_indexed = df_temp.set_index('date')
+
+                    # Kunlik qilib olish va interpolatsiya
+                    df_temp_indexed = df_temp_indexed.asfreq('D')
+                    df_temp_indexed = df_temp_indexed.interpolate(method='time', limit_direction='both')
+                    df_temp_indexed.dropna(inplace=True)
+
+                    if df_temp_indexed.empty:
+                        logging.warning(f"{key} - {param} uchun interpolatsiya keyingi ma'lumot bo'sh")
+                        continue
+
+                    # INFORMATIVLIK HISOBLASH
+                    logging.info(f"📊 {key} - {param}: Informativlik hisoblanmoqda...")
+
                     inf_result = calculate_informativity(
-                        df_temp['value'],
+                        df_temp_indexed['value'],  # MEDIAN QILINGAN MA'LUMOT!
                         earthquakes_filtered,
                         window_years,
                         anomaly_duration,
@@ -1115,14 +1148,20 @@ def informativity_view(request):
                         inf_result['key'] = key
                         results.append(inf_result)
 
-                        # Grafik uchun ma'lumotlar
-                        x_val = df_temp.index.tolist()
-                        y_val = df_temp['value'].tolist()
+                        # Grafik uchun ma'lumotlar (MEDIAN QILINGAN)
+                        x_val = df_temp_indexed.index.tolist()
+                        y_val = df_temp_indexed['value'].tolist()
                         mean = np.mean(y_val)
                         sigma = np.std(y_val)
 
-                        # Informativ zilzilalar indekslarini olish
                         captured_indices = inf_result.get('captured_earthquakes', [])
+                        segment_results = inf_result.get('segment_results', [])
+
+                        available_cols = [mag_col, 'Event_date', 'Latitude', 'Longitude', 'R(km)', 'M/lgR']
+                        if 'Event_time' in earthquakes_filtered.columns:
+                            available_cols.insert(2, 'Event_time')
+                        if 'Depth' in earthquakes_filtered.columns and 'Depth' not in available_cols:
+                            available_cols.append('Depth')
 
                         graph_data.append({
                             'x': x_val,
@@ -1132,13 +1171,15 @@ def informativity_view(request):
                             'param': param,
                             'key': key,
                             'skvajina': skvajina,
-                            # Faqat kerakli ustunlarni saqlash uchun nusxa oling
-                            'earthquakes_all': earthquakes_filtered[
-                                [mag_col, 'Event_date', 'Event_time','Latitude', 'Longitude', 'R(km)', 'M/lgR']],
+                            'earthquakes_all': earthquakes_filtered[available_cols].copy(),
                             'captured_indices': captured_indices,
                             'lat': lat,
-                            'lon': lon
+                            'lon': lon,
+                            'segment_results': segment_results
                         })
+
+                        logging.info(f"✅ {key} - {param}: Informativlik tayyor. "
+                                     f"q={inf_result['q']:.4f}, Φ(ξ)={inf_result['phi_xi']:.4f}")
 
             if not results:
                 context['error'] = 'Hech qanday natija topilmadi.'
@@ -1146,9 +1187,8 @@ def informativity_view(request):
 
             results = sorted(results, key=lambda x: x['q'], reverse=True)
 
-            # ASOSIY GRAFIK YARATISH
             plotly_html = None
-            folium_map_html = None  # Xarita natijasini boshlang'ich qiymatga sozlash
+            folium_map_html = None
 
             if graph_data:
                 plotly_html = create_informativity_graph(
@@ -1158,45 +1198,61 @@ def informativity_view(request):
                     min_mlgr
                 )
 
-                # --- FOLIUM XARITASINI YARATISH (YANGILANGAN) ---
-                # Barcha informativ zilzilalar indekslarini to'plash
                 all_captured_indices = set()
                 for data in graph_data:
                     captured_indices = data.get('captured_indices', [])
                     all_captured_indices.update(captured_indices)
 
-                # Barcha skvajinalar bo'yicha filtrlangan zilzilalarni birlashtirish
                 all_earthquakes_for_map = pd.DataFrame()
                 for data in graph_data:
                     eq_df = data['earthquakes_all']
                     if not eq_df.empty:
-                        # Faqat unikal indekslarni saqlash uchun konsolidatsiya qilinadi
                         all_earthquakes_for_map = pd.concat([all_earthquakes_for_map, eq_df])
 
-                # Dublikatlarni olib tashlash (index bo'yicha)
                 if not all_earthquakes_for_map.empty:
                     all_earthquakes_for_map = all_earthquakes_for_map[
                         ~all_earthquakes_for_map.index.duplicated(keep='first')]
 
-                # add_map_data_folium funksiyasini chaqirish
                 try:
                     folium_map_html = add_map_data_folium(
                         selected_keys=selected_keys,
                         well_coords=well_coords,
-                        # Xarita funksiyasi faqatgina filtrlangan, unikal ma'lumotlar bilan ta'minlanadi
                         earthquake_data=all_earthquakes_for_map if not all_earthquakes_for_map.empty else pd.DataFrame(),
                         min_mag=min_mag,
                         min_mlgr=min_mlgr,
-                        # Ushbu parametr xarita funksiyasida zilzilalarni ranglarga ajratish uchun ishlatiladi
                         captured_earthquake_indices=list(all_captured_indices),
                         show_radius=True
                     )
-                    logging.info(f"Xarita yaratildi: {len(all_captured_indices)} ta informativ zilzila")
+                    logging.info(f"🗺️ Xarita yaratildi: {len(all_captured_indices)} ta informativ zilzila")
                 except Exception as e:
                     logging.error(f"Folium xaritasini yaratishda xato: {e}", exc_info=True)
                     folium_map_html = "<p>Xarita yaratishda xato yuz berdi.</p>"
 
-            request.session['informativity_results'] = results
+            # Session uchun ma'lumotlarni saqlash
+            session_results = []
+            for res in results:
+                clean_res = {
+                    'skvajina': res['skvajina'],
+                    'parametr': res['parametr'],
+                    'key': res['key'],
+                    'T': res['T'],
+                    't': res['t'],
+                    'n': res['n'],
+                    'm': res['m'],
+                    't_T': res['t_T'],
+                    'm_n': res['m_n'],
+                    'phi_xi': res['phi_xi'],
+                    'q': res['q'],
+                    'reliability': res['reliability'],
+                    'reliability_level': res['reliability_level'],
+                    'informativity': res['informativity'],
+                    'informativity_level': res['informativity_level'],
+                    'segment_results': res['segment_results'],
+                    'captured_count': len(res.get('captured_earthquakes', []))
+                }
+                session_results.append(clean_res)
+
+            request.session['informativity_results'] = session_results
 
             context.update({
                 'results': results,
@@ -1205,13 +1261,11 @@ def informativity_view(request):
                 'total_results': len(results),
             })
 
-            # Hisoblash try blokining yakuni
         except Exception as e:
             logging.error(f"Informativity error: {e}", exc_info=True)
             context["error"] = f"Hisoblashda xatolik: {str(e)}"
             return render(request, "seismos_app/informativity_results.html", context)
 
-            # finally bloki try/except bloki bilan to'g'ri joylashgan
         finally:
             if conn:
                 conn.close()
@@ -1219,8 +1273,8 @@ def informativity_view(request):
                 engine.dispose()
 
         return render(request, "seismos_app/informativity_results.html", context)
-    return render(request, "seismos_app/informativity_results.html", context)
 
+    return render(request, "seismos_app/informativity_results.html", context)
 def export_informativity_excel(request):
     """
     Informativlik natijalarini Excel formatida eksport qilish

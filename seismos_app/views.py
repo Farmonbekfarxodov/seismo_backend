@@ -1111,57 +1111,70 @@ def add_cracks_to_map(folium_map, cracks_gdf):
         return {}
 
 
-
-
 def get_well_detailed_info(well_name):
     """
     Bitta quduq haqida batafsil ma'lumot olish
     """
     engine = None
+    # Ma'lumot topilmaganda yoki xato bo'lganda qaytariladigan standart lug'at
+    default_info = {
+        "nomi": well_name.strip(),  # Nomi aniq bo'ladi
+        "quduq_turi": "Ma'lumot yo'q",
+        "suv_qatlami": "Ma'lumot yo'q",
+        "chuqurlik": "Ma'lumot yo'q",
+        "seysmotektonik_holat": "Ma'lumot yo'q",
+        "strategrafik_taqsimoti": "Ma'lumot yo'q",
+        "litologik_tarkibi": "Ma'lumot yo'q",
+    }
+
     try:
+        # 1. DB ulanishini o'rnatish
         engine = connect_db()
 
         query = """
-            SELECT 
-                Nomi,
-                Quduq_turlari,
-                Grunt,
-                Chuqurlik,
-                Suv_qatlami
-            FROM malumot
-            WHERE Nomi = %s
-        """
+                SELECT nomi, \
+                       quduq_turi, \
+                       suv_qatlami, \
+                       chuqurlik, \
+                       seysmotektonik_holat, \
+                       strategrafik_taqsimoti, \
+                       litologik_tarkibi
+                FROM malumot1
+                WHERE nomi = %s \
+                """
 
+        # 2. SQL so'rovini bajarish
         df = pd.read_sql(query, engine, params=(well_name.strip(),))
 
+        # 3. Agar ma'lumot topilsa (df bo'sh bo'lmasa)
         if not df.empty:
-            row = df.iloc[0]
+            row = df.iloc[0]  # Bu yerda 'row' yaratiladi
+
+            # Ma'lumotlarni lug'atga yig'ish (kalit nomlarini tekshiring!)
             return {
-                "nomi": row["Nomi"] or "Ma'lumot yo'q",
-                "quduq_turi": row["Quduq_turlari"] or "Ma'lumot yo'q",
-                "grunt": row["Grunt"] or "Ma'lumot yo'q",
-                "chuqurlik": row["Chuqurlik"] or "Ma'lumot yo'q",
-                "suv_qatlami": row["Suv_qatlami"] or "Ma'lumot yo'q",
+                "nomi": row.get("nomi", "Ma'lumot yo'q"),
+                # DIQQAT: Sizning SQL so'rovingizda 'quduq_turi' bor, lekin siz 'Quduq_turlari' deb murojaat qilyapsiz.
+                # Agar ustun nomi SQL so'rovi bilan bir xil bo'lsa:
+                "quduq_turi": row.get("quduq_turi", "Ma'lumot yo'q"),
+                "suv_qatlami": row.get("suv_qatlami", "Ma'lumot yo'q"),
+                # DIQQAT: SQL so'rovi 'chuqurlik', lekin bu yerda 'Chuqurlik'. Kichik harfda ishlatish tavsiya etiladi.
+                "chuqurlik": row.get("chuqurlik", "Ma'lumot yo'q"),
+                "seysmotektonik_holat": row.get("seysmotektonik_holat", "Ma'lumot yo'q"),
+                "strategrafik_taqsimoti": row.get("strategrafik_taqsimoti", "Ma'lumot yo'q"),
+                "litologik_tarkibi": row.get("litologik_tarkibi", "Ma'lumot yo'q"),
             }
         else:
-            return {
-                "nomi": "Ma'lumot topilmadi",
-                "quduq_turi": "Ma'lumot topilmadi",
-                "grunt": "Ma'lumot topilmadi",
-                "chuqurlik": "Ma'lumot topilmadi",
-                "suv_qatlami": "Ma'lumot topilmadi",
-            }
+            # 4. Ma'lumot topilmasa, standart lug'atni qaytarish
+            logging.warning(f"Skvajina ma'lumotlari topilmadi ({well_name}).")
+            return default_info  # row'ga murojaat qilish shart emas
 
     except Exception as e:
+        # 5. Xato sodir bo'lsa, xatoni yozib, standart lug'atni qaytarish
         logging.error(f"Skvajina ma'lumotlarini yuklashda xatolik ({well_name}): {e}")
-        return {
-            "nomi": "Xatolik yuz berdi",
-            "quduq_turi": "Xatolik yuz berdi",
-            "grunt": "Xatolik yuz berdi",
-            "chuqurlik": "Xatolik yuz berdi",
-            "suv_qatlami": "Xatolik yuz berdi",
-        }
+        return default_info  # row'ga murojaat qilish shart emas
+
     finally:
+        # 6. Ulanishni yopish
         if engine:
             engine.dispose()
 
@@ -1306,11 +1319,11 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
 
             # Tooltip (hover) - popup ma'lumotlarini ko'rsatadi
             tooltip_html = f"""
-                <div style="width: 300px; font-family: Arial; font-size: 12px;">
+                <div style="width: 450px; font-family: Arial; font-size: 12px;">
                     <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
                     <table style="width: 100%; border-collapse: collapse;">
                         <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">nomi:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
                         </tr>
                         <tr>
@@ -1318,17 +1331,26 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
                         </tr>
                         <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Grunt:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('grunt', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
                             <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Suv qatlami:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
                         </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
+                        </tr>
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                         <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                         
                     </table>
                     <p style="margin-top: 10px; color: #6c757d; font-style: italic;">Tanlanmagan skvajina</p>
                 </div>
@@ -1355,29 +1377,38 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
 
             # Tooltip (hover) - popup ma'lumotlarini ko'rsatadi
             tooltip_html = f"""
-                <div style="width: 350px; font-family: Arial; font-size: 12px;">
+                <div style="width: 450px; font-family: Arial; font-size: 12px;">
                     <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
                     <table style="width: 100%; border-collapse: collapse;">
-                        <tr style="background-color: #e3f2fd;">
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Nomi:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                       <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">nomi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
                         </tr>
                         <tr>
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Quduq turi:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
                         </tr>
-                        <tr style="background-color: #e3f2fd;">
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Grunt:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('grunt', 'Ma\'lumot yo\'q')}</td>
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Suv qatlami:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
                         </tr>
                         <tr>
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Chuqurlik:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')}</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
                         </tr>
-                        <tr style="background-color: #e3f2fd;">
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Suv qatlami:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
                         </tr>
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                         <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                         
                     </table>
                     <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
                 </div>
@@ -1570,7 +1601,7 @@ def selection_view(request):
     """
     lst_stansiya, _ = fetch_data()
     all_params = []
-    median_values = [3,5,7,31,91,183,365,731]
+    median_values = [3,5,7,15,31,91,183,365,731]
 
     for group_name, params_list in DEFAULT_ELEMENTS_GROUPS.items():
         all_params.extend(params_list)

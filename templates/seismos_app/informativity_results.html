@@ -17,8 +17,6 @@
     .form-control, select { width: 100%; padding: 10px; border: 1px solid #ced4da; border-radius: 6px; font-size: 15px; }
     .btn-primary { padding: 12px 28px; font-size: 16px; background: #28a745; border: none; border-radius: 6px; font-weight: bold; }
     .btn-primary:hover { background: #218838; }
-    .full-width-graph { width: 100vw; position: relative; left: 50%; right: 50%; margin-left: -50vw; margin-right: -50vw; padding: 20px 0; background: #f8f9fa; margin-top: 30px; margin-bottom: 30px; }
-    .plotly-graph-container { width: 100%; max-width: 100%; margin: 0; padding: 0 20px; }
     .results-table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
     .results-table th, .results-table td { padding: 12px; text-align: left; border: 1px solid #ddd; }
     .results-table th { background: #28a745; color: white; font-weight: 600; position: sticky; top: 0; }
@@ -44,7 +42,7 @@
         <div class="menu-row">
             <!-- SKVAJINALAR -->
             <details open>
-                <summary>Skvajinalar <span class="selected-count" id="well-count">0</span></summary>
+                <summary>Skvajinalar <span class="selected-count" ></span></summary>
                 <div class="option-list wells-list">
                     {% for well in wells %}
                     <label><input type="checkbox" name="wells" value="{{ well }}" {% if well in inf_selected_keys %}checked{% endif %}> {{ well }}</label>
@@ -54,7 +52,7 @@
 
             <!-- PARAMETRLAR -->
             <details open>
-                <summary>Parametrlar <span class="selected-count" id="param-count">0</span></summary>
+                <summary>Parametrlar <span class="selected-count" ></span></summary>
                 <div class="option-list">
                     {% for param in params %}
                     <label><input type="checkbox" name="params" value="{{ param }}" {% if param in inf_selected_params %}checked{% endif %}> {{ param }}</label>
@@ -72,6 +70,7 @@
             <div class="param-group"><label>Sigma</label>
                 <input type="number" step="0.1" min="0.1" name="std_factor" value="{{ inf_std_factor }}" class="form-control" required>
             </div>
+         <div class="param-group"><label>M/lgR</label><input type="number" step="0.1" name="min_mlgr" value="{{ inf_min_mlgr }}" class="form-control" required></div>
             <div class="param-group"><label>Oldin (kun)</label>
                 <input type="number" step="1" min="1" name="timedelta_before" value="{{ inf_timedelta_before }}" class="form-control" required>
             </div>
@@ -79,7 +78,22 @@
                 <input type="number" step="1" min="0" name="timedelta_after" value="{{ inf_timedelta_after }}" class="form-control" required>
             </div>
             <div class="param-group"><label>Mb</label><input type="number" step="0.1" name="min_mag" value="{{ inf_min_mag }}" class="form-control" required></div>
-            <div class="param-group"><label>M/lgR</label><input type="number" step="0.1" name="min_mlgr" value="{{ inf_min_mlgr }}" class="form-control" required></div>
+
+            <div class="form-group">
+                <label for="median_window">Mediana</label>
+                <select class="form-control" id="median_window" name="median_window">
+                    <option value="">Tanlanmagan</option>
+                    <option value="3" {% if inf_median_window == 3 %}selected{% endif %}>3 kun</option>
+                    <option value="5" {% if inf_median_window == 5 %}selected{% endif %}>5 kun</option>
+                    <option value="7" {% if inf_median_window == 7 %}selected{% endif %}>7 kun</option>
+                    <option value="15" {% if inf_median_window == 15 %}selected{% endif %}>15 kun</option>
+                    <option value="31" {% if inf_median_window == 31 %}selected{% endif %}>31 kun</option>
+                    <option value="91" {% if inf_median_window == 91 %}selected{% endif %}>91 kun (3 oy)</option>
+                    <option value="183" {% if inf_median_window == 183 %}selected{% endif %}>183 kun (6 oy)</option>
+                    <option value="365" {% if inf_median_window == 365 %}selected{% endif %}>365 kun (1 yil)</option>
+                    <option value="731" {% if inf_median_window == 731 %}selected{% endif %}>731 kun (2 yil)</option>
+                </select>
+            </div>
             <div class="param-group"><label>Boshlanish</label><input type="date" name="start_date" value="{{ inf_filter_start_date }}" class="form-control"></div>
             <div class="param-group"><label>Tugash</label><input type="date" name="end_date" value="{{ inf_filter_end_date }}" class="form-control"></div>
         </div>
@@ -96,24 +110,38 @@
     <!-- NATIJALAR -->
     {% if results %}
 
-    <!-- ===== YANGI: ASOSIY GRAFIK (Parametrlar + Informativ Zilzilalar) ===== -->
+    <!-- ===== GRAFIKLAR VA HAR BIRINING JADVALI ===== -->
     {% if plotly_main_graph %}
     <div class="section-divider"></div>
-    <div class="full-width-graph">
-        <div class="plotly-graph-container">
-            <h4 class="text-center mb-4" style="color: #28a745;">📊 Parametrlar va Informativ Zilzilalar</h4>
-            {{ plotly_main_graph|safe }}
-        </div>
+    <div class="mx-3">
+        <h3 class="text-center mb-4" style="color: #28a745;">📊 Parametrlar, Zilzilalar va Segmentlar Tahlili</h3>
+        {{ plotly_main_graph|safe }}
     </div>
     <div class="section-divider"></div>
     {% endif %}
 
-        <!-- NATIJALAR JADVALI -->
+    <!-- UMUMIY NATIJALAR JADVALI -->
     <div class="mx-3 filter-panel">
-        <h5>Natijalar ({{ total_results }})</h5>
+        <h4 style="color: #28a745; margin-bottom: 20px;">📋 Umumiy Informativlik Natijalari ({{ total_results }})</h4>
         <div style="overflow-x: auto;">
             <table class="results-table">
-                <thead><tr><th>№</th><th>Skvajina</th><th>Parametr</th><th>T</th><th>t</th><th>n</th><th>m</th><th>t/T</th><th>m/n</th><th>Φ(ξ)</th><th>q</th><th>Ishonch</th><th>Informativlik</th></tr></thead>
+                <thead>
+                    <tr>
+                        <th>№</th>
+                        <th>Skvajina</th>
+                        <th>Parametr</th>
+                        <th>T (kun)</th>
+                        <th>t (anom.)</th>
+                        <th>n (zilz.)</th>
+                        <th>m (tut.)</th>
+                        <th>t/T</th>
+                        <th>m/n</th>
+                        <th>Φ(ξ)</th>
+                        <th>q</th>
+                        <th>Ishonchlilik</th>
+                        <th>Informativlik</th>
+                    </tr>
+                </thead>
                 <tbody>
                     {% for r in results %}
                     <tr>
@@ -128,11 +156,24 @@
                         <td>{{ r.m_n|floatformat:4 }}</td>
                         <td>{{ r.phi_xi|floatformat:4 }}</td>
                         <td><strong>{{ r.q|floatformat:4 }}</strong></td>
-                        <td>{% if r.reliability_level == "Yuqori" %}<span class="level-high">Yuqori</span>{% else %}<span class="level-low">Past</span>{% endif %}</td>
-                        <td>{% if r.informativity_level == "Yuqori" %}<span class="level-high">Yuqori</span>
-                            {% elif r.informativity_level == "O'rtacha" %}<span class="level-medium">O'rtacha</span>
-                            {% elif r.informativity_level == "Past" %}<span class="level-low">Past</span>
-                            {% else %}<span class="level-very-low">Juda past</span>{% endif %}</td>
+                        <td>
+                            {% if r.reliability_level == "Yuqori" %}
+                                <span class="level-high">Yuqori</span>
+                            {% else %}
+                                <span class="level-low">Past</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if r.informativity_level == "Yuqori" %}
+                                <span class="level-high">Yuqori</span>
+                            {% elif r.informativity_level == "O'rtacha" %}
+                                <span class="level-medium">O'rtacha</span>
+                            {% elif r.informativity_level == "Past" %}
+                                <span class="level-low">Past</span>
+                            {% else %}
+                                <span class="level-very-low">Juda past</span>
+                            {% endif %}
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -140,20 +181,25 @@
         </div>
     </div>
 
-    <!-- EXCEL YUKLAB OLISH - Oxirida -->
+    <!-- EXCEL YUKLAB OLISH -->
     <div class="text-center my-4">
         <a href="{% url 'informativlik:informativity_export' %}" class="btn btn-success btn-lg">
             📥 Excel yuklab olish
         </a>
     </div>
+
+    <!-- XARITA -->
+    {% if folium_map %}
+    <div class="section-divider"></div>
+    <div class="mx-3 filter-panel">
+        <h4 style="color: #007bff; margin-bottom: 15px;">🗺️ Zilzilalar Xaritasi</h4>
+        <div style="background: #fdfdfd; min-height: 500px;">
+            {{ folium_map|safe }}
+        </div>
+    </div>
     {% endif %}
 
-{% if folium_map %}
-    <h3 class="mt-4 mb-3" style="color:#007bff; border-bottom: 2px solid #007bff; padding-bottom: 5px;">📍 Zilzilalar Xaritasi</h3>
-    <div class="card p-3 mb-4 shadow-sm" style="background: #fdfdfd; min-height: 500px;">
-        {{ folium_map|safe }}
-    </div>
-{% endif %}
+    {% endif %}
 </div>
 
 <div id="overlay"><div class="spinner"></div><div style="margin-top:18px;">Hisoblanmoqda...</div></div>

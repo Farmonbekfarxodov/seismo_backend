@@ -3,13 +3,45 @@ import requests
 import json
 import datetime as dt
 import time
+import logging
+from collections import defaultdict
 
 from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
+# ✅ Logging sozlamalari
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('seismic_app.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
-# ✅ Stansiya va quduqlar ro'yxati (API_code va DB_name)
+# ✅ API maydon nomlarini bazaga mapping qilish
+API_TO_DB_FIELD_MAPPING = {
+    'he': 'He',
+    'h2': 'H2',
+    'o2': 'O2',
+    'n2': 'N2',
+    'ch4': 'CH4',
+    'co2': 'CO2',
+    'c2h6': 'C2H6',
+    'ph': 'pH',
+    'eh': 'Eh',
+    'hco3': 'HCO3',
+    'ci2': 'Cl2',
+    'f': 'F',
+    't0': 'T0',
+    'q': 'Q',
+    'p': 'P',
+    'eocc': 'EOCC',
+}
+
+# ✅ Stansiya va quduqlar ro'yxati
 STATIONS_AND_WELLS = {
     "SMRM": {
         "name": "SMRM",
@@ -77,12 +109,9 @@ STATIONS_AND_WELLS = {
     "Sho'rchi": {
         "name": "Sho'rchi",
         "wells": [
-            {"api_well": "Shorchi 5", "db_well": "Sho'rchi 5"},
-            {"api_well": "Shorchi 7", "db_well": "Sho'rchi 7"},
+            {"api_well": "Sho'rchi 5", "db_well": "Sho'rchi 5"},
+            {"api_well": "Sho'rchi 7", "db_well": "Sho'rchi 7"},
             {"api_well": "Sho'rchi 8", "db_well": "Sho'rchi 8"},
-            {"api_well": "Sho'rchi 295", "db_well": "Sho'rchi 295"},
-            {"api_well": "Sho'rchi 293", "db_well": "Sho'rchi 293"},
-            {"api_well": "Sho'rchi 292", "db_well": "Sho'rchi 292"}
         ]
     },
     "XRB": {
@@ -110,7 +139,6 @@ STATIONS_AND_WELLS = {
     },
 }
 
-
 LOGIN_URL = "https://api.geofizik.uz/api/login"
 DATA_URL = "https://api.geofizik.uz/api/hydrogen-seismologies"
 USERNAME = "Rasulov Alisher"
@@ -122,9 +150,12 @@ def get_auth_token():
         payload = {"username": USERNAME, "password": PASSWORD}
         response = requests.post(LOGIN_URL, json=payload, timeout=10)
         response.raise_for_status()
-        return response.json().get("result", {}).get("token")
+        token = response.json().get("result", {}).get("token")
+        if token:
+            logger.info("✅ Token muvaffaqiyatli olindi")
+        return token
     except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-        print(f"Login xatosi: {e}")
+        logger.error(f"❌ Login xatosi: {e}")
         return None
 
 
@@ -142,17 +173,19 @@ def fetch_data_from_api(params, token):
             if response_data and response_data.get('result'):
                 data = response_data['result'].get('data', [])
                 all_data.extend(data)
+                logger.info(f"📥 {len(data)} ta yozuv olindi. Jami: {len(all_data)}")
                 url = response_data['result'].get('next_page_url')
                 params = {}
             else:
                 break
+
+        logger.info(f"✅ API dan jami {len(all_data)} ta yozuv olindi")
         return all_data
     except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-        print(f"API dan ma'lumot olishda xato: {e}")
+        logger.error(f"❌ API dan ma'lumot olishda xato: {e}")
         return None
 
 
-# ✅ Sana turini tekshirish va normalizatsiya qilish funksiyasi
 def _parse_to_datetime(value):
     if value is None:
         return None
@@ -166,29 +199,57 @@ def _parse_to_datetime(value):
         return None
 
 
+def normalize_string(s):
+    """Stringni normalizatsiya qilish - bo'sh joylar, kichik/katta harflar"""
+    if not s:
+        return ""
+    return s.strip().lower()
+
+
 def save_data_to_db(connection, data_list, db):
     """
-    data_list dan olingan ma'lumotlarni faqat yangi sanalar uchun alldata jadvaliga yozadi.
-    ssdi_id qiymati all_izmereniya jadvalidan olinadi.
+    Diagnostika bilan yaxshilangan versiya
     """
     if not data_list:
-        print("⚠️ Ma'lumotlar ro‘yxati bo‘sh.")
+        logger.warning("⚠️ Ma'lumotlar ro'yxati bo'sh.")
         return 0
 
     cursor = connection.cursor()
 
-    # Bazadagi eng so‘nggi sanani olish
+    # Diagnostika uchun hisoblagichlar
+    stats = {
+        'total_items': len(data_list),
+        'skipped_old_dates': 0,
+        'skipped_no_station': 0,
+        'skipped_no_well_mapping': 0,
+        'skipped_no_ssdi': 0,
+        'skipped_empty_values': 0,
+        'inserted': 0,
+        'errors': 0
+    }
+
+    unmapped_wells = defaultdict(list)  # Moslik topilmagan quduqlar
+    missing_ssdi = defaultdict(set)  # ssdi_id topilmagan kombinatsiyalar
+
+    # Bazadagi eng so'nggi sanani olish
     cursor.execute("SELECT MAX(date) FROM alldata")
     last_date_row = cursor.fetchone()
     raw_last_date = last_date_row[0] if last_date_row and last_date_row[0] else None
     last_date = _parse_to_datetime(raw_last_date)
 
     if last_date:
-        print(f"🕓 Bazadagi eng so‘nggi sana: {last_date.strftime('%d.%m.%Y')}")
+        logger.info(f"🕓 Bazadagi eng so'nggi sana: {last_date.strftime('%d.%m.%Y')}")
     else:
-        print("⚠️ Bazada sana topilmadi, barcha ma'lumotlar qo‘shiladi.")
+        logger.info("⚠️ Bazada sana topilmadi, barcha ma'lumotlar qo'shiladi.")
 
-    added_count = 0
+    # all_izmereniya jadvalidagi barcha ssdi_id larni oldindan keshga olish
+    cursor.execute("SELECT skvajina, izmereniya, ssdi_id FROM all_izmereniya")
+    ssdi_cache = {}
+    for row in cursor.fetchall():
+        key = (normalize_string(row[0]), normalize_string(row[1]))
+        ssdi_cache[key] = str(row[2])
+
+    logger.info(f"📊 Keshda {len(ssdi_cache)} ta ssdi_id mavjud")
 
     # Ma'lumotlarni sanaga qarab saralash
     parsed_items = []
@@ -199,49 +260,61 @@ def save_data_to_db(connection, data_list, db):
     parsed_items.sort(key=lambda x: x[0])
 
     for parsed_date, item in parsed_items:
+        # Eski sanalarni o'tkazib yuborish
         if last_date and parsed_date <= last_date:
+            stats['skipped_old_dates'] += 1
             continue
 
         station_code = item.get('station_code')
         well_api = item.get('well_code')
 
         if not station_code or not well_api:
+            stats['skipped_no_station'] += 1
+            logger.warning(f"⚠️ Stansiya yoki quduq kodi yo'q: {item}")
             continue
 
-        # API well nomini DB well nomiga o‘tkazish
+        # API well nomini DB well nomiga o'tkazish
         db_well = None
         station_info = STATIONS_AND_WELLS.get(station_code)
         if station_info:
             for well in station_info["wells"]:
-                if well["api_well"] == well_api:
+                # Normalizatsiya qilingan taqqoslash
+                if normalize_string(well["api_well"]) == normalize_string(well_api):
                     db_well = well["db_well"]
                     break
 
         if not db_well:
-            print(f"⚠️ {station_code}/{well_api} uchun db_well topilmadi.")
+            stats['skipped_no_well_mapping'] += 1
+            unmapped_wells[station_code].append(well_api)
+            logger.warning(f"⚠️ {station_code}/{well_api} uchun db_well topilmadi")
             continue
 
         values_dict = {'date': parsed_date}
+        found_any_value = False
 
         for key, value in item.items():
-            if key in ['date', 'station_code', 'well_code']:
+            if key in ['date', 'station_code', 'well_code', 'id', 'created_at', 'updated_at', 'station', 'well']:
                 continue
-            if value in [None, 0, '']:
-                continue
-
-            cursor.execute("""
-                SELECT ssdi_id FROM all_izmereniya
-                WHERE skvajina=%s AND izmereniya=%s
-            """, (db_well, key))
-            result = cursor.fetchone()
-
-            if not result:
+            # ⚠️ Faqat None va bo'sh stringlarni o'tkazib yuborish, 0 ni yozish
+            if value is None or value == '':
                 continue
 
-            ssdi_id = str(result[0])
+            # ✅ API maydon nomini bazaga mapping qilish
+            db_field_name = API_TO_DB_FIELD_MAPPING.get(key.lower(), key)
+
+            # Keshdan qidirish
+            cache_key = (normalize_string(db_well), normalize_string(db_field_name))
+            ssdi_id = ssdi_cache.get(cache_key)
+
+            if not ssdi_id:
+                missing_ssdi[db_well].add(f"{key} → {db_field_name}")
+                continue
+
             values_dict[ssdi_id] = value
+            found_any_value = True
 
-        if len(values_dict) <= 1:
+        if not found_any_value:
+            stats['skipped_empty_values'] += 1
             continue
 
         columns = ", ".join(f"`{col}`" for col in values_dict.keys())
@@ -250,15 +323,39 @@ def save_data_to_db(connection, data_list, db):
 
         try:
             cursor.execute(sql, tuple(values_dict.values()))
-            added_count += 1
+            stats['inserted'] += 1
         except Exception as e:
-            print(f"❌ INSERT xato ({parsed_date}): {e}")
+            stats['errors'] += 1
+            logger.error(f"❌ INSERT xato ({parsed_date}, {db_well}): {e}")
 
     connection.commit()
     cursor.close()
 
-    print(f"✅ {added_count} ta yangi sana bo‘yicha yozuv qo‘shildi.")
-    return added_count
+    # ✅ Batafsil hisobot
+    logger.info("=" * 60)
+    logger.info("📊 NATIJALAR HISOBOTI:")
+    logger.info(f"  Jami yozuvlar: {stats['total_items']}")
+    logger.info(f"  ✅ Qo'shildi: {stats['inserted']}")
+    logger.info(f"  ⏭️  Eski sanalar: {stats['skipped_old_dates']}")
+    logger.info(f"  ⚠️  Stansiya/quduq yo'q: {stats['skipped_no_station']}")
+    logger.info(f"  ⚠️  Well mapping yo'q: {stats['skipped_no_well_mapping']}")
+    logger.info(f"  ⚠️  SSDI topilmadi: {stats['skipped_no_ssdi']}")
+    logger.info(f"  ⚠️  Bo'sh qiymatlar: {stats['skipped_empty_values']}")
+    logger.info(f"  ❌ Xatolar: {stats['errors']}")
+
+    if unmapped_wells:
+        logger.warning("\n⚠️ MOSLIK TOPILMAGAN QUDUQLAR:")
+        for station, wells in unmapped_wells.items():
+            logger.warning(f"  {station}: {', '.join(set(wells))}")
+
+    if missing_ssdi:
+        logger.warning("\n⚠️ SSDI_ID TOPILMAGAN KOMBINATSIYALAR:")
+        for well, measurements in missing_ssdi.items():
+            logger.warning(f"  {well}: {', '.join(measurements)}")
+
+    logger.info("=" * 60)
+
+    return stats['inserted']
 
 
 def index(request):
@@ -278,6 +375,8 @@ def upload(request):
             start_date = data.get('start_date')
             end_date = data.get('end_date')
 
+            logger.info(f"📤 Yuklash so'rovi: {station_code}/{well_code} ({start_date} - {end_date})")
+
             if not all([station_code, well_code, start_date, end_date]):
                 return JsonResponse({"success": False, "message": "Ma'lumotlar to'liq emas."}, status=400)
 
@@ -295,13 +394,16 @@ def upload(request):
             else:
                 station_info = STATIONS_AND_WELLS.get(station_code)
                 if not station_info:
-                    return JsonResponse({"success": False, "message": f"Noto'g'ri stansiya kodi: {station_code}"}, status=400)
+                    return JsonResponse({"success": False, "message": f"Noto'g'ri stansiya kodi: {station_code}"},
+                                        status=400)
 
                 if well_code == "all_wells":
                     for well in station_info["wells"]:
                         api_stations_to_fetch.append({"station_code": station_code, "well_code": well["api_well"]})
                 else:
                     api_stations_to_fetch.append({"station_code": station_code, "well_code": well_code})
+
+            logger.info(f"🔄 Jami {len(api_stations_to_fetch)} ta quduqdan ma'lumot olinadi")
 
             for fetch_item in api_stations_to_fetch:
                 params = {
@@ -319,7 +421,6 @@ def upload(request):
                 all_data.extend(fetched_data)
                 time.sleep(1)
 
-            # ✅ MySQL ulanish
             connection = mysql.connector.connect(
                 host='localhost',
                 user='root',
@@ -330,11 +431,15 @@ def upload(request):
             rows_inserted = save_data_to_db(connection, all_data, 'seismik')
             connection.close()
 
-            return JsonResponse({"success": True, "message": f"{rows_inserted} ta yozuv bazaga saqlandi."})
+            return JsonResponse(
+                {"success": True, "message": f"{rows_inserted} ta yozuv bazaga saqlandi. Batafsil ma'lumot logda."})
 
         except json.JSONDecodeError:
-            return JsonResponse({"success": False, "message": "Noto‘g‘ri JSON format."}, status=400)
+            logger.error("❌ Noto'g'ri JSON format")
+            return JsonResponse({"success": False, "message": "Noto'g'ri JSON format."}, status=400)
         except Exception as e:
-            return JsonResponse({"success": False, "message": f"Kutilmagan xatolik: {type(e).__name__}: {str(e)}"}, status=500)
+            logger.error(f"❌ Kutilmagan xatolik: {type(e).__name__}: {str(e)}", exc_info=True)
+            return JsonResponse({"success": False, "message": f"Kutilmagan xatolik: {type(e).__name__}: {str(e)}"},
+                                status=500)
 
-    return JsonResponse({"success": False, "message": "Noto‘g‘ri so‘rov usuli."}, status=405)
+    return JsonResponse({"success": False, "message": "Noto'g'ri so'rov usuli."}, status=405)
