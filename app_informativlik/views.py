@@ -802,6 +802,97 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 tooltip=folium.Tooltip(tooltip_html, sticky=True),
                 icon=triangle_icon,
             ).add_to(m)
+            # JavaScript yordamida radiuslarni dastlab ko'rsatish va click bilan boshqarish
+            try:
+                mlgr_val = min_mlgr if min_mlgr > 0 else 0.5
+                radii_data = [
+                    (5, "#66ccff"),
+                    (6, "#3399ff"),
+                    (7, "#0033cc"),
+                ]
+
+                # Har bir radius uchun ma'lumot tayyorlash
+                circles_info = []
+                for M_value, color in radii_data:
+                    R_km = float(10 ** (M_value / mlgr_val))
+                    circles_info.append({
+                        'radius': R_km * 1000,
+                        'color': color,
+                        'M': M_value,
+                        'R_km': R_km,
+                        'mlgr': mlgr_val
+                    })
+
+                # JavaScript kodi - radiuslarni dastlab ko'rsatish va toggle qilish
+                js_code = f"""
+                            <script>
+                            (function() {{
+                                var wellLat = {lat};
+                                var wellLon = {lon};
+                                var wellName = "{skvajina}";
+                                var circlesInfo = {circles_info};
+                                var circlesLayer = null;
+                                var isVisible = true;
+
+                                document.addEventListener("DOMContentLoaded", function() {{
+                                    var map = window.map || Object.values(window).find(v => v instanceof L.Map);
+                                    if (!map) {{
+                                        console.error("Xarita topilmadi");
+                                        return;
+                                    }}
+
+                                    // Dastlab aylanalarni ko'rsatish
+                                    circlesLayer = L.layerGroup();
+                                    circlesInfo.forEach(function(info) {{
+                                        var circle = L.circle([wellLat, wellLon], {{
+                                            radius: info.radius,
+                                            color: info.color,
+                                            weight: 2,
+                                            fill: false,
+                                            opacity: 0.7
+                                        }});
+
+                                        circle.bindTooltip(
+                                            "M=" + info.M + ", R=" + info.R_km.toFixed(1) + " km (M/lgR=" + info.mlgr + ")",
+                                            {{permanent: false, direction: 'top'}}
+                                        );
+
+                                        circlesLayer.addLayer(circle);
+                                    }});
+                                    circlesLayer.addTo(map);
+
+                                    // Barcha markerlarni topish
+                                    map.eachLayer(function(layer) {{
+                                        if (layer instanceof L.Marker) {{
+                                            var latlng = layer.getLatLng();
+                                            if (Math.abs(latlng.lat - wellLat) < 0.0001 && 
+                                                Math.abs(latlng.lng - wellLon) < 0.0001) {{
+
+                                                // Markerga click listener qo'shish (faqat aylanalarni toggle qilish)
+                                                layer.on('click', function(e) {{
+                                                    L.DomEvent.stopPropagation(e);
+
+                                                    if (isVisible) {{
+                                                        // Aylanalarni yashirish
+                                                        map.removeLayer(circlesLayer);
+                                                        isVisible = false;
+                                                    }} else {{
+                                                        // Aylanalarni ko'rsatish
+                                                        circlesLayer.addTo(map);
+                                                        isVisible = true;
+                                                    }}
+                                                }});
+                                            }}
+                                        }}
+                                    }});
+                                }});
+                            }})();
+                            </script>
+                            """
+                m.get_root().html.add_child(folium.Element(js_code))
+
+            except Exception as e:
+                logging.error(f"Radius JavaScript kodini qo'shishda xato ({skvajina}): {e}")
 
     # Zilzilalarni xaritaga qo'shish
     if not all_filtered_earthquakes.empty:

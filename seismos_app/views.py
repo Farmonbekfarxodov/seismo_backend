@@ -1330,10 +1330,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                             <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
                         </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Suv qatlami:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
                         <tr>
                             <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
@@ -1387,10 +1383,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                         <tr>
                             <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Suv qatlami:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
                         </tr>
                         <tr>
                             <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
