@@ -1587,6 +1587,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     folium.LayerControl().add_to(m)
 
     return m._repr_html_()
+
 def selection_view(request):
     """
     Handles the selection of wells and parametrs for analysis.
@@ -1668,9 +1669,9 @@ def parametrs_view(request):
 
 def results_view(request):
     """
-    Generates and displays seismic analysis results with graphs, and a separate map
-    at the bottom of the page showing all wells and selected wells with radii.
-    Now includes date filtering functionality.
+    Generates and displays seismic analysis results.
+    Instead of one giant plot, it generates a list of individual plots
+    allowing separate downloads for each graph.
     """
 
     # Ma'lumotlarni olish (wells va params ro'yxati uchun)
@@ -1683,9 +1684,17 @@ def results_view(request):
     if request.method == "POST":
         selected_keys = request.POST.getlist("wells")
         selected_params = request.POST.getlist("params")
-        min_mag = float(request.POST.get("min_mag"))
-        btn_value = float(request.POST.get("sigma"))
-        min_mlgr = float(request.POST.get("min_mlgr"))
+
+        # Raqamli qiymatlarni xavfsiz olish
+        try:
+            min_mag = float(request.POST.get("min_mag", 0))
+            btn_value = float(request.POST.get("sigma", 0))
+            min_mlgr = float(request.POST.get("min_mlgr", 0))
+        except (ValueError, TypeError):
+            min_mag = 0.0
+            btn_value = 0.0
+            min_mlgr = 0.0
+
         filter_start_date = request.POST.get("start_date")
         filter_end_date = request.POST.get("end_date")
         median_window_raw = request.POST.get("median_window", "").strip()
@@ -1693,7 +1702,10 @@ def results_view(request):
         if not median_window_raw:
             median_window = None
         else:
-            median_window = int(median_window_raw)
+            try:
+                median_window = int(median_window_raw)
+            except ValueError:
+                median_window = None
 
         use_catalog = True
         request.session['use_catalog'] = True
@@ -1723,11 +1735,11 @@ def results_view(request):
     # Tanlangan skvajinalar nomini olish
     selected_well_names = []
     for key in selected_keys:
-         if " | " in key:
+        if " | " in key:
             _, well_name = key.split(" | ")
             selected_well_names.append(well_name)
 
-    # Page title uchun skvajinalar nomini birlashtirish
+    # Page title
     if selected_well_names:
         if len(selected_well_names) == 1:
             page_title = f"{selected_well_names[0]} - Seysmik Tahlil"
@@ -1767,15 +1779,13 @@ def results_view(request):
         selected_params = sorted(list(set(sum(DEFAULT_ELEMENTS_GROUPS.values(), []))))
         request.session['selected_params'] = selected_params
 
-    # Sana filtrlarini tekshirish va o'rnatish
+    # Sana filtrlarini tekshirish
     user_start_date = None
     user_end_date = None
 
     if filter_start_date:
         try:
             user_start_date = pd.to_datetime(filter_start_date)
-
-            # Agar tugash sanasi kiritilmagan bo'lsa, bugungi sanani olish
             if filter_end_date:
                 user_end_date = pd.to_datetime(filter_end_date)
             else:
@@ -1786,15 +1796,6 @@ def results_view(request):
                     request,
                     "seismos_app/results1.html",
                     {
-                        "wells": lst_stansiya.keys(),
-                        "params": all_params,
-                        "selected_wells": selected_keys,
-                        "selected_params": selected_params,
-                        "current_min_mag": min_mag,
-                        "current_sigma": btn_value,
-                        "current_min_mlgr": min_mlgr,
-                        "current_start_date": filter_start_date,
-                        "current_end_date": filter_end_date,
                         "error": "Boshlang'ich sana oxirgi sanadan katta bo'lmasligi kerak."
                     },
                 )
@@ -1803,25 +1804,10 @@ def results_view(request):
             return render(
                 request,
                 "seismos_app/results1.html",
-                {
-                    "wells": lst_stansiya.keys(),
-                    "params": all_params,
-                    "selected_wells": selected_keys,
-                    "selected_params": selected_params,
-                    "current_min_mag": min_mag,
-                    "current_sigma": btn_value,
-                    "current_min_mlgr": min_mlgr,
-                    "current_start_date": filter_start_date,
-                    "current_end_date": filter_end_date,
-                    "error": f"Noto'g'ri sana formati: {e}"
-                },
+                {"error": f"Noto'g'ri sana formati: {e}"},
             )
-    else:
-        # Agar boshlang'ich sana ham kiritilmagan bo'lsa
-        user_start_date = None
-        user_end_date = None
 
-    # Default sanalar (foydalanuvchi kiritmasa)
+    # Default sanalar
     default_start_date = pd.to_datetime("1984-01-01")
     today = pd.to_datetime("today").normalize()
 
@@ -1834,64 +1820,19 @@ def results_view(request):
 
     try:
         # Ma'lumotlar bazasiga ulanish
-        try:
-            engine = connect_db()
-            if not engine:
-                return render(
-                    request,
-                    "seismos_app/results1.html",
-                    {"error": "Ma'lumotlar bazasiga ulanish imkonsiz"},
-                )
-            conn = engine.connect()
-        except Exception as e:
-            logging.error(f"Ma'lumotlar bazasiga ulanish xatosi:{e}")
-            return render(
-                request,
-                "seismos_app/results1.html",
-                {"error": f"Ma'lumotlar bazasiga ulanishda xato:{e}"}
-            )
+        engine = connect_db()
+        if not engine:
+            return render(request, "seismos_app/results1.html", {"error": "Bazaga ulanish xatosi"})
+        conn = engine.connect()
 
         # Catalog jadvalidan zilzilalar ma'lumotlarini olish
-        try:
-            query = "SELECT `Event_date`, `Event_time`, `Latitude`, `Longitude`, `Depth`, `Mb` FROM catalog"
-            dfe = pd.read_sql(query, engine)
-            dfe[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(
-                dfe[MAIN_MAGNITUDE_COLUMN], errors='coerce'
-            )
-            dfe.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
-
-            if dfe.empty:
-                logging.warning("Magnitudani raqamga aylantirishdan keyin zilzila ma'lumotlari bo'sh.")
-        except Exception as e:
-            logging.error(f"Catalog jadvalidan ma'lumot olishda xato {e}")
-            return render(
-                request,
-                "seismos_app/results1.html",
-                {"error": f"Catalog jadvalidan ma'lumot olishda xato{e}"}
-            )
-
-        required_cols = [
-            DATE_COLUMN,
-            TIME_COLUMN,
-            LATITUDE_COLUMN,
-            LONGITUDE_COLUMN,
-            MAIN_MAGNITUDE_COLUMN,
-            "Depth"
-        ]
-        if not all(col in dfe.columns for col in required_cols):
-            missing = [col for col in required_cols if col not in dfe.columns]
-            return render(
-                request,
-                "seismos_app/results1.html",
-                {
-                    "error": f"Catalog jadvalida kerakli ustunlar yo'q:{','.join(missing)}"
-                }
-            )
+        query = "SELECT `Event_date`, `Event_time`, `Latitude`, `Longitude`, `Depth`, `Mb` FROM catalog"
+        dfe = pd.read_sql(query, engine)
+        dfe[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(dfe[MAIN_MAGNITUDE_COLUMN], errors='coerce')
+        dfe.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
 
         # Zilzilalar ma'lumotlarini qayta ishlash
         all_earthquakes_df = dfe.copy()
-
-        # TIME_COLUMN ni to'g'ri formatga o'tkazish
         all_earthquakes_df[TIME_COLUMN] = (
             pd.to_timedelta(all_earthquakes_df[TIME_COLUMN])
             .dt.total_seconds()
@@ -1901,53 +1842,34 @@ def results_view(request):
             all_earthquakes_df[TIME_COLUMN], unit="s"
         ).dt.strftime("%H:%M:%S")
 
-        # Sana va vaqtni birlashtiramiz
         all_earthquakes_df["combined_datetime"] = pd.to_datetime(
-            all_earthquakes_df[DATE_COLUMN].astype(str)
-            + " "
-            + all_earthquakes_df[TIME_COLUMN].astype(str),
+            all_earthquakes_df[DATE_COLUMN].astype(str) + " " + all_earthquakes_df[TIME_COLUMN].astype(str),
             format="%Y-%m-%d %H:%M:%S",
             errors="coerce",
         )
-
-        # Noto'g'ri datetime bo'lgan qatorlarni olib tashlash
         all_earthquakes_df.dropna(subset=["combined_datetime"], inplace=True)
 
-        # Zilzilalarni FAQAT foydalanuvchi kiritgan sana oralig'ida filtrlash
+        # Zilzilalarni filtrlash
         if user_start_date and user_end_date:
             earthquake_mask = (
                     (all_earthquakes_df["combined_datetime"] >= user_start_date)
                     & (all_earthquakes_df["combined_datetime"] <= user_end_date)
             )
             filtered_earthquakes_df = all_earthquakes_df[earthquake_mask].copy()
-            logging.info(f"Foydalanuvchi tanlagan oraliq bo'yicha zilzilalar: {len(filtered_earthquakes_df)} ta")
         else:
-            # Agar sana kiritilmasa, default (2020 dan bugunga) oraligni olish
-            earthquake_mask = (
-                    all_earthquakes_df["combined_datetime"] >= default_start_date
-            )
+            earthquake_mask = (all_earthquakes_df["combined_datetime"] >= default_start_date)
             filtered_earthquakes_df = all_earthquakes_df[earthquake_mask].copy()
-            logging.info(f"Default oraliq bo'yicha zilzilalar: {len(filtered_earthquakes_df)} ta")
 
-        # Ma'lumotlar bazasidan ma'lumot olish
-        lst_stansiya, well_coords = fetch_data()
-        if not lst_stansiya or not well_coords:
-            return render(
-                request,
-                "seismos_app/results1.html",
-                {"error": "Bazadan ma'lumotlar olinmadi."},
-            )
-
+        # Ma'lumot yig'ish (graph_data)
         graph_data = []
 
-        # Ma'lumotlarni olish va filtrlash
         for key in selected_keys:
             for param in selected_params:
                 ssdi_id = lst_stansiya.get(key, {}).get(param)
                 if not ssdi_id:
-                    logging.warning(f"{key} uchun {param} parametri topilmadi")
                     continue
 
+                # SQL injection oldini olish uchun oddiy tekshiruv (ssdi_id odatda xavfsiz)
                 query = text(f"SELECT date, `{ssdi_id}` FROM alldata WHERE `{ssdi_id}` IS NOT NULL")
                 try:
                     data = conn.execute(query).fetchall()
@@ -1956,206 +1878,142 @@ def results_view(request):
                     continue
 
                 if not data:
-                    logging.warning(f"{key} - {param} uchun ma'lumot topilmadi")
                     continue
 
                 df_temp = pd.DataFrame(data, columns=['date', 'value'])
                 df_temp['date'] = pd.to_datetime(df_temp['date'], errors='coerce')
                 df_temp.dropna(subset=['date', 'value'], inplace=True)
 
-                # Foydalanuvchi sana kiritgan bo'lsa, faqat shu oraliqni olish
                 if user_start_date and user_end_date:
                     df_temp = df_temp[
                         (df_temp['date'] >= user_start_date) &
                         (df_temp['date'] <= user_end_date)
                         ].copy()
                 else:
-
                     df_temp = df_temp[df_temp['date'] >= default_start_date].copy()
 
                 if df_temp.empty:
-                    logging.warning(f"{key} - {param} uchun filtrlangan ma'lumot yo'q")
                     continue
 
                 x_val = df_temp['date'].tolist()
                 y_val = df_temp['value'].tolist()
 
-                if len(y_val) == 0:
-                    logging.warning(f"{key} - {param} uchun y_val bo'sh")
+                if not y_val:
                     continue
 
-                # Median window qo'llash
+                # Median window
                 if median_window and median_window > 0:
                     df_temp_med = pd.DataFrame({'date': x_val, 'value': y_val})
                     df_temp_med['date'] = pd.to_datetime(df_temp_med['date'])
 
-                    # Kunlik medianani hisoblaymiz
                     df_daily_median = (
                         df_temp_med.groupby(df_temp_med['date'].dt.date)['value']
-                        .median()
-                        .reset_index()
-                        .rename(columns={'value': 'daily_median'})
+                        .median().reset_index().rename(columns={'value': 'daily_median'})
                     )
-
-                    # Rolling median (center=True - Variant A)
                     df_daily_median['rolling_median'] = (
                         df_daily_median['daily_median']
-                        .rolling(window=median_window, min_periods=1, center=True)
-                        .median()
+                        .rolling(window=median_window, min_periods=1, center=True).median()
                     )
-
                     x_val = pd.to_datetime(df_daily_median['date']).tolist()
                     y_val = df_daily_median['rolling_median'].tolist()
 
-                y_series = pd.Series(y_val, index=x_val)
                 mean, sigma = np.mean(y_val), np.std(y_val)
-
                 if sigma == 0:
-                    logging.warning(f"{key} - {param} uchun sigma nolga teng")
                     continue
 
-                stansiya, skvajina = key.split(" | ")
+                _, skvajina = key.split(" | ")
                 graph_data.append((x_val, y_val, mean, sigma, param, key, skvajina))
 
         if not graph_data:
-            return render(
-                request,
-                "seismos_app/results1.html",
-                {"error": "Hech qanday mos keluvchi ma'lumot topilmadi."},
-            )
+            return render(request, "seismos_app/results1.html",
+                          {"error": "Hech qanday mos keluvchi ma'lumot topilmadi."})
 
-        # Grafiklar chizish
-        num_graphs = len(graph_data)
-        single_graph_height = 600
-        total_figure_height = num_graphs * single_graph_height
-        max_total_height = 30000
+        # ---------------------------------------------------------
+        # YANGI QISM: Grafiklar ro'yxatini shakllantirish
+        # ---------------------------------------------------------
 
-        if total_figure_height > max_total_height:
-            scale_factor = max_total_height / total_figure_height
-            single_graph_height = int(single_graph_height * scale_factor)
-            total_figure_height = max_total_height
-
-        subplot_titles = [
-            f"{key} - {param}" for (_, _, _, _, param, key, _) in graph_data
-        ]
-        specs = [[{"secondary_y": True}]] * num_graphs
-
-        vertical_spacing = 0.04 if num_graphs <= 3 else 0.02 if num_graphs <= 5 else max(0.005, 0.08 / num_graphs)
-
-        fig = make_subplots(
-            rows=num_graphs,
-            cols=1,
-            subplot_titles=subplot_titles,
-            vertical_spacing=vertical_spacing,
-            specs=specs,
-        )
-
-        # X-o'qi uchun delta hisoblash
+        graphs_list = []
         delta = timedelta(days=15)
+        color_pool = generate_colors(len(graph_data))
 
-        color_pool = generate_colors(num_graphs)
         for idx, (x, y, mean, sigma, param, key, skv) in enumerate(graph_data):
-            row, col = idx + 1, 1
-            trace_color = color_pool[idx]
+            # Har bir iteratsiyada YANGI va ALOHIDA Figure yaratamiz
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
 
+            trace_color = color_pool[idx]
+            row = 1
+            col = 1
+
+            # 1. Asosiy ma'lumotlar va anomaliyalarni chizish
             y_all = plot_data_with_anomalies(
                 fig, x, y, mean, sigma, btn_value, row, col, trace_color, param, key
             )
 
+            # 2. Y o'qi diapazoni
             fig.update_yaxes(
                 title_text=f"{param} Qiymati",
                 range=[min(y_all) * 0.9, max(y_all) * 1.1],
-                row=row,
-                col=col,
+                row=row, col=col, secondary_y=False
             )
 
+            # 3. Zilzilalarni chizish (stem plot)
             lat, lon = well_coords.get(skv, (0, 0))
-
-            # Faqat filtrlangan zilzilalarni chizish
             if not filtered_earthquakes_df.empty:
                 draw_magnitude_values(
-                    fig,
-                    filtered_earthquakes_df,
-                    row,
-                    col,
-                    min_mag=min_mag,
-                    well_lat=lat,
-                    well_lon=lon,
-                    min_mlgr=min_mlgr
+                    fig, filtered_earthquakes_df, row, col,
+                    min_mag=min_mag, well_lat=lat, well_lon=lon, min_mlgr=min_mlgr
                 )
 
-            # X-o'qi diapazonini belgilash (foydalanuvchi kiritgan yoki default)
+            # 4. X o'qi sozlamalari
             fig.update_xaxes(
                 range=[x_axis_start - delta, x_axis_end + delta],
                 type="date",
-                tickformat=None,
-                showgrid=True,
-                griddash="dot",
-                dtick=None,
-                row=row,
-                col=col,
-                autorange=False,
+                showgrid=True, griddash="dot",
+                row=row, col=col
             )
 
-        # Layout sozlamalari
-        if filter_start_date:
-            if filter_end_date:
-                title_suffix = f" ({filter_start_date} - {filter_end_date})"
-            else:
-                title_suffix = f" ({filter_start_date} - {(today + relativedelta(months=2)).strftime('%Y-%m-%d')})"  # Title da ham ko'rsatish
+            # 5. Sarlavha va Layout
+            graph_title = f"{key} - {param}"
+            title_date = f" ({filter_start_date} - {filter_end_date})" if filter_start_date and filter_end_date else " (2020 - hozir)"
 
-        else:
-            title_suffix = " (2020 - hozir)"
+            fig.update_layout(
+                title_text=f"{graph_title}{title_date}",
+                height=500,  # Har bir grafik balandligi
+                autosize=True,
+                showlegend=False,
+                plot_bgcolor="gainsboro",
+                hovermode="x unified",
+                margin=dict(l=60, r=60, t=80, b=60),
+                legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.9)")
+            )
 
-        fig.update_layout(
-            title_text="Tahlil natijalari",
-            height=total_figure_height,
-            width=None,
-            autosize=True,
-            showlegend=False,
-            plot_bgcolor="gainsboro",
-            hovermode="x unified",
-            legend=dict(
-                x=0.01,
-                y=0.99,
-                bgcolor="rgba(255,255,255,0.9)",
-                bordercolor="rgba(0,0,0,0.3)",
-                borderwidth=1,
-                xanchor="left",
-                yanchor="top",
-                font=dict(size=10),
-            ),
-            title=dict(font=dict(size=20), x=0.5, xanchor="center"),
-            margin=dict(l=60, r=60, t=100, b=60),
-        )
+            # 6. ID va Fayl nomini generatsiya qilish
+            div_id = f"plot_{idx}"
+            filename = f"Seysmik_{skv}_{param}_{datetime.datetime.now().strftime('%Y%m%d')}"
 
-        config = {
-            "displayModeBar": True,
-            "scrollZoom": True,
-            "doubleClick": "reset+autosize",
-            "modeBarButtonsToAdd": [
-                "pan2d",
-                "zoomIn2d",
-                "zoomOut2d",
-                "autoScale2d",
-                "resetScale2d",
-            ],
-            "responsive": True,
-            "showTips": True,
-            "displaylogo": False,
-            "toImageButtonOptions": {
-                "format": "png",
-                "filename": "seismic_analysis",
-                "height": 900,
-                "width": 1400,
-                "scale": 2
+            config = {
+                "displayModeBar": True,
+                "displaylogo": False,
+                "responsive": True,
+                "modeBarButtonsToRemove": ['toImage'],  # Biz o'z tugmamizni qo'shamiz
             }
-        }
-        plotly_html = fig.to_html(
-            full_html=False, include_plotlyjs="cdn", config=config
-        )
 
-        # Folium xaritasini yaratish (faqat filtrlangan zilzilalar bilan)
+            # 7. HTML ga aylantirish (JS ni qayta yuklamaslik uchun include_plotlyjs=False)
+            graph_html = fig.to_html(
+                full_html=False,
+                include_plotlyjs=False,
+                config=config,
+                div_id=div_id
+            )
+
+            graphs_list.append({
+                'html': graph_html,
+                'title': graph_title,
+                'div_id': div_id,
+                'filename': filename
+            })
+
+        # Folium xaritasini yaratish
         try:
             folium_map_html = add_map_data_folium(
                 selected_keys, well_coords, filtered_earthquakes_df, min_mag, min_mlgr
@@ -2164,29 +2022,31 @@ def results_view(request):
             logging.error(f"Folium xaritasini yaratishda xato: {e}")
             folium_map_html = "<p>Xarita yaratishda xato yuz berdi.</p>"
 
-        # Template uchun context
+        # Context tayyorlash
         context = {
             "wells": lst_stansiya.keys(),
             "params": all_params,
             "selected_wells": selected_keys,
             "selected_well_names": selected_well_names,
             "page_title": page_title,
+
+            # Input qiymatlarini qaytarish
             "current_min_mag": min_mag,
             "current_sigma": btn_value,
             "current_min_mlgr": min_mlgr,
             "current_start_date": filter_start_date or "",
             "current_end_date": filter_end_date or "",
-            "plotly_graph": plotly_html,
-            "folium_map": folium_map_html,
             "current_median_window": median_window or "",
-            "median_values": [3, 5, 7, 31, 91, 183, 365, 731],
+            "median_values": [3, 5, 7, 15, 31, 91, 183, 365, 731],
+
+            # Asosiy natijalar (YANGI)
+            "graphs_list": graphs_list,
+            "folium_map": folium_map_html,
         }
 
-        # Ma'lumotlar diapazonini aniqlash (filtr uchun)
+        # Data diapazoni info uchun
         if graph_data:
-            all_dates = []
-            for x_val, _, _, _, _, _, _ in graph_data:
-                all_dates.extend(x_val)
+            all_dates = [d for item in graph_data for d in item[0]]
             if all_dates:
                 context["data_min_date"] = min(pd.to_datetime(all_dates)).strftime('%Y-%m-%d')
                 context["data_max_date"] = max(pd.to_datetime(all_dates)).strftime('%Y-%m-%d')
@@ -2195,17 +2055,12 @@ def results_view(request):
 
     except Exception as e:
         logging.error(f"Results view error: {e}", exc_info=True)
-        return render(
-            request,
-            "seismos_app/results1.html",
-            {"error": "Tizimda kutilmagan xato yuz berdi. Iltimos, administrator bilan bog'laning."},
-        )
+        return render(request, "seismos_app/results1.html",
+                      {"error": "Tizimda kutilmagan xato yuz berdi."})
 
     finally:
         try:
-            if conn:
-                conn.close()
-            if engine:
-                engine.dispose()
-        except Exception as e:
-            logging.error(f"Resurslarni yopishda xato: {e}")
+            if conn: conn.close()
+            if engine: engine.dispose()
+        except Exception:
+            pass

@@ -1,6 +1,11 @@
 from django.http import HttpResponse
 from folium import Map
-
+import numpy as np
+import pandas as pd
+import math
+from math import erf
+from scipy.stats import norm
+import logging
 from seismos_app.views import *
 
 # Setup logging
@@ -50,6 +55,69 @@ COLOR_PALETTE = [
 
 
 
+
+def merge_intervals(intervals):
+    """
+    Intervallarni birlashtirish (1-koddan)
+    """
+    if not intervals:
+        return []
+
+    intervals = sorted(intervals, key=lambda x: x[0])
+    merged = [intervals[0]]
+
+    for current in intervals[1:]:
+        last = merged[-1]
+        if current[0] <= last[1]:
+            merged[-1] = (last[0], max(last[1], current[1]))
+        else:
+            merged.append(current)
+
+    return merged
+
+
+def compute_q_advanced(m, n, t, T):
+    """
+    1-koddagi TO'LIQ Q FORMULASI
+    μ va δ tuzatish koeffitsientlari bilan
+    """
+    if n == 0 or T == 0 or t == 0:
+        return 0.0, 0.0, 0.0
+
+    mn = m / n
+    P = t / T
+
+    # Nolga bo'lishni oldini olish
+    if mn == 0 or mn == 1 or P == 0 or P == 1:
+        return 0.0, 0.0, 0.0
+
+    try:
+        # μ va δ (1-koddagi formula)
+        mu = (1 - mn) / (0.5 + math.sqrt(0.25 + m * (1 - mn)))
+        delta = (1 - mu) / (1 + mu)
+
+        # Q formulasi (to'liq)
+        numerator = (delta * mn / (1 - mn)) * ((1 - P) / P)
+
+        if numerator <= 0:
+            return 0.0, delta, mu
+
+        q = 0.25 * math.log(numerator)
+
+        return q, delta, mu
+
+    except Exception as e:
+        logging.error(f"Q hisoblashda xato: {e}")
+        return 0.0, 0.0, 0.0
+
+
+def gauss_phi(xi):
+    """
+    Gauss ehtimollik funksiyasi (1-koddan)
+    """
+    return 0.5 * (1 + erf(xi / math.sqrt(2)))
+
+
 def filter_long_sequences(anom_series, min_len):
     """
     Faqat ketma-ket kamida `min_len` kunlik anomaliyalarni saqlaydi
@@ -78,146 +146,153 @@ def filter_long_sequences(anom_series, min_len):
     return seq
 
 
-def calculate_informativity(data_series, earthquakes_df, window_years,
-                            anomaly_duration, std_factor,
-                            timedelta_before, timedelta_after):
+
+def calculate_informativity_improved(data_series, earthquakes_df, window_years,
+                                     anomaly_duration, std_factor,
+                                     timedelta_before, timedelta_after):
     """
-    TO'G'RI MANTIQ: Parametr uchun informativlikni hisoblaydi
-
-    Asosiy g'oya:
-    1. Har bir segment o'z anomaliyalariga ega (turli mean/std)
-    2. Har bir zilzila o'z segmentidagi anomaliyalar bilan tekshiriladi
-    3. Lekin anomaliya oynasi segment chegarasidan chiqishi mumkin
-
-    Returns:
-        dict: Informativlik ko'rsatkichlari + 'captured_earthquakes'
+    YAXSHILANGAN VERSIYA:
+    1. 1-koddagi intervallarni birlashtirish
+    2. 1-koddagi to'liq Q formulasi
+    3. 2-koddagi median silliqlashtirish
+    4. 2-koddagi segment tahlili
     """
     if data_series.empty or earthquakes_df.empty:
         logging.warning("Ma'lumotlar yoki zilzilalar bo'sh")
         return None
 
-    # Informativ zilzilalar ro'yxati
     captured_earthquake_indices = []
-
     total_t = 0
     total_m = 0
     segment_results = []
 
+    all_anomalies = pd.Series(0, index=data_series.index)
+
     start_year = data_series.index.min().year
     end_year = data_series.index.max().year
 
-    # SEGMENT ASOSIDA HISOBLASH
+    # ============================================
+    # 1. HAR SEGMENT UCHUN ANOMALIYA ANIQLASH
+    # ============================================
     for year_start in range(start_year, end_year + 1, window_years):
         year_end = year_start + window_years - 1
 
-        # 1. Ma'lumotlar segmentini olish
         mask = (data_series.index >= f"{year_start}-01-01") & \
                (data_series.index <= f"{year_end}-12-31")
         segment = data_series.loc[mask].copy()
 
         if segment.empty:
-            logging.info(f"Segment bo'sh: {year_start}-{year_end}")
             continue
 
-        # 2. Segment uchun mean va std
         mean_val = segment.mean()
         std_val = segment.std()
 
         if std_val == 0 or np.isnan(std_val):
-            logging.warning(f"Std=0 yoki NaN: {year_start}-{year_end}")
             continue
 
-        # 3. Segment anomaliyalarini aniqlash
+        upper = mean_val + std_factor * std_val
+        lower = mean_val - std_factor * std_val
+
         segment_df = pd.DataFrame({'value': segment})
         segment_df['Anomaly'] = (
-                (segment_df['value'] > mean_val + std_factor * std_val) |
-                (segment_df['value'] < mean_val - std_factor * std_val)
+                (segment_df['value'] > upper) |
+                (segment_df['value'] < lower)
         ).astype(int)
 
-        # 4. Qisqa anomaliyalarni filtrlash
+        # MUHIM: Qisqa anomaliyalarni filtrlash
         segment_df['Anomaly'] = filter_long_sequences(
             segment_df['Anomaly'], anomaly_duration
         )
 
-        # 5. Segment statistikasi
-        t = int(segment_df['Anomaly'].sum())
+        all_anomalies.loc[segment_df.index] = segment_df['Anomaly']
 
-        # 6. MUHIM: Zilzilalarni KENGAYTIRILGAN OYNA bilan filtrlash
-        # Segment chegarasiga yaqin zilzilalar uchun anomaliya oynasi
-        # segment tashqarisiga chiqishi mumkin
+        # 🔴 YANGI: INTERVALLARNI BIRLASHTIRISH (1-koddan)
+        anomalies = segment_df[segment_df['Anomaly'] == 1]
+
+        if len(anomalies) > 0:
+            intervals = []
+            current_start = anomalies.index[0]
+
+            for i in range(1, len(anomalies)):
+                prev = anomalies.index[i - 1]
+                now = anomalies.index[i]
+
+                if (now - prev).days > 1:
+                    intervals.append((current_start, prev))
+                    current_start = now
+
+            intervals.append((current_start, anomalies.index[-1]))
+
+            # Intervallarni birlashtirish
+            merged = merge_intervals(intervals)
+
+            # t = birlashtirilgan intervallar uzunligi
+            t_segment = sum((end - start).days + 1 for start, end in merged)
+        else:
+            t_segment = 0
+            merged = []
+
+        total_t += t_segment
+
+        # Zilzilalar
         segment_start = pd.Timestamp(f"{year_start}-01-01")
         segment_end = pd.Timestamp(f"{year_end}-12-31")
 
-        # Kengaytirilgan oyna: segment + oldingi va keyingi timedelta
-        extended_start = segment_start - timedelta(days=timedelta_after)
-        extended_end = segment_end + timedelta(days=timedelta_before)
-
         seg_eq = earthquakes_df[
-            (earthquakes_df['Event_date'] >= extended_start) &
-            (earthquakes_df['Event_date'] <= extended_end)
+            (earthquakes_df['Event_date'] >= segment_start) &
+            (earthquakes_df['Event_date'] <= segment_end)
             ]
-
-        m = 0
-
-        # 7. Har bir zilzilani tekshirish
-        for eq_idx, eq_row in seg_eq.iterrows():
-            eq_date = pd.to_datetime(eq_row['Event_date'])
-
-            # MUHIM TEKSHIRUV: Zilzila segment ichida yoki chegarasida bo'lishi kerak
-            if not (segment_start <= eq_date <= segment_end):
-                continue
-
-            # Anomaliya oynasi
-            window_start = eq_date - timedelta(days=timedelta_before)
-            window_end = eq_date + timedelta(days=timedelta_after)
-
-            # MUHIM: Oyna segment ichidagi qismini olish
-            # Agar oyna segment tashqarisiga chiqsa, faqat segment ichidagi qismini tekshiramiz
-            window_start_in_segment = max(window_start, segment_df.index.min())
-            window_end_in_segment = min(window_end, segment_df.index.max())
-
-            # Agar oyna to'liq segment tashqarida bo'lsa, o'tkazib yuborish
-            if window_start_in_segment > window_end_in_segment:
-                continue
-
-            # Oyna ichidagi anomaliyalarni tekshirish
-            eq_window = (
-                    (segment_df.index >= window_start_in_segment) &
-                    (segment_df.index <= window_end_in_segment)
-            )
-
-            if eq_window.any() and segment_df.loc[eq_window, 'Anomaly'].any():
-                m += 1
-                # Dublikatlarni oldini olish
-                if eq_idx not in captured_earthquake_indices:
-                    captured_earthquake_indices.append(eq_idx)
-
-        # 8. Segment natijalarini saqlash
-        n_i = len(earthquakes_df[
-                      (earthquakes_df['Event_date'] >= segment_start) &
-                      (earthquakes_df['Event_date'] <= segment_end)
-                      ])
-
-        total_t += t
-        total_m += m
 
         segment_results.append({
             'year_start': year_start,
             'year_end': year_end,
             'T': len(segment_df),
-            't': t,
-            'n': n_i,
-            'm': m,
+            't': t_segment,
+            'n': len(seg_eq),
+            'm': 0,
             'mean': float(mean_val),
-            'std': float(std_val)
+            'std': float(std_val),
+            'upper': float(upper),
+            'lower': float(lower),
+            'merged_intervals': merged  # 🔴 YANGI
         })
 
-    # 9. Umumiy hisoblar
+    # ============================================
+    # 2. ZILZILALARNI TEKSHIRISH (TO'G'RI USUL)
+    # ============================================
+    for eq_idx, eq_row in earthquakes_df.iterrows():
+        eq_date = pd.to_datetime(eq_row['Event_date'])
+
+        window_start = eq_date - pd.Timedelta(days=timedelta_before)
+        window_end = eq_date
+
+        # 🔴 YANGI: Intervallar bo'yicha tekshirish
+        is_captured = False
+
+        for seg in segment_results:
+            if seg['year_start'] <= eq_date.year <= seg['year_end']:
+                for start, end in seg['merged_intervals']:
+                    # Zilzila intervalga tushyaptimi?
+                    if start <= eq_date <= end:
+                        # Va interval oldinda boshlanganmi?
+                        if start >= window_start:
+                            is_captured = True
+                            seg['m'] += 1
+                            break
+
+                if is_captured:
+                    break
+
+        if is_captured:
+            total_m += 1
+            if eq_idx not in captured_earthquake_indices:
+                captured_earthquake_indices.append(eq_idx)
+
+    # ============================================
+    # 3. UMUMIY STATISTIKA
+    # ============================================
     T = len(data_series)
     n = len(earthquakes_df)
-
-    total_t = int(total_t)
-    total_m = int(total_m)
 
     if T == 0 or n == 0 or total_t == 0:
         logging.warning(f"Yetarli ma'lumot yo'q: T={T}, n={n}, t={total_t}")
@@ -226,7 +301,7 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
     t_T = float(total_t / T)
     m_n = float(total_m / n if n > 0 else 0)
 
-    # 10. Statistik ko'rsatkichlar
+    # ξ va Φ(ξ)
     try:
         denominator = np.sqrt((1 / n) * t_T * (1 - t_T))
         if denominator == 0:
@@ -237,25 +312,13 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
             phi_xi = float(norm.cdf(xi))
     except Exception as e:
         logging.error(f"Phi(xi) xato: {e}")
+        xi = 0.0
         phi_xi = 0.0
 
-    try:
-        if m_n == 0 or t_T == 0 or m_n == 1:
-            q = 0.0
-        else:
-            mu = float((1 - m_n) / (0.5 + np.sqrt(0.25 + total_m * (1 - m_n))))
-            delta = float((1 - mu) / (1 + 1 / n))
-            numerator = delta * m_n * (1 - t_T)
-            denominator = (1 - m_n) * t_T
-            if numerator <= 0 or denominator <= 0:
-                q = 0.0
-            else:
-                q = float(0.25 * np.log(numerator / denominator))
-    except Exception as e:
-        logging.error(f"q xato: {e}")
-        q = 0.0
+    # 🔴 YANGI: 1-KODDAGI TO'LIQ Q FORMULASI
+    q, delta, mu = compute_q_advanced(total_m, n, total_t, T)
 
-    # 11. Baholash
+    # Baholash
     if phi_xi > 0.95:
         reliability = "Ishonchli (tasodifiy emas)"
         reliability_level = "Yuqori"
@@ -276,12 +339,19 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
         informativity = "Informativ emas"
         informativity_level = "Juda past"
 
-    # 12. LOG
     logging.info(
-        f"Informativlik: T={T}, t={total_t}, n={n}, m={total_m}, "
-        f"t/T={t_T:.4f}, m/n={m_n:.4f}, Φ(ξ)={phi_xi:.4f}, q={q:.4f}, "
-        f"Tutilgan zilzilalar: {len(captured_earthquake_indices)}/{n}"
+        f"📊 Natija: T={T}, t={total_t}, n={n}, m={total_m}, "
+        f"t/T={t_T:.4f}, m/n={m_n:.4f}, Φ(ξ)={phi_xi:.4f}, "
+        f"q={q:.4f}, δ={delta:.4f}, μ={mu:.4f}"
     )
+
+    # 🔴 Session uchun segment_results ni tozalash
+    clean_segment_results = []
+    for seg in segment_results:
+        clean_seg = seg.copy()
+        # Timestamp obyektlarini olib tashlash
+        clean_seg.pop('merged_intervals', None)
+        clean_segment_results.append(clean_seg)
 
     return {
         'T': T,
@@ -290,15 +360,21 @@ def calculate_informativity(data_series, earthquakes_df, window_years,
         'm': total_m,
         't_T': t_T,
         'm_n': m_n,
+        'xi': xi,
         'phi_xi': phi_xi,
         'q': q,
+        'delta': delta,  # 🔴 YANGI
+        'mu': mu,  # 🔴 YANGI
         'reliability': reliability,
         'reliability_level': reliability_level,
         'informativity': informativity,
         'informativity_level': informativity_level,
-        'segment_results': segment_results,
-        'captured_earthquakes': captured_earthquake_indices
+        'segment_results': clean_segment_results,
+        'segment_results_full': segment_results,  # Intervallar bilan (sessionga saqlanmaydi)
+        'captured_earthquakes': captured_earthquake_indices,
+        'all_anomalies': all_anomalies
     }
+
 
 
 def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
@@ -581,7 +657,6 @@ def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
     # Barcha grafiklarni birlashtirish
     return "\n".join(graphs_html)
 
-
 def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, min_mlgr,
                         captured_earthquake_indices=None, show_radius=True):
     """
@@ -715,33 +790,38 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             well_info = get_well_detailed_info(well_name)
 
             tooltip_html = f"""
-                <div style="width: 300px; font-family: Arial; font-size: 12px;">
-                    <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Grunt:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('grunt', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Suv qatlami:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                    </table>
-                    <p style="margin-top: 10px; color: #6c757d; font-style: italic;">Tanlanmagan skvajina</p>
-                </div>
-            """
+                            <div style="width: 450px; font-family: Arial; font-size: 12px;">
+                                <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">nomi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                     <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+
+                                </table>
+                                <p style="margin-top: 10px; color: #6c757d; font-style: italic;">Tanlanmagan skvajina</p>
+                            </div>
+                        """
 
             triangle_icon = folium.DivIcon(
                 html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid lightblue;"></div>',
@@ -763,33 +843,38 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             well_info = get_well_detailed_info(skvajina)
 
             tooltip_html = f"""
-                <div style="width: 350px; font-family: Arial; font-size: 12px;">
-                    <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <tr style="background-color: #e3f2fd;">
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Nomi:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Quduq turi:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #e3f2fd;">
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Grunt:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('grunt', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Chuqurlik:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #e3f2fd;">
-                            <td style="padding: 5px; border: 1px solid #90caf9; font-weight: bold;">Suv qatlami:</td>
-                            <td style="padding: 5px; border: 1px solid #90caf9;">{well_info.get('suv_qatlami', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                    </table>
-                    <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
-                </div>
-            """
+                            <div style="width: 450px; font-family: Arial; font-size: 12px;">
+                                <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                   <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">nomi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                     <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+
+                                </table>
+                                <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
+                            </div>
+                        """
 
             triangle_icon = folium.DivIcon(
                 html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid blue;"></div>',
@@ -1223,7 +1308,7 @@ def informativity_view(request):
                     # INFORMATIVLIK HISOBLASH
                     logging.info(f"📊 {key} - {param}: Informativlik hisoblanmoqda...")
 
-                    inf_result = calculate_informativity(
+                    inf_result = calculate_informativity_improved(
                         df_temp_indexed['value'],  # MEDIAN QILINGAN MA'LUMOT!
                         earthquakes_filtered,
                         window_years,
@@ -1272,6 +1357,10 @@ def informativity_view(request):
                         logging.info(f"✅ {key} - {param}: Informativlik tayyor. "
                                      f"q={inf_result['q']:.4f}, Φ(ξ)={inf_result['phi_xi']:.4f}")
 
+            # views.py da informativity_view funksiyasi oxirida
+
+            # ... (barcha hisoblashlar) ...
+
             if not results:
                 context['error'] = 'Hech qanday natija topilmadi.'
                 return render(request, "seismos_app/informativity_results.html", context)
@@ -1319,31 +1408,91 @@ def informativity_view(request):
                     logging.error(f"Folium xaritasini yaratishda xato: {e}", exc_info=True)
                     folium_map_html = "<p>Xarita yaratishda xato yuz berdi.</p>"
 
-            # Session uchun ma'lumotlarni saqlash
+            # ============================================
+            # 🔴 SESSION UCHUN MA'LUMOTLARNI TOZALASH
+            # ============================================
+
+            def make_json_serializable(obj):
+                """
+                Har qanday obyektni JSON formatiga aylantirish
+                """
+                if isinstance(obj, (pd.Timestamp, datetime.datetime, datetime.date)):
+                    return obj.isoformat()
+                elif isinstance(obj, (np.integer, np.int64, np.int32)):
+                    return int(obj)
+                elif isinstance(obj, (np.floating, np.float64, np.float32)):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, tuple):
+                    return list(obj)
+                elif isinstance(obj, pd.Series):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {k: make_json_serializable(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [make_json_serializable(item) for item in obj]
+                else:
+                    return obj
+
             session_results = []
             for res in results:
+                # Asosiy ma'lumotlar
                 clean_res = {
-                    'skvajina': res['skvajina'],
-                    'parametr': res['parametr'],
-                    'key': res['key'],
-                    'T': res['T'],
-                    't': res['t'],
-                    'n': res['n'],
-                    'm': res['m'],
-                    't_T': res['t_T'],
-                    'm_n': res['m_n'],
-                    'phi_xi': res['phi_xi'],
-                    'q': res['q'],
-                    'reliability': res['reliability'],
-                    'reliability_level': res['reliability_level'],
-                    'informativity': res['informativity'],
-                    'informativity_level': res['informativity_level'],
-                    'segment_results': res['segment_results'],
-                    'captured_count': len(res.get('captured_earthquakes', []))
+                    'skvajina': str(res['skvajina']),
+                    'parametr': str(res['parametr']),
+                    'key': str(res['key']),
+                    'T': int(res['T']),
+                    't': int(res['t']),
+                    'n': int(res['n']),
+                    'm': int(res['m']),
+                    't_T': float(res['t_T']),
+                    'm_n': float(res['m_n']),
+                    'phi_xi': float(res['phi_xi']),
+                    'q': float(res['q']),
+                    'delta': float(res.get('delta', 0.0)),
+                    'mu': float(res.get('mu', 0.0)),
+                    'reliability': str(res['reliability']),
+                    'reliability_level': str(res['reliability_level']),
+                    'informativity': str(res['informativity']),
+                    'informativity_level': str(res['informativity_level']),
+                    'captured_count': int(len(res.get('captured_earthquakes', [])))
                 }
+
+                # Segment ma'lumotlarini tozalash
+                if 'segment_results' in res:
+                    clean_segments = []
+                    for seg in res['segment_results']:
+                        clean_seg = {
+                            'year_start': int(seg['year_start']),
+                            'year_end': int(seg['year_end']),
+                            'T': int(seg['T']),
+                            't': int(seg['t']),
+                            'n': int(seg['n']),
+                            'm': int(seg['m']),
+                            'mean': float(seg['mean']),
+                            'std': float(seg['std']),
+                            'upper': float(seg.get('upper', 0.0)),
+                            'lower': float(seg.get('lower', 0.0))
+                        }
+                        # MUHIM: merged_intervals ni o'tkazib yuborish!
+                        clean_segments.append(clean_seg)
+
+                    clean_res['segment_results'] = clean_segments
+
                 session_results.append(clean_res)
 
-            request.session['informativity_results'] = session_results
+            # Session ga saqlash
+            try:
+                request.session['informativity_results'] = session_results
+                logging.info(f"✅ Session saqlandi: {len(session_results)} ta natija")
+            except Exception as e:
+                logging.error(f"❌ Session saqlashda xato: {e}")
+                # Session xatosini ignore qilish (asosiy funktsionallik ishlayveradi)
+
+            # ============================================
+            # CONTEXT YARATISH
+            # ============================================
 
             context.update({
                 'results': results,
@@ -1351,6 +1500,8 @@ def informativity_view(request):
                 'folium_map': folium_map_html,
                 'total_results': len(results),
             })
+
+
 
         except Exception as e:
             logging.error(f"Informativity error: {e}", exc_info=True)
@@ -1420,8 +1571,8 @@ def export_informativity_excel(request):
         worksheet.write(row, 8, round(res['m_n'], 4), cell)
         worksheet.write(row, 9, round(res['phi_xi'], 4), cell)
         worksheet.write(row, 10, round(res['q'], 4), cell)
-        worksheet.write(row, 11, res['reliability_level'], cell)
-        worksheet.write(row, 12, res['informativity_level'], cell)
+        worksheet.write(row, 11, res['reliability'], cell)
+        worksheet.write(row, 12, res['informativity'], cell)
 
     workbook.close()
     output.seek(0)

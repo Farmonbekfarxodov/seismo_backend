@@ -158,20 +158,20 @@
                         <td><strong>{{ r.q|floatformat:4 }}</strong></td>
                         <td>
                             {% if r.reliability_level == "Yuqori" %}
-                                <span class="level-high">Yuqori</span>
+                                <span class="level-high">Ishonchli</span>
                             {% else %}
-                                <span class="level-low">Past</span>
+                                <span class="level-low">Ishonchsiz</span>
                             {% endif %}
                         </td>
                         <td>
                             {% if r.informativity_level == "Yuqori" %}
-                                <span class="level-high">Yuqori</span>
+                                <span class="level-high">Informativ darakchi</span>
                             {% elif r.informativity_level == "O'rtacha" %}
-                                <span class="level-medium">O'rtacha</span>
+                                <span class="level-medium">Foydali darakchi</span>
                             {% elif r.informativity_level == "Past" %}
-                                <span class="level-low">Past</span>
+                                <span class="level-low">Noaniq darakchi</span>
                             {% else %}
-                                <span class="level-very-low">Juda past</span>
+                                <span class="level-very-low">Informativ emas</span>
                             {% endif %}
                         </td>
                     </tr>

@@ -3,6 +3,8 @@
 {% block title %}{{ page_title|default:"Seysmik Tahlil" }}{% endblock %}
 {% block content %}
 
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
 <style>
     /* General filter panel style */
     .filter-panel {
@@ -92,73 +94,29 @@
         width: 100%;
         max-width: 1200px;
         height: 600px;
+        margin: 0 auto; /* Markazlashtirish */
     }
 
-    /* YANGI: Grafik uchun to'liq kenglik */
-    .w-100 {
-        width: 100% !important;
-        margin: 0 !important;
-        padding: 0 !important;
-    }
-
-    /* YANGI: Plotly grafik container */
+    /* Grafik container */
     .plotly-graph-container {
         width: 100% !important;
-        max-width: 100% !important;
-        margin: 0 !important;
-        padding: 0 !important;
         overflow-x: hidden;
     }
 
-    /* YANGI: Container va padding'larni olib tashlash */
-    .full-width-graph {
-        width: 100vw !important;
-        position: relative;
-        left: 50%;
-        right: 50%;
-        margin-left: -50vw !important;
-        margin-right: -50vw !important;
-        padding: 0 !important;
+    /* Kartochka stili */
+    .graph-card {
+        transition: transform 0.2s;
+        border: 1px solid #e0e0e0;
     }
 
-    /* YANGI: Plotly ichidagi SVG elementi */
-    .js-plotly-plot .plotly .main-svg {
-        width: 100% !important;
+    .graph-card:hover {
+        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
     }
 
-    /* Spinnerning o‘zi */
-    .spinner {
-        border: 8px solid #f3f3f3;
-        border-top: 8px solid #3498db;
-        border-radius: 50%;
-        width: 60px;
-        height: 60px;
-        animation: spin 1s linear infinite;
-    }
-
-    /* Aylanish animatsiyasi */
-    @keyframes spin {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
-    }
-
-    /* To‘liq ekranli overlay */
-    #overlay {
-        display: none; /* dastlab ko‘rinmasin */
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100vw;
-        height: 100vh;
-        background-color: rgba(255, 255, 255, 0.85);
-        z-index: 9999;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        font-size: 18px;
-        color: #3498db;
-        font-weight: bold;
+    .card-header {
+        background-color: #fff;
+        border-bottom: 1px solid #f0f0f0;
+        padding: 10px 20px;
     }
 </style>
 
@@ -167,13 +125,12 @@
         <h2>SEYSMOPROGNOSTIK TAHLIL</h2>
     </div>
 
-    <form method="post" action="{% url 'seismos:results' %}"  target="_blank" class="filter-panel">
+    <form method="post" action="{% url 'seismos:results' %}" target="_blank" class="filter-panel">
         {% csrf_token %}
         <div class="mx-3">
             <div class="menu-row">
-                <!-- SKVAJINALAR BLOKI -->
                 <details {% if selected_wells %}open{% endif %}>
-                    <summary>Skvajinalar</summary>
+                    <summary>Skvajinalar <span class="badge bg-primary selected-count">0</span></summary>
                     <div class="option-list wells-list">
                         {% for well in wells %}
                         <label>
@@ -184,9 +141,8 @@
                     </div>
                 </details>
 
-                <!-- PARAMETRLAR BLOKI -->
                 <details {% if selected_params %}open{% endif %}>
-                    <summary>Parametrlar</summary>
+                    <summary>Parametrlar <span class="badge bg-primary selected-count">0</span></summary>
                     <div class="option-list">
                         {% for param in params %}
                         <label>
@@ -197,42 +153,55 @@
                     </div>
                 </details>
 
-                <!-- MAGNITUDA -->
-                <input type="number" step="0.1" min="0" class="form-control"
-                       name="min_mag" placeholder="Magnituda kiriting"
-                       value="{{ current_min_mag }}" required>
+                <div class="form-group">
+                    <small>Min Magnituda</small>
+                    <input type="number" step="0.1" min="0" class="form-control"
+                           name="min_mag" placeholder="Magnituda"
+                           value="{{ current_min_mag }}" required>
+                </div>
 
-                <!-- SIGMA -->
-                <input type="number" step="0.1" min="0" class="form-control"
-                       name="sigma" placeholder="Sigma kiriting"
-                       value="{{ current_sigma }}" required>
+                <div class="form-group">
+                    <small>Sigma (σ)</small>
+                    <input type="number" step="0.1" min="0" class="form-control"
+                           name="sigma" placeholder="Sigma"
+                           value="{{ current_sigma }}" required>
+                </div>
 
-                <!-- M/lgR -->
-                <input type="number" step="0.1" class="form-control"
-                       name="min_mlgr" placeholder="M/lgR kiriting"
-                       value="{{ current_min_mlgr }}" required>
+                <div class="form-group">
+                    <small>Min M/lgR</small>
+                    <input type="number" step="0.1" class="form-control"
+                           name="min_mlgr" placeholder="M/lgR"
+                           value="{{ current_min_mlgr }}" required>
+                </div>
 
-                <select name="median_window" class="form-control">
-                    <option value="">Mediana</option>
-                    {% for val in median_values %}
-                        <option value="{{ val }}"
-                            {% if val|stringformat:"s" == current_median_window|stringformat:"s" %}
-                                selected
-                            {% endif %}>
-                            {{ val }} kunlik
-                        </option>
-                    {% endfor %}
-                </select>
+                <div class="form-group">
+                    <small>Mediana</small>
+                    <select name="median_window" class="form-control">
+                        <option value="">Tanlanmagan</option>
+                        {% for val in median_values %}
+                            <option value="{{ val }}"
+                                {% if val|stringformat:"s" == current_median_window|stringformat:"s" %}
+                                    selected
+                                {% endif %}>
+                                {{ val }} kunlik
+                            </option>
+                        {% endfor %}
+                    </select>
+                </div>
 
-                <!-- SANA ORALIG‘I -->
-                <input type="date" class="form-control" name="start_date"
-                       value="{{ current_start_date|default:'' }}">
-                <input type="date" class="form-control" name="end_date"
-                       value="{{ current_end_date|default:'' }}">
+                <div class="form-group">
+                    <small>Boshlanish</small>
+                    <input type="date" class="form-control" name="start_date"
+                           value="{{ current_start_date|default:'' }}">
+                </div>
+                <div class="form-group">
+                     <small>Tugash</small>
+                    <input type="date" class="form-control" name="end_date"
+                           value="{{ current_end_date|default:'' }}">
+                </div>
 
-                <!-- YUBORISH TUGMASI -->
-                <button type="submit" class="btn btn-primary" id="submitButton">
-                    <i class="fas fa-chart-line"></i> Grafik chizish
+                <button type="submit" class="btn btn-primary mt-4" id="submitButton" style="grid-column: span 2;">
+                    <i class="fas fa-chart-line"></i> Tahlil qilish
                 </button>
             </div>
         </div>
@@ -246,58 +215,81 @@
                 <i class="fas fa-info-circle"></i>
                 Mavjud ma'lumotlar oralig'i:
                 {% if data_min_date and data_max_date %}
-                    {{ data_min_date }} - {{ data_max_date }}
+                    <b>{{ data_min_date }}</b> dan <b>{{ data_max_date }}</b> gacha
                 {% else %}
                     Ma'lumot topilmadi.
                 {% endif %}
                 {% if current_start_date and current_end_date %}
-                    <br><strong>Tanlangan oraliq:</strong> {{ current_start_date }} - {{ current_end_date }}
+                    <br><strong>Tanlangan filtr:</strong> {{ current_start_date }} - {{ current_end_date }}
                 {% endif %}
             </div>
         </div>
 
-        {% if plotly_graph %}
-            <div class="full-width-graph">
-                <div class="plotly-graph-container">
-                    {{ plotly_graph | safe }}
+        {% if graphs_list %}
+            <div class="container-fluid px-4">
+                {% for graph in graphs_list %}
+                <div class="card mb-5 shadow-sm graph-card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0 text-primary font-weight-bold">{{ graph.title }}</h5>
+
+                        <button class="btn btn-outline-success btn-sm"
+                                onclick="downloadPlotlyImage('{{ graph.div_id }}', '{{ graph.filename }}')">
+                            <i class="fas fa-download"></i> Grafikni yuklash (PNG)
+                        </button>
+                    </div>
+                    <div class="card-body p-1">
+                        <div class="plotly-graph-container">
+                            {{ graph.html | safe }}
+                        </div>
+                    </div>
                 </div>
+                {% endfor %}
             </div>
         {% else %}
             <div class="alert alert-warning mx-3">
                 Tanlangan parametrlar uchun ma'lumot topilmadi. Boshqa parametrlarni tanlang yoki sana oralig'ini o'zgartiring.
             </div>
         {% endif %}
-
-        <div class="container mt-4">
-            <div class="px-3 py-2">
-                <h2>Barcha skvajinalar xaritasi</h2>
+        <div class="container mt-5 mb-5">
+            <div class="px-3 py-2 border-bottom mb-3">
+                <h3>Barcha skvajinalar xaritasi</h3>
             </div>
-            <div id="folium-map-container">
+            <div id="folium-map-container" class="shadow border rounded">
                 {{ folium_map | safe }}
             </div>
         </div>
     {% endif %}
 </div>
 
-{#<!-- Spinner Overlay -->#}
-{#<div id="overlay">#}
-{#    <div class="spinner"></div>#}
-{#    <div style="margin-top: 15px;">Yuklanmoqda...</div>#}
-{#</div>#}
-
-<!-- SCRIPT SECTION -->
 <script>
-document.addEventListener("DOMContentLoaded", () => {
-    // YANGI: Plotly grafikni to'liq kenglikka sozlash
-    const plotlyDiv = document.querySelector('.js-plotly-plot');
-    if (plotlyDiv) {
-        Plotly.Plots.resize(plotlyDiv);
-        window.addEventListener('resize', function() {
-            Plotly.Plots.resize(plotlyDiv);
+    // Grafikni yuklab olish funksiyasi
+    function downloadPlotlyImage(divId, filename) {
+        var gd = document.getElementById(divId);
+        if (!gd) {
+            alert("Grafik topilmadi!");
+            return;
+        }
+
+        Plotly.downloadImage(gd, {
+            format: 'png',
+            width: 1400,
+            height: 800,
+            filename: filename,
+            scale: 2 // Yuqori sifat (High Resolution)
         });
     }
 
-    // Date validation
+document.addEventListener("DOMContentLoaded", () => {
+
+    // Plotly grafiklarini ekran o'lchamiga moslashtirish (Resize fix)
+    window.addEventListener('resize', function() {
+        var plots = document.querySelectorAll('.js-plotly-plot');
+        plots.forEach(function(plot) {
+            Plotly.Plots.resize(plot);
+        });
+    });
+
+    // Date validation logic
     const start = document.querySelector('input[name="start_date"]');
     const end = document.querySelector('input[name="end_date"]');
 
@@ -329,7 +321,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // Update count function
+    // Checkboxlarni sanash funksiyasi
     function updateSelectedCount(details) {
         const countSpan = details.querySelector('.selected-count');
         if (countSpan) {
@@ -344,7 +336,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // Initialize counts and add listeners
+    // Dastlabki hisoblash va listenerlarni qo'shish
     document.querySelectorAll('details').forEach(details => {
         updateSelectedCount(details);
         const checkboxes = details.querySelectorAll('input[type="checkbox"]');
@@ -355,7 +347,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     });
 
-    // Details elementlariga click listener qo'shish
+    // Details elementlarini boshqarish (avtomatik yopish)
     const detailsElements = document.querySelectorAll('details');
     detailsElements.forEach(details => {
         details.addEventListener('click', function(e) {
@@ -368,27 +360,6 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
     });
-
-    // Spinner funksiyalari
-    function showSpinner() {
-        document.getElementById('overlay').style.display = 'flex';
-    }
-
-    function hideSpinner() {
-        document.getElementById('overlay').style.display = 'none';
-    }
-
-    // "Grafik chizish" tugmasi bosilganda spinnerni boshqarish
-    const submitButton = document.getElementById('submitButton');
-    if (submitButton) {
-        submitButton.addEventListener('click', (e) => {
-            showSpinner(); // Tugma bosilganda spinnerni yoqish
-            // An'anaviy POST uchun spinner server javobini kutadi
-        });
-    }
-
-    // Sahifa yuklanganda spinnerni o'chirish (serverdan javob kelganda)
-    hideSpinner(); // Sahifa qayta yuklanganda spinnerni avtomatik o'chirish
 });
 </script>
 
