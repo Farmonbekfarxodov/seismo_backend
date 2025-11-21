@@ -10,6 +10,7 @@ import geopandas as gpd
 import glob
 import io
 import xlsxwriter
+import base64
 
 from datetime import timedelta
 from math import pi, sin, cos, atan2, sqrt
@@ -1111,70 +1112,99 @@ def add_cracks_to_map(folium_map, cracks_gdf):
         return {}
 
 
+
+
+
 def get_well_detailed_info(well_name):
     """
-    Bitta quduq haqida batafsil ma'lumot olish
+    Bitta quduq haqida batafsil ma'lumot olish (mineralizatsiya rasmi bilan)
     """
     engine = None
-    # Ma'lumot topilmaganda yoki xato bo'lganda qaytariladigan standart lug'at
     default_info = {
-        "nomi": well_name.strip(),  # Nomi aniq bo'ladi
+        "nomi": well_name.strip(),
         "quduq_turi": "Ma'lumot yo'q",
         "suv_qatlami": "Ma'lumot yo'q",
         "chuqurlik": "Ma'lumot yo'q",
         "seysmotektonik_holat": "Ma'lumot yo'q",
         "strategrafik_taqsimoti": "Ma'lumot yo'q",
         "litologik_tarkibi": "Ma'lumot yo'q",
+        "mineralizatsiya_base64": None,
     }
 
     try:
-        # 1. DB ulanishini o'rnatish
         engine = connect_db()
 
         query = """
-                SELECT nomi, \
-                       quduq_turi, \
-                       suv_qatlami, \
-                       chuqurlik, \
-                       seysmotektonik_holat, \
-                       strategrafik_taqsimoti, \
-                       litologik_tarkibi
+                SELECT nomi, 
+                       quduq_turi, 
+                       suv_qatlami, 
+                       chuqurlik, 
+                       seysmotektonik_holat, 
+                       strategrafik_taqsimoti, 
+                       litologik_tarkibi,
+                       mineralizatsiya
                 FROM malumot1
-                WHERE nomi = %s \
+                WHERE nomi = %s
                 """
 
-        # 2. SQL so'rovini bajarish
         df = pd.read_sql(query, engine, params=(well_name.strip(),))
 
-        # 3. Agar ma'lumot topilsa (df bo'sh bo'lmasa)
         if not df.empty:
-            row = df.iloc[0]  # Bu yerda 'row' yaratiladi
+            row = df.iloc[0]
 
-            # Ma'lumotlarni lug'atga yig'ish (kalit nomlarini tekshiring!)
-            return {
+            result = {
                 "nomi": row.get("nomi", "Ma'lumot yo'q"),
-                # DIQQAT: Sizning SQL so'rovingizda 'quduq_turi' bor, lekin siz 'Quduq_turlari' deb murojaat qilyapsiz.
-                # Agar ustun nomi SQL so'rovi bilan bir xil bo'lsa:
                 "quduq_turi": row.get("quduq_turi", "Ma'lumot yo'q"),
                 "suv_qatlami": row.get("suv_qatlami", "Ma'lumot yo'q"),
-                # DIQQAT: SQL so'rovi 'chuqurlik', lekin bu yerda 'Chuqurlik'. Kichik harfda ishlatish tavsiya etiladi.
                 "chuqurlik": row.get("chuqurlik", "Ma'lumot yo'q"),
                 "seysmotektonik_holat": row.get("seysmotektonik_holat", "Ma'lumot yo'q"),
                 "strategrafik_taqsimoti": row.get("strategrafik_taqsimoti", "Ma'lumot yo'q"),
                 "litologik_tarkibi": row.get("litologik_tarkibi", "Ma'lumot yo'q"),
+                "mineralizatsiya_base64": None,
             }
+
+            # MINERALIZATSIYA rasmini qayta ishlash
+            mineralizatsiya = row.get("mineralizatsiya")
+
+            if mineralizatsiya is not None and mineralizatsiya != "Ma'lumot yo'q":
+                try:
+                    # Variant 1: Agar fayl yo'li (string) bo'lsa
+                    if isinstance(mineralizatsiya, str) and os.path.exists(mineralizatsiya):
+                        with open(mineralizatsiya, 'rb') as img_file:
+                            encoded = base64.b64encode(img_file.read()).decode('utf-8')
+                            ext = os.path.splitext(mineralizatsiya)[1].lower()
+
+                            if ext in ['.jpg', '.jpeg']:
+                                mime_type = 'image/jpeg'
+                            elif ext == '.png':
+                                mime_type = 'image/png'
+                            elif ext == '.gif':
+                                mime_type = 'image/gif'
+                            else:
+                                mime_type = 'image/png'
+
+                            result["mineralizatsiya_base64"] = f"data:{mime_type};base64,{encoded}"
+
+                    # Variant 2: Agar binary data (bytes/BLOB) bo'lsa
+                    elif isinstance(mineralizatsiya, bytes):
+                        encoded = base64.b64encode(mineralizatsiya).decode('utf-8')
+                        # Odatda PNG yoki JPEG deb faraz qilamiz
+                        result["mineralizatsiya_base64"] = f"data:image/png;base64,{encoded}"
+
+                except Exception as img_error:
+                    logging.error(f"Mineralizatsiya rasmini yuklashda xato ({well_name}): {img_error}")
+                    result["mineralizatsiya_base64"] = None
+
+            return result
         else:
-            # 4. Ma'lumot topilmasa, standart lug'atni qaytarish
             logging.warning(f"Skvajina ma'lumotlari topilmadi ({well_name}).")
-            return default_info  # row'ga murojaat qilish shart emas
+            return default_info
 
     except Exception as e:
-        # 5. Xato sodir bo'lsa, xatoni yozib, standart lug'atni qaytarish
         logging.error(f"Skvajina ma'lumotlarini yuklashda xatolik ({well_name}): {e}")
-        return default_info  # row'ga murojaat qilish shart emas
+        return default_info
 
     finally:
-        # 6. Ulanishni yopish
         if engine:
             engine.dispose()
 
@@ -1187,6 +1217,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
 
     YANGI: Dastlab aylanalar ko'rsatiladi, hover da popup ma'lumotlari,
     click da faqat aylanalar toggle qilinadi
+    YANGI: Mineralizatsiya rasmi tooltip ichida ko'rsatiladi
     """
     all_wells = get_all_wells_coordinates()
 
@@ -1256,13 +1287,13 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     )
 
     Fullscreen(
-        position='topleft',  # Joylashish: 'topleft', 'topright', 'bottomleft', 'bottomright'
-        title='To\'liq ekran',  # Knopka ustiga kelganda ko'rinadigan matn
-        title_cancel='Chiqish',  # To'liq ekrandan chiqish uchun matn
-        force_separate_button=True  # Alohida knopka sifatida ko'rsatish
+        position='topleft',
+        title='To\'liq ekran',
+        title_cancel='Chiqish',
+        force_separate_button=True
     ).add_to(m)
-    # Turli xil fon xaritalari qo'shish
 
+    # Turli xil fon xaritalari qo'shish
     try:
         folium.TileLayer(
             tiles='https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png',
@@ -1317,13 +1348,27 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         if well_name not in selected_well_names:
             well_info = get_well_detailed_info(well_name)
 
-            # Tooltip (hover) - popup ma'lumotlarini ko'rsatadi
+            # Mineralizatsiya rasmini tooltip uchun tayyorlash
+            mineralizatsiya_html = ""
+            if well_info.get('mineralizatsiya_base64'):
+                mineralizatsiya_html = f"""
+                    <tr>
+                        <td colspan="2" style="padding: 10px; border: 1px solid #dee2e6; text-align: center;">
+                            <b>Mineralizatsiya:</b><br>
+                            <img src="{well_info['mineralizatsiya_base64']}" 
+                                 style="max-width: 420px; max-height: 300px; margin-top: 5px; border-radius: 5px;" 
+                                 alt="Mineralizatsiya rasmi"/>
+                        </td>
+                    </tr>
+                """
+
+            # Tooltip (hover) - popup ma'lumotlari va rasm
             tooltip_html = f"""
                 <div style="width: 450px; font-family: Arial; font-size: 12px;">
                     <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
                     <table style="width: 100%; border-collapse: collapse;">
                         <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">nomi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
                         </tr>
                         <tr>
@@ -1342,11 +1387,11 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                             <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
                         </tr>
-                         <tr style="background-color: #f8f9fa;">
+                        <tr style="background-color: #f8f9fa;">
                             <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
                         </tr>
-                         
+                        {mineralizatsiya_html}
                     </table>
                     <p style="margin-top: 10px; color: #6c757d; font-style: italic;">Tanlanmagan skvajina</p>
                 </div>
@@ -1371,13 +1416,27 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         if lat is not None and lon is not None:
             well_info = get_well_detailed_info(skvajina)
 
-            # Tooltip (hover) - popup ma'lumotlarini ko'rsatadi
+            # Mineralizatsiya rasmini tooltip uchun tayyorlash
+            mineralizatsiya_html = ""
+            if well_info.get('mineralizatsiya_base64'):
+                mineralizatsiya_html = f"""
+                    <tr>
+                        <td colspan="2" style="padding: 10px; border: 1px solid #dee2e6; text-align: center;">
+                            <b>Mineralizatsiya:</b><br>
+                            <img src="{well_info['mineralizatsiya_base64']}" 
+                                 style="max-width: 420px; max-height: 300px; margin-top: 5px; border-radius: 5px;" 
+                                 alt="Mineralizatsiya rasmi"/>
+                        </td>
+                    </tr>
+                """
+
+            # Tooltip (hover) - popup ma'lumotlari va rasm
             tooltip_html = f"""
                 <div style="width: 450px; font-family: Arial; font-size: 12px;">
                     <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
                     <table style="width: 100%; border-collapse: collapse;">
-                       <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">nomi:</td>
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
                         </tr>
                         <tr>
@@ -1396,11 +1455,11 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                             <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
                         </tr>
-                         <tr style="background-color: #f8f9fa;">
+                        <tr style="background-color: #f8f9fa;">
                             <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
                             <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
                         </tr>
-                         
+                        {mineralizatsiya_html}
                     </table>
                     <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
                 </div>
@@ -1427,7 +1486,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                     (7, "#0033cc"),
                 ]
 
-                # Har bir radius uchun ma'lumot tayyorlash
                 circles_info = []
                 for M_value, color in radii_data:
                     R_km = float(10 ** (M_value / mlgr_val))
@@ -1439,7 +1497,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                         'mlgr': mlgr_val
                     })
 
-                # JavaScript kodi - radiuslarni dastlab ko'rsatish va toggle qilish
                 js_code = f"""
                 <script>
                 (function() {{
@@ -1457,7 +1514,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                             return;
                         }}
 
-                        // Dastlab aylanalarni ko'rsatish
                         circlesLayer = L.layerGroup();
                         circlesInfo.forEach(function(info) {{
                             var circle = L.circle([wellLat, wellLon], {{
@@ -1477,23 +1533,19 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                         }});
                         circlesLayer.addTo(map);
 
-                        // Barcha markerlarni topish
                         map.eachLayer(function(layer) {{
                             if (layer instanceof L.Marker) {{
                                 var latlng = layer.getLatLng();
                                 if (Math.abs(latlng.lat - wellLat) < 0.0001 && 
                                     Math.abs(latlng.lng - wellLon) < 0.0001) {{
 
-                                    // Markerga click listener qo'shish (faqat aylanalarni toggle qilish)
                                     layer.on('click', function(e) {{
                                         L.DomEvent.stopPropagation(e);
 
                                         if (isVisible) {{
-                                            // Aylanalarni yashirish
                                             map.removeLayer(circlesLayer);
                                             isVisible = false;
                                         }} else {{
-                                            // Aylanalarni ko'rsatish
                                             circlesLayer.addTo(map);
                                             isVisible = true;
                                         }}
