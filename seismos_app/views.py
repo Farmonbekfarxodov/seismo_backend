@@ -1112,9 +1112,6 @@ def add_cracks_to_map(folium_map, cracks_gdf):
         return {}
 
 
-
-
-
 def get_well_detailed_info(well_name):
     """
     Bitta quduq haqida batafsil ma'lumot olish (mineralizatsiya rasmi bilan)
@@ -2026,7 +2023,7 @@ def results_view(request):
 
             # 5. Sarlavha va Layout
             graph_title = f"{key} - {param}"
-            title_date = f" ({filter_start_date} - {filter_end_date})" if filter_start_date and filter_end_date else " (2020 - hozir)"
+            title_date = f" ({filter_start_date} - {filter_end_date})" if filter_start_date and filter_end_date else " "
 
             fig.update_layout(
                 title_text=f"{graph_title}{title_date}",
