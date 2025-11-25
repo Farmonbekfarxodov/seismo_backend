@@ -319,6 +319,60 @@ def generate_colors(n):
     return safe_colors[:n]
 
 
+def generate_well_colors(well_names):
+    """
+    Har bir skvajina uchun unique rang va uning soyalarini generatsiya qiladi
+    """
+    base_colors = [
+
+
+        '#0000FF',  # Ko'k
+        '#FF00FF',  # Magenta
+        '#00FFFF',  # Cyan
+        '#FFA500',  # Orange
+        '#800080',  # Purple
+        '#FFD700',  # Gold
+        '#FF1493',  # Deep Pink
+        '#00CED1',  # Dark Turquoise
+        '#FF4500',  # Orange Red
+        '#32CD32',  # Lime Green
+        '#BA55D3',  # Medium Orchid
+        '#20B2AA',  # Light Sea Green
+
+        '#4169E1',  # Royal Blue
+        '#DC143C',  # Crimson
+        '#7FFF00',  # Chartreuse
+        '#FF8C00',  # Dark Orange
+        '#9370DB',  # Medium Purple
+    ]
+
+    well_color_map = {}
+
+    for idx, well_name in enumerate(well_names):
+        # Agar ranglar tugasa, qaytadan boshlash
+        base_color = base_colors[idx % len(base_colors)]
+
+        # Asosiy rangdan 3 ta soya yaratish (ochroq -> to'qroq)
+        # RGB formatga o'tkazish
+        r = int(base_color[1:3], 16)
+        g = int(base_color[3:5], 16)
+        b = int(base_color[5:7], 16)
+
+        # 3 ta soya: light (70% opacity), medium (85% opacity), dark (100%)
+        shades = [
+            f'rgba({r},{g},{b},0.9)',  # Eng ochiq (M=5)
+            f'rgba({r},{g},{b},0.9)',  # O'rtacha (M=6)
+            f'rgba({r},{g},{b},0.9)',  # To'q (M=7)
+        ]
+
+        well_color_map[well_name] = {
+            'base': base_color,
+            'triangle': base_color,  # Uchburchak uchun asosiy rang
+            'shades': shades  # Aylanalar uchun soyalar
+        }
+
+    return well_color_map
+
 def plot_data_with_anomalies(
     fig,
     x_val,
@@ -1208,23 +1262,22 @@ def get_well_detailed_info(well_name):
 
 def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, min_mlgr):
     """
-    Folium yordamida interaktiv xarita yaratadi va unga barcha
-    skvajinalar, tanlangan skvajinalar, filtrlangan zilzilalar va
-    BARCHA yer yoriqlarini qo'shadi.
-
-    YANGI: Dastlab aylanalar ko'rsatiladi, hover da popup ma'lumotlari,
-    click da faqat aylanalar toggle qilinadi
-    YANGI: Mineralizatsiya rasmi tooltip ichida ko'rsatiladi
+    Folium yordamida interaktiv xarita yaratadi
+    HAR BIR TANLANGAN SKVAJINA O'Z RANGIDA VA AYLANMALARI HAM O'SHA RANGDA
     """
     all_wells = get_all_wells_coordinates()
 
     selected_well_names = set()
+    selected_well_names_list = []  # Rang uchun tartiblangan ro'yxat
     filtered_earthquakes_by_well = []
 
-    # Har bir tanlangan skvajina uchun filtrlangan zilzilalarni hisoblash
+    # ============================================================
+    # 1-QISM: ZILZILALARNI FILTRLASH
+    # ============================================================
     for key in selected_keys:
         _, skvajina = key.split(" | ")
         selected_well_names.add(skvajina)
+        selected_well_names_list.append(skvajina)
 
         lat, lon = well_coords.get(skvajina, (None, None))
         if lat is not None and lon is not None:
@@ -1254,7 +1307,14 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     else:
         all_filtered_earthquakes = pd.DataFrame()
 
-    # Xarita markazini aniqlash
+    # ============================================================
+    # 2-QISM: HAR BIR SKVAJINA UCHUN RANG GENERATSIYA QILISH
+    # ============================================================
+    well_color_map = generate_well_colors(selected_well_names_list)
+
+    # ============================================================
+    # 3-QISM: XARITA MARKAZINI ANIQLASH
+    # ============================================================
     if selected_keys:
         selected_lats = [
             well_coords[key.split(" | ")[1]][0]
@@ -1276,6 +1336,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     else:
         center_lat, center_lon = 41.2995, 69.2401
 
+    # ============================================================
+    # 4-QISM: ASOSIY XARITA YARATISH
+    # ============================================================
     m = folium.Map(
         location=[center_lat, center_lon],
         zoom_start=8,
@@ -1290,11 +1353,13 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         force_separate_button=True
     ).add_to(m)
 
-    # Turli xil fon xaritalari qo'shish
+    # ============================================================
+    # 5-QISM: FON XARITALARI QO'SHISH
+    # ============================================================
     try:
         folium.TileLayer(
             tiles='https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png',
-            attr='Map tiles by <a href="http://stamen.com">Stamen Design</a>, under <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. Data by <a href="http://openstreetmap.org">OpenStreetMap</a>, under <a href="http://creativecommons.org/licenses/by-sa/3.0">CC BY SA</a>.',
+            attr='Map tiles by <a href="http://stamen.com">Stamen Design</a>',
             name='Terrain'
         ).add_to(m)
     except:
@@ -1312,7 +1377,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     try:
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri — Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+            attr='Tiles © Esri',
             name='Satellite',
             overlay=False,
             control=True
@@ -1320,32 +1385,35 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     except:
         logging.warning("Satellite tiles yuklanmadi")
 
-    # YER YORIQLARINI QO'SHISH
+    # ============================================================
+    # 6-QISM: YER YORIQLARINI QO'SHISH
+    # ============================================================
     logging.info("Yer yoriqlarini yuklash boshlandi...")
     all_cracks = load_all_cracks_shapefiles()
-    crack_colors = {}
     if all_cracks is not None:
-        crack_colors = add_cracks_to_map(m, all_cracks)
+        add_cracks_to_map(m, all_cracks)
         logging.info(f"Yer yoriqlari xaritaga qo'shildi: {len(all_cracks)} ta")
     else:
         logging.warning("Yer yoriqlari yuklanmadi")
 
-    # SEYSMOGEN ZONALARNI QO'SHISH
+    # ============================================================
+    # 7-QISM: SEYSMOGEN ZONALARNI QO'SHISH
+    # ============================================================
     logging.info("Seysmogen zonalarni yuklash boshlandi...")
     seismogenic_zones = load_seismogenic_zones()
-    zone_colors = {}
     if seismogenic_zones is not None:
-        zone_colors = add_seismogenic_zones_to_map(m, seismogenic_zones)
+        add_seismogenic_zones_to_map(m, seismogenic_zones)
         logging.info(f"Seysmogen zonalar xaritaga qo'shildi: {len(seismogenic_zones)} ta")
     else:
         logging.warning("Seysmogen zonalar yuklanmadi")
 
-    # Barcha skvajinalarni xaritaga qo'shish (TANLANMAGANLAR)
+    # ============================================================
+    # 8-QISM: TANLANMAGAN SKVAJINALARNI QO'SHISH (LIGHTBLUE)
+    # ============================================================
     for well_name, (lat, lon) in all_wells.items():
         if well_name not in selected_well_names:
             well_info = get_well_detailed_info(well_name)
 
-            # Mineralizatsiya rasmini tooltip uchun tayyorlash
             mineralizatsiya_html = ""
             if well_info.get('mineralizatsiya_base64'):
                 mineralizatsiya_html = f"""
@@ -1359,40 +1427,39 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                     </tr>
                 """
 
-            # Tooltip (hover) - popup ma'lumotlari va rasm
             tooltip_html = f"""
-                <div style="width: 450px; font-family: Arial; font-size: 12px;">
-                    <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        {mineralizatsiya_html}
-                    </table>
-                    <p style="margin-top: 10px; color: #6c757d; font-style: italic;">Tanlanmagan skvajina</p>
-                </div>
-            """
+                            <div style="width: 450px; font-family: Arial; font-size: 12px;">
+                                <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    {mineralizatsiya_html}
+                                </table>
+                                <p style="margin-top: 10px; color: #6c757d; font-style: italic;">Tanlanmagan skvajina</p>
+                            </div>
+                        """
 
             triangle_icon = folium.DivIcon(
                 html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid lightblue;"></div>',
@@ -1406,14 +1473,23 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 icon=triangle_icon,
             ).add_to(m)
 
-    # Tanlangan skvajinalarni xaritaga qo'shish
+    # ============================================================
+    # 9-QISM: TANLANGAN SKVAJINALARNI O'Z RANGIDA QO'SHISH
+    # ============================================================
     for key in selected_keys:
         _, skvajina = key.split(" | ")
         lat, lon = well_coords.get(skvajina, (None, None))
+
         if lat is not None and lon is not None:
+            # BU SKVAJINA UCHUN RANGNI OLISH
+            colors = well_color_map.get(skvajina, {
+                'base': 'blue',
+                'triangle': 'blue',
+                'shades': ['rgba(0,0,255,0.5)', 'rgba(0,0,255,0.7)', 'rgba(0,0,255,0.9)']
+            })
+
             well_info = get_well_detailed_info(skvajina)
 
-            # Mineralizatsiya rasmini tooltip uchun tayyorlash
             mineralizatsiya_html = ""
             if well_info.get('mineralizatsiya_base64'):
                 mineralizatsiya_html = f"""
@@ -1427,43 +1503,44 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                     </tr>
                 """
 
-            # Tooltip (hover) - popup ma'lumotlari va rasm
+            # TOOLTIP RANGINI O'ZGARTIRISH
             tooltip_html = f"""
-                <div style="width: 450px; font-family: Arial; font-size: 12px;">
-                    <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        {mineralizatsiya_html}
-                    </table>
-                    <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
-                </div>
-            """
+                            <div style="width: 450px; font-family: Arial; font-size: 12px;">
+                                <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    {mineralizatsiya_html}
+                                </table>
+                                <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
+                            </div>
+                        """
 
+            # UCHBURCHAK MARKERINI RANGINI O'ZGARTIRISH
             triangle_icon = folium.DivIcon(
-                html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid blue;"></div>',
+                html=f'<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid {colors["triangle"]};"></div>',
                 icon_size=(20, 20),
                 icon_anchor=(10, 20)
             )
@@ -1474,13 +1551,17 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 icon=triangle_icon,
             ).add_to(m)
 
-            # JavaScript yordamida radiuslarni dastlab ko'rsatish va click bilan boshqarish
+            # ============================================================
+            # AYLANALARNI O'SHA RANGDA QO'SHISH
+            # ============================================================
             try:
                 mlgr_val = min_mlgr if min_mlgr > 0 else 0.5
+
+                # HAR BIR AYLANA UCHUN O'SHA SKVAJINANING RANGIDAN FOYDALANISH
                 radii_data = [
-                    (5, "#66ccff"),
-                    (6, "#3399ff"),
-                    (7, "#0033cc"),
+                    (5, colors['shades'][0]),  # Ochiq soya
+                    (6, colors['shades'][1]),  # O'rtacha soya
+                    (7, colors['shades'][2]),  # To'q soya
                 ]
 
                 circles_info = []
@@ -1559,7 +1640,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             except Exception as e:
                 logging.error(f"Radius JavaScript kodini qo'shishda xato ({skvajina}): {e}")
 
-    # Filtrlangan zilzilalarni xaritaga qo'shish
+    # ============================================================
+    # 10-QISM: ZILZILALARNI QO'SHISH
+    # ============================================================
     if not all_filtered_earthquakes.empty:
         for idx, row in all_filtered_earthquakes.iterrows():
             lat = row.get(LATITUDE_COLUMN, None)
@@ -1611,20 +1694,22 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                     tooltip=tooltip_html
                 ).add_to(m)
 
-    # Legend
+    # ============================================================
+    # 11-QISM: LEGEND QO'SHISH
+    # ============================================================
     legend_items = [
         '<p><b>Xarita elementlari:</b></p>',
         '<p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>',
         '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>',
         '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>',
         '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>',
-        '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid blue; display: inline-block; margin-right: 8px;"></div> Tanlangan skvajinalar</p>',
-        '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid lightblue; display: inline-block; margin-right: 8px;"></div> Tanlanmagan skvajinalar</p>',
+        '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #ADD8E6; display: inline-block; margin-right: 8px;"></div> Tanlanmagan skvajinalar</p>',
+        '<p>▼ Tanlangan skvajinalar (har xil rangda)</p>',
     ]
 
     legend_html = f'''
     <div style="position: fixed; 
-                bottom: 50px; left: 50px; width: 160px; height: 160px; 
+                bottom: 50px; left: 50px; width: 160px; height: 180px; 
                 background-color: white; border:2px solid grey; z-index:9999; 
                 font-size:12px; padding: 10px; overflow-y: auto;">
     {''.join(legend_items)}
@@ -1632,7 +1717,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     '''
     m.get_root().html.add_child(folium.Element(legend_html))
 
-    # Layer control qo'shish
     folium.LayerControl().add_to(m)
 
     return m._repr_html_()

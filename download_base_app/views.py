@@ -66,7 +66,7 @@ STATIONS_AND_WELLS = {
     "Chimyon KPS": {
         "name": "Chimyon KPS",
         "wells": [
-            {"api_well": "Chimyon 1-YU", "db_well": "Chimyon 1-Yu"},
+            {"api_well": "Chimyon 1-Yu", "db_well": "Chimyon 1-YU"},
             {"api_well": "Chimyon NP-1", "db_well": "Chimyon NP-1"},
             {"api_well": "Chimyon P-1", "db_well": "Chimyon P-1"}
         ]
