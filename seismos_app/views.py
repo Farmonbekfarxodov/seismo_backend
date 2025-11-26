@@ -613,45 +613,82 @@ def plot_data_with_anomalies(
     return y_all_values
 
 
-def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, well_lat=0, well_lon=0, min_mlgr=0):
+def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4,
+                          well_lat=0, well_lon=0, min_mlgr=0, filter_mode='mlgr'):
+    """
+    Grafikda zilzilalarni chizish
+
+    Parameters:
+    -----------
+    filter_mode : str
+        'mlgr' - M/lgR bo'yicha filtrlash (default)
+        'mb' - Faqat Mb bo'yicha filtrlash
+    """
     if original_df is None or original_df.empty:
         logging.info(f"draw_magnitude_values: original_df is empty for row {row_index}")
         return [0, 1]
 
     df = original_df.copy()
+
+    # Vaqt ma'lumotlarini tayyorlash
     df["combined_datetime"] = pd.to_datetime(
         df[DATE_COLUMN].astype(str) + " " + df[TIME_COLUMN].astype(str),
         format="mixed",
         errors="coerce"
     )
     df.dropna(subset=["combined_datetime"], inplace=True)
+
+    # Magnituda ma'lumotlarini tayyorlash
     df[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(df[MAIN_MAGNITUDE_COLUMN], errors="coerce")
     df.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
 
-    # Masofani hisoblash
-    df["R(km)"] = np.round(
-        destenc_vectorized(well_lat, well_lon, df[LATITUDE_COLUMN], df[LONGITUDE_COLUMN])
-    )
+    # ✅ ASOSIY O'ZGARISH 1: Filter rejimiga qarab turli filtrlash
+    if filter_mode == 'mb':
+        # ============================================================
+        # REJIM 1: FAQAT MAGNITUDA BO'YICHA (Masofa hisoblanmaydi)
+        # ============================================================
+        logging.info(f"[MB REJIMI] Faqat Mb >= {min_mag} bo'yicha filtrlash")
 
-    # M/lgR ni xavfsiz hisoblash - WARNING ni oldini olish
-    with np.errstate(divide='ignore', invalid='ignore'):
-        df["M/lgR"] = np.where(
-            df["R(km)"] > 1,
-            df[MAIN_MAGNITUDE_COLUMN] / np.log10(df["R(km)"]),
-            np.nan
-        )
-
-    # Filtrlash
-    valid_earthquakes = df[
-        (df[MAIN_MAGNITUDE_COLUMN] >= min_mag) &
-        (df["M/lgR"] >= min_mlgr) &
-        (df["M/lgR"].notna())  # NaN larni olib tashlash
+        valid_earthquakes = df[
+            (df[MAIN_MAGNITUDE_COLUMN] >= min_mag)
         ].copy()
 
+        logging.info(f"[MB REJIMI] Filtrlangan zilzilalar: {len(valid_earthquakes)} ta")
+
+    else:
+        # ============================================================
+        # REJIM 2: M/lgR BO'YICHA (Masofa + Magnituda)
+        # ============================================================
+        logging.info(f"[M/lgR REJIMI] Mb >= {min_mag} va M/lgR >= {min_mlgr}")
+
+        # Masofani hisoblash (faqat M/lgR rejimida kerak)
+        df["R(km)"] = np.round(
+            destenc_vectorized(well_lat, well_lon, df[LATITUDE_COLUMN], df[LONGITUDE_COLUMN])
+        )
+
+        # M/lgR ni xavfsiz hisoblash
+        with np.errstate(divide='ignore', invalid='ignore'):
+            df["M/lgR"] = np.where(
+                df["R(km)"] > 1,
+                df[MAIN_MAGNITUDE_COLUMN] / np.log10(df["R(km)"]),
+                np.nan
+            )
+
+        # Filtrlash: Mb va M/lgR bo'yicha
+        valid_earthquakes = df[
+            (df[MAIN_MAGNITUDE_COLUMN] >= min_mag) &
+            (df["M/lgR"] >= min_mlgr) &
+            (df["M/lgR"].notna())
+            ].copy()
+
+        logging.info(f"[M/lgR REJIMI] Filtrlangan zilzilalar: {len(valid_earthquakes)} ta")
+
+    # Agar hech qanday zilzila topilmasa
     if valid_earthquakes.empty:
         logging.info(f"draw_magnitude_values: No valid earthquakes for row {row_index}")
         return [0, 1]
 
+    # Y o'qi diapazoni
     max_mag_for_y_axis = valid_earthquakes[MAIN_MAGNITUDE_COLUMN].max() * 1.1
     min_mag_for_y_axis = 0
 
@@ -663,29 +700,69 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
         col=col_index,
     )
 
+    # ✅ ASOSIY O'ZGARISH 2: Hover text rejimga qarab
     stem_x = []
     stem_y = []
     hover_texts = []
 
     for _, row in valid_earthquakes.iterrows():
-        time_str = row["combined_datetime"].strftime("%d.%m.%Y")
-        mag_val = row[MAIN_MAGNITUDE_COLUMN]
-        distance = row["R(km)"]
-        mlgr_val = row["M/lgR"]
+        lat = row.get(LATITUDE_COLUMN, None)
+        lon = row.get(LONGITUDE_COLUMN, None)
+        mag_val = row.get(MAIN_MAGNITUDE_COLUMN, None)
 
-        stem_x.extend([row["combined_datetime"], row["combined_datetime"], None])
-        stem_y.extend([0, mag_val, None])
-        hover_text = (f"Vaqt: {time_str}<br>Mb: {mag_val:.2f}<br>Masofa: {distance:.1f} km<br>M/lgR: {mlgr_val:.2f}")
-        hover_texts.extend(["", hover_text, ""])
+        # Sanani formatlash
+        date_val = row.get(DATE_COLUMN, "Noma'lum")
+        try:
+            date_val = pd.to_datetime(date_val).strftime("%d.%m.%Y")
+        except:
+            date_val = "Noma'lum"
 
+        depth_val = row.get("Depth", "Noma'lum")
+
+        # ✅ HOVER TEXT: Rejimga qarab turli ma'lumot
+        if filter_mode == 'mb':
+            # Faqat Mb rejimida - masofani ko'rsatmaslik
+            hover_text = f"""
+                <b>Zilzila</b><br>
+                Sana: {date_val}<br>
+                Magnituda (Mb): {mag_val:.2f}<br>
+                Chuqurlik: {depth_val} km<br>
+                <i>Masofa hisoblanmagan (Faqat Mb rejimi)</i>
+            """
+        else:
+            # M/lgR rejimida - barcha ma'lumotlar
+            distance_val = row.get("R(km)", "Noma'lum")
+            mlgr_val = row.get("M/lgR", "Noma'lum")
+
+            hover_text = f"""
+                <b>Zilzila</b><br>
+                Sana: {date_val}<br>
+                Magnituda (Mb): {mag_val:.2f}<br>
+                Chuqurlik: {depth_val} km<br>
+                Masofa: {distance_val:.1f} km<br>
+                M/lgR: {mlgr_val:.2f}
+            """
+
+        if mag_val is not None and not np.isnan(mag_val) and mag_val > 0:
+            stem_x.extend([row["combined_datetime"], row["combined_datetime"], None])
+            stem_y.extend([0, mag_val, None])
+            hover_texts.extend(["", hover_text, ""])
+
+    # Stem plot chizish
     if stem_x:
+        # ✅ LEGEND: Rejimga qarab turli nom
+        if filter_mode == 'mb':
+            legend_name = f"{MAIN_MAGNITUDE_COLUMN} Magnituda (≥{min_mag}) - Faqat Mb"
+        else:
+            legend_name = f"{MAIN_MAGNITUDE_COLUMN} Magnituda (≥{min_mag}, M/lgR≥{min_mlgr})"
+
         fig.add_trace(
             go.Scatter(
                 x=stem_x,
                 y=stem_y,
                 mode="lines",
                 line=dict(color="navy", width=2),
-                name=f"{MAIN_MAGNITUDE_COLUMN} Magnituda (≥{min_mag})",
+                name=legend_name,
                 hoverinfo="text",
                 text=hover_texts,
                 showlegend=True,
@@ -697,6 +774,7 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
             secondary_y=True,
         )
 
+    # Grid sozlamalari
     fig.update_xaxes(
         matches=f'x{row_index}',
         row=row_index,
@@ -722,7 +800,6 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
     )
 
     return [min_mag_for_y_axis, max_mag_for_y_axis]
-
 
 def distance_haversine(lat1, lon1, lat2, lon2):
     """
@@ -1268,7 +1345,7 @@ def get_well_detailed_info(well_name):
             engine.dispose()
 
 
-def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, min_mlgr):
+def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, min_mlgr, filter_mode='mlgr'):
     """
     Folium yordamida interaktiv xarita yaratadi
     HAR BIR TANLANGAN SKVAJINA O'Z RANGIDA VA AYLANMALARI HAM O'SHA RANGDA
@@ -1290,14 +1367,30 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         lat, lon = well_coords.get(skvajina, (None, None))
         if lat is not None and lon is not None:
             df = earthquake_data.copy()
+            logging.info(f"\n{'=' * 50}")
+            logging.info(f"Skvajina: {skvajina}")
+            logging.info(f"Skvajina koordinatalari: Lat={lat}, Lon={lon}")
+            logging.info(f"Jami zilzilalar (boshida): {len(df)}")
+            logging.info(f"Zilzila koordinatalari (birinchi 5 ta):")
+            logging.info(df[[LATITUDE_COLUMN, LONGITUDE_COLUMN, MAIN_MAGNITUDE_COLUMN]].head())
+
             df[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(df[MAIN_MAGNITUDE_COLUMN], errors="coerce")
             df.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
+
+            logging.info(f"Mb tozalashdan keyin: {len(df)} ta")
 
             # Masofani hisoblash
             df["R(km)"] = np.round(
                 destenc_vectorized(lat, lon, df[LATITUDE_COLUMN], df[LONGITUDE_COLUMN])
             )
 
+            # ← BU DEBUG KODNI QO'SHING:
+            logging.info(f"Masofalar (R km) statistikasi:")
+            logging.info(f"  Min: {df['R(km)'].min():.1f} km")
+            logging.info(f"  Max: {df['R(km)'].max():.1f} km")
+            logging.info(f"  O'rtacha: {df['R(km)'].mean():.1f} km")
+            logging.info(f"Birinchi 10 ta zilzilaning masofalari:")
+            logging.info(df[['R(km)', MAIN_MAGNITUDE_COLUMN, LATITUDE_COLUMN, LONGITUDE_COLUMN]].head(10))
             # M/lgR ni xavfsiz hisoblash (faqat R > 1 km bo'lganda)
             # np.errstate yordamida divide by zero warningni o'chirish
             with np.errstate(divide='ignore', invalid='ignore'):
@@ -1306,13 +1399,36 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                     df[MAIN_MAGNITUDE_COLUMN] / np.log10(df["R(km)"]),
                     np.nan
                 )
+            # ← BU DEBUG KODNI QO'SHING:
+            logging.info(f"M/lgR statistikasi:")
+            logging.info(f"  Min: {df['M/lgR'].min():.2f}")
+            logging.info(f"  Max: {df['M/lgR'].max():.2f}")
+            logging.info(f"  O'rtacha: {df['M/lgR'].mean():.2f}")
+            logging.info(f"  M/lgR >= {min_mlgr} bo'lganlar: {(df['M/lgR'] >= min_mlgr).sum()} ta")
 
-            # Filtrlash (NaN qiymatlarni olib tashlash)
-            valid_earthquakes = df[
-                (df[MAIN_MAGNITUDE_COLUMN] >= min_mag) &
-                (df["M/lgR"] >= min_mlgr) &
-                (df["M/lgR"].notna())  # NaN larni chiqarish
+            if filter_mode == 'mb':
+                valid_earthquakes = df[
+                    (df[MAIN_MAGNITUDE_COLUMN] >= min_mag)
                 ].copy()
+                logging.info(f"Filtrlash rejimi:Faqat Mb >= {min_mag}")
+            else:
+                df["R(km)"] = np.round(
+                    destenc_vectorized(lat, lon, df[LATITUDE_COLUMN], df[LONGITUDE_COLUMN])
+                )
+
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    df["M/lgR"] = np.where(
+                        df["R(km)"] > 1,
+                        df[MAIN_MAGNITUDE_COLUMN] / np.log10(df["R(km)"]),
+                        np.nan
+                    )
+
+                    # Filtrlash
+                valid_earthquakes = df[
+                    (df[MAIN_MAGNITUDE_COLUMN] >= min_mag) &
+                    (df["M/lgR"] >= min_mlgr) &
+                    (df["M/lgR"].notna())
+                    ].copy()
 
             if not valid_earthquakes.empty:
                 valid_earthquakes['skvajina'] = skvajina
@@ -1813,6 +1929,8 @@ def results_view(request):
         selected_keys = request.POST.getlist("wells")
         selected_params = request.POST.getlist("params")
 
+        filter_mode = request.POST.get("filter_mode","mlgr")
+
         # Raqamli qiymatlarni xavfsiz olish
         try:
             min_mag = float(request.POST.get("min_mag", 0))
@@ -1848,6 +1966,7 @@ def results_view(request):
         request.session['filter_end_date'] = filter_end_date
         request.session['median_window'] = median_window
         request.session['use_catalog'] = True
+        request.session['filter_mode'] = filter_mode
 
     else:
         selected_keys = request.session.get("selected_keys", [])
@@ -1859,6 +1978,7 @@ def results_view(request):
         filter_end_date = request.session.get("filter_end_date")
         use_catalog = request.session.get("use_catalog", False)
         median_window = request.session.get("median_window", None)
+        filter_mode = request.session.get("filter_mode","mlgr")
 
     # Tanlangan skvajinalar nomini olish
     selected_well_names = []
@@ -2089,7 +2209,7 @@ def results_view(request):
             if not filtered_earthquakes_df.empty:
                 draw_magnitude_values(
                     fig, filtered_earthquakes_df, row, col,
-                    min_mag=min_mag, well_lat=lat, well_lon=lon, min_mlgr=min_mlgr
+                    min_mag=min_mag, well_lat=lat, well_lon=lon, min_mlgr=min_mlgr,filter_mode = filter_mode
                 )
 
             # 4. X o'qi sozlamalari
@@ -2144,7 +2264,7 @@ def results_view(request):
         # Folium xaritasini yaratish
         try:
             folium_map_html = add_map_data_folium(
-                selected_keys, well_coords, filtered_earthquakes_df, min_mag, min_mlgr
+                selected_keys, well_coords, filtered_earthquakes_df, min_mag, min_mlgr, filter_mode=filter_mode
             )
         except Exception as e:
             logging.error(f"Folium xaritasini yaratishda xato: {e}")
@@ -2165,6 +2285,7 @@ def results_view(request):
             "current_start_date": filter_start_date or "",
             "current_end_date": filter_end_date or "",
             "current_median_window": median_window or "",
+            "current_filter_mode": filter_mode,
             "median_values": [3, 5, 7, 15, 31, 91, 183, 365, 731],
 
             # Asosiy natijalar (YANGI)

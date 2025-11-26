@@ -168,14 +168,37 @@
                 </div>
 
                 <div class="form-group">
-                    <small>Min M/lgR</small>
-                    <input type="number" step="0.1" class="form-control"
+                <small>Min M/lgR</small>
+
+                <div style="display: flex; gap: 25px; padding: 12px; background-color: #f8f9fa; border-radius: 6px; border: 1px solid #dee2e6; align-items: center;">
+                    <label style="display: flex; align-items: center; cursor: pointer; margin: 0;">
+                        <input type="radio" name="filter_mode" value="mlgr"
+                               {% if current_filter_mode == 'mlgr' or not current_filter_mode %}checked{% endif %}
+                               style="margin-right: 8px; cursor: pointer; width: 18px; height: 18px;">
+                        <span style="font-size: 14px;">M/lgR bo'yicha (Mb + Masofa)</span>
+                    </label>
+
+                    <label style="display: flex; align-items: center; cursor: pointer; margin: 0;">
+                        <input type="radio" name="filter_mode" value="mb"
+                               {% if current_filter_mode == 'mb' %}checked{% endif %}
+                               style="margin-right: 8px; cursor: pointer; width: 18px; height: 18px;">
+                        <span style="font-size: 14px; color: #007bff; font-weight: 500;">
+                            Faqat Mb bo'yicha
+                        </span>
+                    </label>
+
+                    <!-- Min M/lgR input -->
+                    <input id="min_mlgr_input" type="number" step="0.1" class="form-control"
                            name="min_mlgr" placeholder="M/lgR"
-                           value="{{ current_min_mlgr }}" required>
+                           value="{{ current_min_mlgr }}" required
+                           style="width:150px;">
                 </div>
+            </div>
+
 
                 <div class="form-group">
                     <small>Mediana</small>
+
                     <select name="median_window" class="form-control">
                         <option value="">Tanlanmagan</option>
                         {% for val in median_values %}
@@ -314,12 +337,36 @@ document.addEventListener("DOMContentLoaded", () => {
         if (form) {
             form.addEventListener('submit', (e) => {
                 validate();
+                // Submitting oldin M/lgR maydonini tekshirishni kafolatlaymiz
+                toggleRequired();
                 if (!form.checkValidity()) {
                     e.preventDefault();
                 }
             });
         }
     }
+
+    // Min M/lgR input disable/enable
+    const mlgrInput = document.getElementById('min_mlgr_input');
+    const radioMlgr = document.querySelector('input[name="filter_mode"][value="mlgr"]');
+    const radioMb = document.querySelector('input[name="filter_mode"][value="mb"]');
+
+    function updateMlgrState() {
+        if (radioMb.checked) {
+            mlgrInput.disabled = true;
+            mlgrInput.value = "";
+        } else {
+            mlgrInput.disabled = false;
+        }
+    }
+
+    radioMlgr.addEventListener("change", updateMlgrState);
+    radioMb.addEventListener("change", updateMlgrState);
+
+    // page load holatini to‘g‘rilash
+    updateMlgrState();
+
+
 
     // Checkboxlarni sanash funksiyasi
     function updateSelectedCount(details) {
