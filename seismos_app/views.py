@@ -628,17 +628,25 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
     df[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(df[MAIN_MAGNITUDE_COLUMN], errors="coerce")
     df.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
 
+    # Masofani hisoblash
     df["R(km)"] = np.round(
         destenc_vectorized(well_lat, well_lon, df[LATITUDE_COLUMN], df[LONGITUDE_COLUMN])
     )
-    df["M/lgR"] = np.where(
-        df["R(km)"] > 1, df[MAIN_MAGNITUDE_COLUMN] / np.log10(df["R(km)"]), np.nan
-    )
 
+    # M/lgR ni xavfsiz hisoblash - WARNING ni oldini olish
+    with np.errstate(divide='ignore', invalid='ignore'):
+        df["M/lgR"] = np.where(
+            df["R(km)"] > 1,
+            df[MAIN_MAGNITUDE_COLUMN] / np.log10(df["R(km)"]),
+            np.nan
+        )
+
+    # Filtrlash
     valid_earthquakes = df[
         (df[MAIN_MAGNITUDE_COLUMN] >= min_mag) &
-        (df["M/lgR"] >= min_mlgr)
-    ].copy()
+        (df["M/lgR"] >= min_mlgr) &
+        (df["M/lgR"].notna())  # NaN larni olib tashlash
+        ].copy()
 
     if valid_earthquakes.empty:
         logging.info(f"draw_magnitude_values: No valid earthquakes for row {row_index}")
@@ -690,7 +698,7 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4, w
         )
 
     fig.update_xaxes(
-        matches=f'x{row_index}',  # X-o'qni boshqa subplotlar bilan moslashtirish
+        matches=f'x{row_index}',
         row=row_index,
         col=col_index,
     )
@@ -1284,15 +1292,26 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             df = earthquake_data.copy()
             df[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(df[MAIN_MAGNITUDE_COLUMN], errors="coerce")
             df.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
+
+            # Masofani hisoblash
             df["R(km)"] = np.round(
                 destenc_vectorized(lat, lon, df[LATITUDE_COLUMN], df[LONGITUDE_COLUMN])
             )
-            df["M/lgR"] = np.where(
-                df["R(km)"] > 1, df[MAIN_MAGNITUDE_COLUMN] / np.log10(df["R(km)"]), np.nan
-            )
+
+            # M/lgR ni xavfsiz hisoblash (faqat R > 1 km bo'lganda)
+            # np.errstate yordamida divide by zero warningni o'chirish
+            with np.errstate(divide='ignore', invalid='ignore'):
+                df["M/lgR"] = np.where(
+                    df["R(km)"] > 1,
+                    df[MAIN_MAGNITUDE_COLUMN] / np.log10(df["R(km)"]),
+                    np.nan
+                )
+
+            # Filtrlash (NaN qiymatlarni olib tashlash)
             valid_earthquakes = df[
                 (df[MAIN_MAGNITUDE_COLUMN] >= min_mag) &
-                (df["M/lgR"] >= min_mlgr)
+                (df["M/lgR"] >= min_mlgr) &
+                (df["M/lgR"].notna())  # NaN larni chiqarish
                 ].copy()
 
             if not valid_earthquakes.empty:
@@ -1428,38 +1447,26 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 """
 
             tooltip_html = f"""
-                            <div style="width: 450px; font-family: Arial; font-size: 12px;">
-                                <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
-                                <table style="width: 100%; border-collapse: collapse;">
-                                    <tr style="background-color: #f8f9fa;">
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
-                                    </tr>
-                                    <tr style="background-color: #f8f9fa;">
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
-                                    </tr>
-                                    <tr style="background-color: #f8f9fa;">
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
-                                    </tr>
-                                    <tr style="background-color: #f8f9fa;">
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
-                                    </tr>
-                                    {mineralizatsiya_html}
-                                </table>
-                                <p style="margin-top: 10px; color: #6c757d; font-style: italic;">Tanlanmagan skvajina</p>
-                            </div>
-                        """
+                <div style="width: 450px; font-family: Arial; font-size: 12px;">
+                    <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
+                        </tr>
+                        {mineralizatsiya_html}
+                    </table>
+                    <p style="margin-top: 10px; color: #6c757d; font-style: italic;">Tanlanmagan skvajina</p>
+                </div>
+            """
 
             triangle_icon = folium.DivIcon(
                 html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid lightblue;"></div>',
@@ -1505,38 +1512,26 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
 
             # TOOLTIP RANGINI O'ZGARTIRISH
             tooltip_html = f"""
-                            <div style="width: 450px; font-family: Arial; font-size: 12px;">
-                                <h4 style="color: #1e88e5; margin-bottom: 10px;">Tanlangan skvajina</h4>
-                                <table style="width: 100%; border-collapse: collapse;">
-                                    <tr style="background-color: #f8f9fa;">
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
-                                    </tr>
-                                    <tr style="background-color: #f8f9fa;">
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
-                                    </tr>
-                                    <tr style="background-color: #f8f9fa;">
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
-                                    </tr>
-                                    <tr style="background-color: #f8f9fa;">
-                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
-                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
-                                    </tr>
-                                    {mineralizatsiya_html}
-                                </table>
-                                <p style="margin-top: 10px; color: #1565c0; font-weight: bold;">✓ Tanlangan skvajina</p>
-                            </div>
-                        """
+                <div style="width: 450px; font-family: Arial; font-size: 12px;">
+                    <h4 style="color: {colors['base']}; margin-bottom: 10px;">Tanlangan skvajina</h4>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
+                        </tr>
+                        {mineralizatsiya_html}
+                    </table>
+                    <p style="margin-top: 10px; color: {colors['base']}; font-weight: bold;">✓ Tanlangan skvajina</p>
+                </div>
+            """
 
             # UCHBURCHAK MARKERINI RANGINI O'ZGARTIRISH
             triangle_icon = folium.DivIcon(
