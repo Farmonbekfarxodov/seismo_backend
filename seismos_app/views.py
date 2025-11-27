@@ -1799,27 +1799,48 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             depth_val = row.get("Depth", "Nomalum")
 
             if mag_val is not None and not np.isnan(mag_val) and mag_val > 0 and lat is not None and lon is not None:
-                tooltip_html = f"""
-                    <b>Zilzila</b><br>
-                    Sana: {date_val}<br>
-                    Magnituda (Mb): {mag_val:.2f}<br>
-                    Chuqurlik (km): {depth_val}<br>
-                    Masofa (km): {distance_val:.1f}<br>
-                    M/lgR: {mlgr_val:.2f}<br>
+                if filter_mode == 'mb':
+                    tooltip_html = f"""
+                        <b>Zilzila</b><br>
+                        Sana:{date_val}<br>
+                        Magnituda (Mb):{mag_val:2f}<br>
+                        Chuqurlik (km): {depth_val}<br>
+                         <i>Faqat Mb rejimi (masofa hisoblanmagan)</i>
                 """
+                    if mag_val >= 2.8:
+                        color = "red"
+                        radius = mag_val * 2.5
 
-                if mag_val >= 6:
-                    color = "darkred"
-                    radius = mag_val * 3
-                elif mag_val >= 5:
-                    color = "red"
-                    radius = mag_val * 2.5
-                elif mag_val >= 4:
-                    color = "orange"
-                    radius = mag_val * 2
+                    elif mag_val >= 2.0:
+                        color = "orange"
+                        radius = mag_val * 2
+
+                    else:
+                        color = "yellow"
+                        radius = mag_val *1.5
                 else:
-                    color = "yellow"
-                    radius = mag_val * 1.5
+
+                    tooltip_html = f"""
+                        <b>Zilzila</b><br>
+                        Sana: {date_val}<br>
+                        Magnituda (Mb): {mag_val:.2f}<br>
+                        Chuqurlik (km): {depth_val}<br>
+                        Masofa (km): {distance_val:.1f}<br>
+                        M/lgR: {mlgr_val:.2f}<br>
+                    """
+
+                    if mag_val >= 6:
+                        color = "darkred"
+                        radius = mag_val * 3
+                    elif mag_val >= 5:
+                        color = "red"
+                        radius = mag_val * 2.5
+                    elif mag_val >= 4:
+                        color = "orange"
+                        radius = mag_val * 2
+                    else:
+                        color = "yellow"
+                        radius = mag_val * 1.5
 
                 folium.CircleMarker(
                     location=[lat, lon],
@@ -1836,15 +1857,27 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     # ============================================================
     # 11-QISM: LEGEND QO'SHISH
     # ============================================================
-    legend_items = [
-        '<p><b>Xarita elementlari:</b></p>',
-        '<p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>',
-        '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>',
-        '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>',
-        '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>',
-        '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #ADD8E6; display: inline-block; margin-right: 8px;"></div> Tanlanmagan skvajinalar</p>',
-        '<p>▼ Tanlangan skvajinalar (har xil rangda)</p>',
-    ]
+    if filter_mode == 'mb':
+        legend_items = [
+            '<p><b>Xarita elementlari:</b></p>',
+            '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb > 2.8</p>',
+            '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 2.0-2.8</p>',
+            '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 2.0</p>',
+            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #ADD8E6; display: inline-block; margin-right: 8px;"></div> Tanlanmagan skvajinalar</p>',
+            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #0B43FA; display: inline-block; margin-right: 8px;"></div> Tanlangan skvajinalar (har xil rangda)</p>',
+            '<p style="font-style:italic; color:#666;">Filtrlash: Faqat Mb (masofa hisobsiz)</p>',
+        ]
+    else:
+        legend_items = [
+            '<p><b>Xarita elementlari:</b></p>',
+            '<p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>',
+            '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>',
+            '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>',
+            '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>',
+            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #ADD8E6; display: inline-block; margin-right: 8px;"></div> Tanlanmagan skvajinalar</p>',
+            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #0B43FA; display: inline-block; margin-right: 8px;"></div> Tanlangan skvajinalar (har xil rangda)</p>',
+
+        ]
 
     legend_html = f'''
     <div style="position: fixed; 
