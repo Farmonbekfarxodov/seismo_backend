@@ -939,6 +939,7 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
     """
     Folium xaritasiga seysmogen zonalarni pushti rangda qo'shadi va
     har bir zona markaziga rim raqamini joylashtiradi.
+    LayerControl orqali yoqish/o'chirish imkoniyati bilan.
     """
 
     if zones_gdf is None or zones_gdf.empty:
@@ -962,6 +963,9 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
             i += 1
         return roman_num
 
+    # FeatureGroup yaratish
+    seismogenic_layer = folium.FeatureGroup(name='Seysmogen zonalar', show=True)
+
     try:
         for idx, row in zones_gdf.iterrows():
             geometry = row.geometry
@@ -982,11 +986,9 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
             roman_number = to_roman(zone_number)
 
             # Zona nomini aniqlash
-
             zone_name = f"Zona {roman_number}"  # Default qiymat
             if 'seysmogen_' in row.index and pd.notnull(row['seysmogen_']):
                 zone_name = str(row['seysmogen_'])
-
 
             # Popup matni
             popup_text = f"""
@@ -997,7 +999,6 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
                         <td style='padding: 5px; border: 1px solid #dee2e6; font-weight: bold;'>Zona:</td>
                         <td style='padding: 5px; border: 1px solid #dee2e6;'>{zone_name}</td>
                     </tr>
-                    
                 </table>
             </div>
             """
@@ -1008,7 +1009,7 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
             centroid = geometry.centroid
             centroid_coords = [centroid.y, centroid.x]
 
-            # --- Geometriyani chizish ---
+            # --- Geometriyani chizish (FeatureGroup ga qo'shish) ---
             if geometry.geom_type == 'Polygon':
                 coords = [[y, x] for x, y in geometry.exterior.coords]
                 folium.Polygon(
@@ -1020,7 +1021,7 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
                     weight=2,
                     popup=folium.Popup(popup_text, max_width=300),
                     tooltip=tooltip_text
-                ).add_to(folium_map)
+                ).add_to(seismogenic_layer)  # folium_map emas, seismogenic_layer ga
 
             elif geometry.geom_type == 'MultiPolygon':
                 for poly in geometry.geoms:
@@ -1034,7 +1035,7 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
                         weight=2,
                         popup=folium.Popup(popup_text, max_width=300),
                         tooltip=tooltip_text
-                    ).add_to(folium_map)
+                    ).add_to(seismogenic_layer)
 
             elif geometry.geom_type == 'LineString':
                 coords = [[y, x] for x, y in geometry.coords]
@@ -1045,7 +1046,7 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
                     opacity=0.8,
                     popup=folium.Popup(popup_text, max_width=300),
                     tooltip=tooltip_text
-                ).add_to(folium_map)
+                ).add_to(seismogenic_layer)
 
             elif geometry.geom_type == 'MultiLineString':
                 for line in geometry.geoms:
@@ -1057,7 +1058,7 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
                         opacity=0.8,
                         popup=folium.Popup(popup_text, max_width=300),
                         tooltip=tooltip_text
-                    ).add_to(folium_map)
+                    ).add_to(seismogenic_layer)
 
             elif geometry.geom_type == 'GeometryCollection':
                 for geom in geometry.geoms:
@@ -1072,7 +1073,7 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
                             weight=2,
                             popup=folium.Popup(popup_text, max_width=300),
                             tooltip=tooltip_text
-                        ).add_to(folium_map)
+                        ).add_to(seismogenic_layer)
 
                     elif geom.geom_type == 'LineString':
                         coords = [[y, x] for x, y in geom.coords]
@@ -1083,7 +1084,7 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
                             opacity=0.8,
                             popup=folium.Popup(popup_text, max_width=300),
                             tooltip=tooltip_text
-                        ).add_to(folium_map)
+                        ).add_to(seismogenic_layer)
 
             else:
                 logging.warning(f"Tasdiqlanmagan geometriya turi: {geometry.geom_type}")
@@ -1106,7 +1107,10 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
                         pointer-events: none;
                     ">{roman_number}</div>
                 """)
-            ).add_to(folium_map)
+            ).add_to(seismogenic_layer)
+
+        # FeatureGroup ni xaritaga qo'shish
+        seismogenic_layer.add_to(folium_map)
 
         return legend_data
 
