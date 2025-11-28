@@ -1611,7 +1611,100 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 tooltip=folium.Tooltip(tooltip_html, sticky=True),
                 icon=triangle_icon,
             ).add_to(m)
+            # ✅ YANGI: Mb rejimida tanlanmagan skvajinalar uchun ham aylanalar
+            if filter_mode == 'mb':
+                try:
+                    mlgr_val = 2.5
 
+                    # Lightblue uchun soyalar (tanlanmagan skvajinalar)
+                    lightblue_shades = [
+                        'rgba(173, 216, 230, 0.9)',  # Ochiq
+                        'rgba(173, 216, 230, 0.9)',  # O'rtacha
+                        'rgba(173, 216, 230, 0.9)',  # To'q
+                    ]
+
+                    radii_data = [
+                        (5, lightblue_shades[0]),
+                        (6, lightblue_shades[1]),
+                        (7, lightblue_shades[2]),
+                    ]
+
+                    circles_info = []
+                    for M_value, color in radii_data:
+                        R_km = float(10 ** (M_value / mlgr_val))
+                        circles_info.append({
+                            'radius': R_km * 1000,
+                            'color': color,
+                            'M': M_value,
+                            'R_km': R_km,
+                            'mlgr': mlgr_val
+                        })
+
+                    js_code = f"""
+                    <script>
+                    (function() {{
+                        var wellLat = {lat};
+                        var wellLon = {lon};
+                        var wellName = "{well_name}";
+                        var circlesInfo = {circles_info};
+                        var circlesLayer = null;
+                        var isVisible = false;  // TANLANMAGAN uchun default yashirin
+
+                        document.addEventListener("DOMContentLoaded", function() {{
+                            var map = window.map || Object.values(window).find(v => v instanceof L.Map);
+                            if (!map) {{
+                                console.error("Xarita topilmadi");
+                                return;
+                            }}
+
+                            circlesLayer = L.layerGroup();
+                            circlesInfo.forEach(function(info) {{
+                                var circle = L.circle([wellLat, wellLon], {{
+                                    radius: info.radius,
+                                    color: info.color,
+                                    weight: 2,
+                                    fill: false,
+                                    opacity: 0.7
+                                }});
+
+                                circle.bindTooltip(
+                                    "M=" + info.M + ", R=" + info.R_km.toFixed(1) + " km (M/lgR=" + info.mlgr + ")",
+                                    {{permanent: false, direction: 'top'}}
+                                );
+
+                                circlesLayer.addLayer(circle);
+                            }});
+
+                            //Tanlanmagan uchun darhol qo'shilmaydi (isVisible = false)
+
+                            map.eachLayer(function(layer) {{
+                                if (layer instanceof L.Marker) {{
+                                    var latlng = layer.getLatLng();
+                                    if (Math.abs(latlng.lat - wellLat) < 0.0001 && 
+                                        Math.abs(latlng.lng - wellLon) < 0.0001) {{
+
+                                        layer.on('click', function(e) {{
+                                            L.DomEvent.stopPropagation(e);
+
+                                            if (isVisible) {{
+                                                map.removeLayer(circlesLayer);
+                                                isVisible = false;
+                                            }} else {{
+                                                circlesLayer.addTo(map);
+                                                isVisible = true;
+                                            }}
+                                        }});
+                                    }}
+                                }}
+                            }});
+                        }});
+                    }})();
+                    </script>
+                    """
+                    m.get_root().html.add_child(folium.Element(js_code))
+
+                except Exception as e:
+                    logging.error(f"Tanlanmagan skvajina uchun aylanalar qo'shishda xato ({well_name}): {e}")
     # ============================================================
     # 9-QISM: TANLANGAN SKVAJINALARNI O'Z RANGIDA QO'SHISH
     # ============================================================
@@ -1694,7 +1787,10 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             # AYLANALARNI O'SHA RANGDA QO'SHISH
             # ============================================================
             try:
-                mlgr_val = min_mlgr if min_mlgr > 0 else 0.5
+                if filter_mode == "mb":
+                    mlgr_val = 2.5
+                else:
+                    mlgr_val = min_mlgr if min_mlgr > 0 else 0.5
 
                 # HAR BIR AYLANA UCHUN O'SHA SKVAJINANING RANGIDAN FOYDALANISH
                 radii_data = [
@@ -1713,6 +1809,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                         'R_km': R_km,
                         'mlgr': mlgr_val
                     })
+                initial_visibility = "true"
 
                 js_code = f"""
                 <script>
@@ -1722,7 +1819,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                     var wellName = "{skvajina}";
                     var circlesInfo = {circles_info};
                     var circlesLayer = null;
-                    var isVisible = true;
+                    var isVisible = {initial_visibility};
 
                     document.addEventListener("DOMContentLoaded", function() {{
                         var map = window.map || Object.values(window).find(v => v instanceof L.Map);
@@ -1730,7 +1827,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                             console.error("Xarita topilmadi");
                             return;
                         }}
-
+            
                         circlesLayer = L.layerGroup();
                         circlesInfo.forEach(function(info) {{
                             var circle = L.circle([wellLat, wellLon], {{
@@ -1740,25 +1837,29 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                                 fill: false,
                                 opacity: 0.7
                             }});
-
+            
                             circle.bindTooltip(
                                 "M=" + info.M + ", R=" + info.R_km.toFixed(1) + " km (M/lgR=" + info.mlgr + ")",
                                 {{permanent: false, direction: 'top'}}
                             );
-
+            
                             circlesLayer.addLayer(circle);
                         }});
-                        circlesLayer.addTo(map);
-
+                        
+                        //Mb rejimida aylanalar darhol ko'rinadi
+                        if (isVisible) {{
+                            circlesLayer.addTo(map);
+                        }}
+            
                         map.eachLayer(function(layer) {{
                             if (layer instanceof L.Marker) {{
                                 var latlng = layer.getLatLng();
                                 if (Math.abs(latlng.lat - wellLat) < 0.0001 && 
                                     Math.abs(latlng.lng - wellLon) < 0.0001) {{
-
+            
                                     layer.on('click', function(e) {{
                                         L.DomEvent.stopPropagation(e);
-
+            
                                         if (isVisible) {{
                                             map.removeLayer(circlesLayer);
                                             isVisible = false;
@@ -1772,6 +1873,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                         }});
                     }});
                 }})();
+
                 </script>
                 """
                 m.get_root().html.add_child(folium.Element(js_code))
