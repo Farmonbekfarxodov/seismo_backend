@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-6">
+            <div class="card shadow-lg border-0">
+                <div class="card-header bg-success text-white text-center py-4">
+                    <h2 class="mb-0">File Uploader</h2>
+                </div>
+                <div class="card-body p-5">
+                    <form method="POST" enctype="multipart/form-data" id="uploadForm">
+                        {% csrf_token %}
+
+                        <div class="mb-4">
+                            <label for="file" class="form-label fw-bold d-block mb-3">Fayl tanlang:</label>
+                            <input type="file"
+                                   class="form-control form-control-lg"
+                                   id="file"
+                                   name="file"
+                                   accept=".csv,.xlsx,.xls"
+                                   required
+                                   style="cursor: pointer;">
+                            <small class="form-text text-muted mt-2 d-block">
+                                CSV yoki Excel fayllarni yuklang
+                            </small>
+                        </div>
+
+                        <div class="d-grid gap-2 mt-4">
+                            <button type="submit" class="btn btn-success btn-lg py-3">
+                                <i class="fas fa-upload me-2"></i>Upload
+                            </button>
+                        </div>
+                    </form>
+
+                    <hr class="my-4">
+
+                    <div class="alert alert-info mb-0">
+                        <h6 class="fw-bold mb-3"><i class="fas fa-info-circle me-2"></i>Fayl formati:</h6>
+                        <p class="small mb-2">Fayl quyidagi ustunlarga ega bo'lishi kerak:</p>
+                        <ul class="small mb-0">
+                            <li><code>Date</code> - DD.MM.YYYY (15.05.2024)</li>
+                            <li><code>Time</code> - HH:MM:SS (14:30:45)</li>
+                            <li><code>Latitude</code> - Kenglik (-90 dan 90)</li>
+                            <li><code>Longitude</code> - Uzunlik (-180 dan 180)</li>
+                            <li><code>Depth</code> - Chuqurlik (km)</li>
+                            <li><code>Mb</code> - Magnituda</li>
+                            <li><code>Epicenter</code> - Epitsentr</li>
+                        </ul>
+                    </div>
+
+                    <div class="text-center mt-4">
+                        <a href="{% url 'catalog:catalog_list' %}" class="btn btn-outline-secondary">
+                            <i class="fas fa-arrow-left me-2"></i>Orqaga
+                        </a>
+                    </div>
+
+                    <div class="text-center mt-4">
+                        <a href="#" class="text-decoration-none text-primary">
+                            <small>How To Master Python As Quickly As Possible</small>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.card {
+    border-radius: 15px;
+    overflow: hidden;
+}
+
+.card-header {
+    border-bottom: none;
+}
+
+.form-control:focus {
+    border-color: #28a745;
+    box-shadow: 0 0 0 0.2rem rgba(40, 167, 69, 0.25);
+}
+
+.btn-success {
+    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+    border: none;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+.btn-success:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(40, 167, 69, 0.3);
+}
+
+input[type="file"]::file-selector-button {
+    padding: 8px 15px;
+    background-color: #28a745;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-right: 10px;
+}
+
+input[type="file"]::file-selector-button:hover {
+    background-color: #218838;
+}
+</style>
+{% endblock %}
