@@ -159,7 +159,6 @@ def save_file_data_to_db(df):
     - bulk_create bilan saqlash
     """
 
-
     # pastga tushuncha: ustun nomlarini kichik harflarga o'tkazamiz
     df.columns = [c.lower() for c in df.columns]
 
@@ -168,11 +167,50 @@ def save_file_data_to_db(df):
         if col not in df.columns:
             raise ValueError(f"{col} ustuni topilmadi!")
 
-    # 1) Sana va vaqtlarni parse qilish (errors='coerce' -> xato bo'lsa NaT)
+    # 1) Sana va vaqtlarni parse qilish
     parsed_dates = pd.to_datetime(df['date'], dayfirst=True, errors='coerce')
-    parsed_times = pd.to_datetime(df['time'], errors='coerce').dt.time  # NaT -> NaN, .dt.time works for valid
 
-    # 2) Raqamli ustunlarni numeric ga o'tkazish (',' -> '.' almashtirish va bo'shlarni NaN ga)
+    # TIME PARSE QILISH - TUZATILGAN QISM
+    # Turli xil formatlarni qo'llab-quvvatlash uchun
+    def parse_time_column(time_series):
+        """Vaqtni parse qilish - turli formatlarni qo'llab-quvvatlaydi"""
+        parsed_times = []
+
+        for val in time_series:
+            if pd.isna(val) or val == '' or str(val).strip() == '':
+                parsed_times.append(None)
+                continue
+
+            val_str = str(val).strip()
+
+            try:
+                # Avval to'g'ridan-to'g'ri time formatida parse qilishga harakat
+                if ':' in val_str:
+                    # Format: "14:30:45" yoki "14:30"
+                    parts = val_str.split(':')
+                    if len(parts) == 3:
+                        h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+                        parsed_times.append(datetime.time(h, m, s))
+                    elif len(parts) == 2:
+                        h, m = int(parts[0]), int(parts[1])
+                        parsed_times.append(datetime.time(h, m, 0))
+                    else:
+                        parsed_times.append(None)
+                else:
+                    # Agar ':' bo'lmasa, pd.to_datetime bilan harakat qilamiz
+                    dt = pd.to_datetime(val_str, errors='coerce')
+                    if pd.notna(dt):
+                        parsed_times.append(dt.time())
+                    else:
+                        parsed_times.append(None)
+            except:
+                parsed_times.append(None)
+
+        return parsed_times
+
+    parsed_times = parse_time_column(df['time'])
+
+    # 2) Raqamli ustunlarni numeric ga o'tkazish
     def to_numeric_series(s):
         s = s.astype(str).str.replace(',', '.')
         s = s.replace(r'^\s*$', pd.NA, regex=True)
@@ -183,7 +221,7 @@ def save_file_data_to_db(df):
     depth_s = to_numeric_series(df['depth'])
     mag_s = to_numeric_series(df['mb'])
 
-    # 3) Yangi DataFrame (faqat tozalangan ustunlar bilan) — indeksni saqlaymiz (asl qator raqamini ko'rsatish uchun)
+    # 3) Yangi DataFrame
     clean_df = pd.DataFrame({
         'date': parsed_dates.dt.date,
         'time': parsed_times,
@@ -196,22 +234,22 @@ def save_file_data_to_db(df):
 
     # 4) Aniqlash: qaysi qatorlar yetishmayapti
     missing_mask = (
-        clean_df['date'].isna() |
-        clean_df['time'].isna() |
-        clean_df['latitude'].isna() |
-        clean_df['longitude'].isna() |
-        clean_df['depth'].isna() |
-        clean_df['magnitude'].isna()
+            clean_df['date'].isna() |
+            clean_df['time'].isna() |
+            clean_df['latitude'].isna() |
+            clean_df['longitude'].isna() |
+            clean_df['depth'].isna() |
+            clean_df['magnitude'].isna()
     )
 
     errors = []
     if missing_mask.any():
         missing_idxs = clean_df[missing_mask].index.tolist()
-        # limitni 20 ta qilib chiqaramiz (konsolni to'ldirmaslik uchun)
         for idx in missing_idxs[:20]:
             row = df.loc[idx].to_dict()
             missing_cols = clean_df.columns[clean_df.loc[idx].isna()].tolist()
-            errors.append(f"Qator {idx+2}: Yetishmayotgan yoki noto'g'ri qiymatlar: {', '.join(missing_cols)}")
+            errors.append(
+                f"Qator {idx + 2}: Yetishmayotgan yoki noto'g'ri qiymatlar: {', '.join(missing_cols)} | Asl qiymat: time='{df.loc[idx, 'time']}'")
         if len(missing_idxs) > 20:
             errors.append(f"... va yana {len(missing_idxs) - 20} ta qator noto'g'ri yoki bo'sh qiymatga ega.")
 
@@ -219,14 +257,13 @@ def save_file_data_to_db(df):
     good_df = clean_df[~missing_mask].copy()
     if good_df.empty:
         print("⚠️ Saqlanadigan yangi ma'lumotlar yo'q - barcha qatorlarda yetishmaydigan qiymatlar bor.")
-        # Konsolga ba'zi xatolarni chiqarish
         if errors:
             print("Birinchi xatolar (maks 20):")
             for e in errors[:20]:
                 print(" -", e)
         return 0, errors
 
-    # 6) Dublikatlarni tekshirish - bitta so'rov bilan
+    # 6) Dublikatlarni tekshirish
     existing_keys = set(
         Catalog.objects.values_list("Event_date", "Event_time", "Latitude", "Longitude")
     )
@@ -248,7 +285,6 @@ def save_file_data_to_db(df):
             Mb=float(row['magnitude']),
             Epicenter=str(row['epicenter']).strip()
         ))
-        # tug'ilgan yangi kalitni ham existing_keys ga qo'shish - shu fayl ichidagi dublikatlarni ham oldini oladi
         existing_keys.add(key)
 
     # 7) Bulk save
@@ -256,7 +292,8 @@ def save_file_data_to_db(df):
         Catalog.objects.bulk_create(rows_to_create, ignore_conflicts=True)
 
     # 8) Konsolga summarizatsiya
-    print(f"✅ Fayldan ishlov berildi: Jami qatorlar: {len(df)}, to'g'ri qatorlar: {len(good_df)}, saqlandi: {len(rows_to_create)}, dublikat o'tkazib yuborildi: {skipped_duplicates}, xatolar: {len(errors)}")
+    print(
+        f"✅ Fayldan ishlov berildi: Jami qatorlar: {len(df)}, to'g'ri qatorlar: {len(good_df)}, saqlandi: {len(rows_to_create)}, dublikat o'tkazib yuborildi: {skipped_duplicates}, xatolar: {len(errors)}")
 
     return len(rows_to_create), errors
 
