@@ -1905,7 +1905,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                     tooltip_html = f"""
                         <b>Zilzila</b><br>
                         Sana:{date_val}<br>
-                        Magnituda (Mb):{mag_val:2f}<br>
+                        Magnituda (Mb):{mag_val:.2f}<br>
                         Chuqurlik (km): {depth_val}<br>
                          <i>Faqat Mb rejimi (masofa hisoblanmagan)</i>
                 """
@@ -1987,6 +1987,444 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 background-color: white; border:2px solid grey; z-index:9999; 
                 font-size:12px; padding: 10px; overflow-y: auto;">
     {''.join(legend_items)}
+    </div>
+    '''
+    m.get_root().html.add_child(folium.Element(legend_html))
+
+    folium.LayerControl().add_to(m)
+
+    return m._repr_html_()
+
+
+def earthquake_map_view(request):
+    """
+    Zilzilalar xaritasi - skvajinalarni tanlash va filtrlash bilan
+    """
+    # Barcha skvajinalar ro'yxatini olish
+    all_wells = get_all_wells_coordinates()
+
+    context = {
+        'page_title': 'Zilzilalar Xaritasi',
+        'error': None,
+        'success': None,
+        'map_html': None,
+        'all_wells': sorted(all_wells.keys()) if all_wells else [],
+        'current_min_mag': 4.0,
+        'current_start_date': '',
+        'current_end_date': '',
+        'uploaded_file_info': None,
+        'selected_wells': [],
+    }
+
+    if request.method == 'POST':
+        try:
+            # 1. PARAMETRLARNI OLISH
+            min_mag = float(request.POST.get('min_mag', 4.0))
+            filter_start_date = request.POST.get('start_date', '').strip()
+            filter_end_date = request.POST.get('end_date', '').strip()
+
+            # Tanlangan skvajinalar (dropdown dan)
+            selected_wells = request.POST.getlist('selected_wells')
+
+            if not selected_wells:
+                context['error'] = 'Iltimos, kamida bitta skvajina tanlang'
+                return render(request, 'seismos_app/map_only.html', context)
+
+            # 2. FAYLNI YUKLASH
+            uploaded_file = request.FILES.get('earthquake_file')
+
+            if not uploaded_file:
+                context['error'] = 'Iltimos, zilzilalar katalog faylini yuklang'
+                context['selected_wells'] = selected_wells
+                return render(request, 'seismos_app/map_only.html', context)
+
+            # Fayl kengaytmasini tekshirish
+            file_ext = os.path.splitext(uploaded_file.name)[1].lower()
+            if file_ext not in ['.xlsx', '.xls', '.csv']:
+                context['error'] = 'Faqat Excel (.xlsx, .xls) yoki CSV (.csv) fayllarini yuklash mumkin'
+                context['selected_wells'] = selected_wells
+                return render(request, 'seismos_app/map_only.html', context)
+
+            # Faylni saqlash
+            fs = FileSystemStorage()
+            filename = fs.save(uploaded_file.name, uploaded_file)
+            file_path = fs.path(filename)
+
+            # 3. FAYLNI O'QISH
+            try:
+                if file_ext == '.csv':
+                    df_earthquakes = pd.read_csv(file_path, encoding='utf-8')
+                else:
+                    df_earthquakes = pd.read_excel(file_path)
+
+                logging.info(f"Fayl yuklandi: {uploaded_file.name}, Qatorlar: {len(df_earthquakes)}")
+
+            except Exception as e:
+                context['error'] = f'Faylni o\'qishda xato: {e}'
+                context['selected_wells'] = selected_wells
+                return render(request, 'seismos_app/map_only.html', context)
+
+            # 4. USTUNLARNI TEKSHIRISH
+            required_columns = ['Event_date', 'Latitude', 'Longitude', 'Mb']
+            missing_cols = [col for col in required_columns if col not in df_earthquakes.columns]
+
+            if missing_cols:
+                context['error'] = f'Faylda quyidagi ustunlar topilmadi: {", ".join(missing_cols)}'
+                context['info'] = f'Mavjud ustunlar: {", ".join(df_earthquakes.columns)}'
+                context['selected_wells'] = selected_wells
+                return render(request, 'seismos_app/map_only.html', context)
+
+            # 5. MA'LUMOTLARNI TOZALASH
+            df_earthquakes['Mb'] = pd.to_numeric(df_earthquakes['Mb'], errors='coerce')
+            df_earthquakes['Latitude'] = pd.to_numeric(df_earthquakes['Latitude'], errors='coerce')
+            df_earthquakes['Longitude'] = pd.to_numeric(df_earthquakes['Longitude'], errors='coerce')
+            df_earthquakes.dropna(subset=['Mb', 'Latitude', 'Longitude'], inplace=True)
+
+            if 'Depth' in df_earthquakes.columns:
+                df_earthquakes['Depth'] = pd.to_numeric(df_earthquakes['Depth'], errors='coerce')
+            else:
+                df_earthquakes['Depth'] = None
+
+            # 6. MAGNITUDA BO'YICHA FILTRLASH
+            df_earthquakes = df_earthquakes[df_earthquakes['Mb'] >= min_mag].copy()
+
+            if df_earthquakes.empty:
+                context['error'] = f'Mb >= {min_mag} shartiga mos zilzilalar topilmadi'
+                context['selected_wells'] = selected_wells
+                return render(request, 'seismos_app/map_only.html', context)
+
+            # 7. SANA BO'YICHA FILTRLASH
+            if filter_start_date:
+                try:
+                    start_date = pd.to_datetime(filter_start_date)
+                    df_earthquakes['Event_date'] = pd.to_datetime(df_earthquakes['Event_date'], errors='coerce')
+                    df_earthquakes = df_earthquakes[df_earthquakes['Event_date'] >= start_date]
+
+                    if filter_end_date:
+                        end_date = pd.to_datetime(filter_end_date)
+                        df_earthquakes = df_earthquakes[df_earthquakes['Event_date'] <= end_date]
+
+                except Exception as e:
+                    logging.warning(f'Sana filtrlashda xato: {e}')
+
+            # 8. XARITA YARATISH
+            map_html = create_earthquake_map_with_wells(
+                df_earthquakes=df_earthquakes,
+                all_wells=all_wells,
+                selected_wells=selected_wells,
+                min_mag=min_mag
+            )
+
+            # 9. CONTEXT YANGILASH
+            context.update({
+                'map_html': map_html,
+                'current_min_mag': min_mag,
+                'current_start_date': filter_start_date,
+                'current_end_date': filter_end_date,
+                'selected_wells': selected_wells,
+                'success': f'Muvaffaqiyatli! {len(df_earthquakes)} ta zilzila ko\'rsatildi',
+                'uploaded_file_info': {
+                    'name': uploaded_file.name,
+                    'size': f'{uploaded_file.size / 1024:.2f} KB',
+                    'earthquakes_count': len(df_earthquakes)
+                }
+            })
+
+            # Faylni o'chirish
+            try:
+                os.remove(file_path)
+            except:
+                pass
+
+        except ValueError as e:
+            context['error'] = f'Noto\'g\'ri qiymat kiritildi: {e}'
+            logging.error(f'ValueError: {e}')
+
+        except Exception as e:
+            context['error'] = f'Kutilmagan xato: {e}'
+            logging.error(f'Earthquake map error: {e}', exc_info=True)
+
+    return render(request, 'seismos_app/map_only.html', context)
+
+
+def create_earthquake_map_with_wells(df_earthquakes, all_wells, selected_wells, min_mag):
+    """
+    Tanlangan skvajinalar va aylanalar bilan xarita yaratish
+    """
+    # 1. XARITA MARKAZINI ANIQLASH
+    if selected_wells:
+        selected_coords = [all_wells[w] for w in selected_wells if w in all_wells]
+        if selected_coords:
+            center_lat = np.mean([c[0] for c in selected_coords])
+            center_lon = np.mean([c[1] for c in selected_coords])
+        else:
+            center_lat, center_lon = 41.2995, 69.2401
+    elif all_wells:
+        all_lats = [coord[0] for coord in all_wells.values()]
+        all_lons = [coord[1] for coord in all_wells.values()]
+        center_lat = np.mean(all_lats)
+        center_lon = np.mean(all_lons)
+    else:
+        center_lat, center_lon = 41.2995, 69.2401
+
+    # 2. ASOSIY XARITA
+    m = folium.Map(
+        location=[center_lat, center_lon],
+        zoom_start=7,
+        tiles="OpenStreetMap",
+        attr="© OpenStreetMap contributors"
+    )
+
+    Fullscreen(
+        position='topleft',
+        title='To\'liq ekran',
+        title_cancel='Chiqish',
+        force_separate_button=True
+    ).add_to(m)
+
+    # 3. QO'SHIMCHA FON XARITALARI
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Tiles © Esri',
+        name='Satellite',
+        overlay=False,
+        control=True
+    ).add_to(m)
+
+    folium.TileLayer(
+        tiles='https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png',
+        attr='Map tiles by Stamen Design',
+        name='Terrain',
+        overlay=False,
+        control=True
+    ).add_to(m)
+
+    # 4. YER YORIQLARINI QO'SHISH
+    logging.info("Yer yoriqlarini yuklash...")
+    all_cracks = load_all_cracks_shapefiles()
+    if all_cracks is not None:
+        add_cracks_to_map(m, all_cracks)
+
+    # 5. SEYSMOGEN ZONALARNI QO'SHISH
+    logging.info("Seysmogen zonalarni yuklash...")
+    seismogenic_zones = load_seismogenic_zones()
+    if seismogenic_zones is not None:
+        add_seismogenic_zones_to_map(m, seismogenic_zones)
+
+    # 6. RANGLAR GENERATSIYA QILISH
+    well_color_map = generate_well_colors(selected_wells)
+
+    # 7. FAQAT TANLANGAN SKVAJINALARNI QO'SHISH (har xil rangda)
+    mlgr_val = 2.5  # Fix qiymat
+
+    for well_name in selected_wells:
+        if well_name not in all_wells:
+            continue
+
+        lat, lon = all_wells[well_name]
+        colors = well_color_map.get(well_name, {
+            'base': 'blue',
+            'triangle': 'blue',
+            'shades': ['rgba(0,0,255,0.5)', 'rgba(0,0,255,0.7)', 'rgba(0,0,255,0.9)']
+        })
+
+        well_info = get_well_detailed_info(well_name)
+
+        tooltip_html = f"""
+                        <div style="width: 450px; font-family: Arial; font-size: 12px;">
+                            <h4 style="color: {colors['base']}; margin-bottom: 10px;">Tanlangan skvajina</h4>
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <tr style="background-color: #f8f9fa;">
+                                    <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
+                                    <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
+                                    <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                                    <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
+                                </tr>
+                                <tr style="background-color: #f8f9fa;">
+                                    <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
+                                    <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
+                                </tr>
+                                <tr style="background-color: #f8f9fa;">
+                                    <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
+                                    <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
+                                </tr>
+                                <tr style="background-color: #f8f9fa;">
+                                    <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
+                                    
+                                </tr>
+                               
+                            </table>
+                            <p style="margin-top: 10px; color: {colors['base']}; font-weight: bold;">✓ Tanlangan skvajina</p>
+                        </div>
+                    """
+
+        # Uchburchak marker
+        triangle_icon = folium.DivIcon(
+            html=f'<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid {colors["triangle"]};"></div>',
+            icon_size=(20, 20),
+            icon_anchor=(10, 20)
+        )
+
+        folium.Marker(
+            location=[lat, lon],
+            tooltip=folium.Tooltip(tooltip_html, sticky=True),
+            icon=triangle_icon,
+        ).add_to(m)
+
+        # 9. AYLANALARNI QO'SHISH (JavaScript bilan toggle)
+        try:
+            radii_data = [
+                (5, colors['shades'][0]),  # M=5
+                (6, colors['shades'][1]),  # M=6
+                (7, colors['shades'][2]),  # M=7
+            ]
+
+            circles_info = []
+            for M_value, color in radii_data:
+                R_km = float(10 ** (M_value / mlgr_val))
+                circles_info.append({
+                    'radius': R_km * 1000,  # metrga aylantirish
+                    'color': color,
+                    'M': M_value,
+                    'R_km': R_km,
+                    'mlgr': mlgr_val
+                })
+
+            js_code = f"""
+            <script>
+            (function() {{
+                var wellLat = {lat};
+                var wellLon = {lon};
+                var wellName = "{well_name}";
+                var circlesInfo = {circles_info};
+                var circlesLayer = null;
+                var isVisible = true;  // Boshlang'ichda ko'rinadi
+
+                document.addEventListener("DOMContentLoaded", function() {{
+                    var map = window.map || Object.values(window).find(v => v instanceof L.Map);
+                    if (!map) {{
+                        console.error("Xarita topilmadi");
+                        return;
+                    }}
+
+                    // Aylanalar layerini yaratish
+                    circlesLayer = L.layerGroup();
+                    circlesInfo.forEach(function(info) {{
+                        var circle = L.circle([wellLat, wellLon], {{
+                            radius: info.radius,
+                            color: info.color,
+                            weight: 2,
+                            fill: false,
+                            opacity: 0.7
+                        }});
+
+                        circle.bindTooltip(
+                            "M=" + info.M + ", R=" + info.R_km.toFixed(1) + " km (M/lgR=" + info.mlgr + ")",
+                            {{permanent: false, direction: 'top'}}
+                        );
+
+                        circlesLayer.addLayer(circle);
+                    }});
+
+                    // Boshlang'ichda ko'rsatish
+                    circlesLayer.addTo(map);
+
+                    // Marker topish va click hodisasini qo'shish
+                    map.eachLayer(function(layer) {{
+                        if (layer instanceof L.Marker) {{
+                            var latlng = layer.getLatLng();
+                            if (Math.abs(latlng.lat - wellLat) < 0.0001 && 
+                                Math.abs(latlng.lng - wellLon) < 0.0001) {{
+
+                                layer.on('click', function(e) {{
+                                    L.DomEvent.stopPropagation(e);
+
+                                    if (isVisible) {{
+                                        map.removeLayer(circlesLayer);
+                                        isVisible = false;
+                                    }} else {{
+                                        circlesLayer.addTo(map);
+                                        isVisible = true;
+                                    }}
+                                }});
+                            }}
+                        }}
+                    }});
+                }});
+            }})();
+            </script>
+            """
+            m.get_root().html.add_child(folium.Element(js_code))
+
+        except Exception as e:
+            logging.error(f"Aylanalar qo'shishda xato ({well_name}): {e}")
+
+    # 8. ZILZILALARNI QO'SHISH
+    if not df_earthquakes.empty:
+        for idx, row in df_earthquakes.iterrows():
+            lat = row['Latitude']
+            lon = row['Longitude']
+            mag = row['Mb']
+
+            try:
+                date_str = pd.to_datetime(row['Event_date']).strftime('%d.%m.%Y')
+            except:
+                date_str = str(row['Event_date'])
+
+            depth = row.get('Depth', 'Noma\'lum')
+
+            tooltip_html = f"""
+                <b>Zilzila</b><br>
+                <b>Sana:</b> {date_str}<br>
+                <b>Magnituda (Mb):</b> {mag:.2f}<br>
+                <b>Chuqurlik:</b> {depth} km
+            """
+
+            if mag >= 6:
+                color = "darkred"
+                radius = mag * 3
+            elif mag >= 5:
+                color = "red"
+                radius = mag * 2.5
+            elif mag >= 4:
+                color = "orange"
+                radius = mag * 2
+            else:
+                color = "yellow"
+                radius = mag * 1.5
+
+            folium.CircleMarker(
+                location=[lat, lon],
+                radius=radius,
+                color=color,
+                fill=True,
+                fillColor=color,
+                fillOpacity=0.7,
+                weight=2,
+                tooltip=tooltip_html
+            ).add_to(m)
+
+    # 9. LEGEND
+    legend_html = f'''
+    <div style="position: fixed; 
+                bottom: 50px; left: 50px; width: 200px; 
+                background-color: white; border:2px solid grey; z-index:9999; 
+                font-size:12px; padding: 10px; overflow-y: auto;">
+        <p><b>Xarita Elementlari:</b></p>
+        <p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>
+        <p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>
+        <p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>
+        <p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>
+        <hr>
+        <p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid blue; display: inline-block; margin-right: 8px;"></div> Tanlangan skvajinalar</p>
+        <hr>
+
     </div>
     '''
     m.get_root().html.add_child(folium.Element(legend_html))

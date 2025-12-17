@@ -1,5 +1,3 @@
-# app_users/apps.py
-
 from django.apps import AppConfig
 
 class AppUsersConfig(AppConfig):

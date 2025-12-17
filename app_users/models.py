@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.conf import settings
 from django.core.exceptions import ValidationError
 import re
 
@@ -33,3 +34,48 @@ class CustomUser(AbstractUser):
 
     def __str__(self):
         return self.username
+
+
+# Mavjud CustomUser modelingizdan keyin qo'shing:
+
+class LoginHistory(models.Model):
+    """
+    Foydalanuvchilarning login tarixini saqlash uchun model
+    """
+    user = models.ForeignKey(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name='login_history',
+        verbose_name='Foydalanuvchi'
+    )
+    login_time = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name='Login vaqti'
+    )
+    ip_address = models.GenericIPAddressField(
+        null=True,
+        blank=True,
+        verbose_name='IP manzil'
+    )
+    user_agent = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        verbose_name='Brauzer ma\'lumoti'
+    )
+    success = models.BooleanField(
+        default=True,
+        verbose_name='Muvaffaqiyatli'
+    )
+
+    class Meta:
+        verbose_name = 'Login tarixi'
+        verbose_name_plural = 'Login tarixi'
+        ordering = ['-login_time']
+        indexes = [
+            models.Index(fields=['-login_time']),
+            models.Index(fields=['user', '-login_time']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} - {self.login_time.strftime('%Y-%m-%d %H:%M:%S')}"

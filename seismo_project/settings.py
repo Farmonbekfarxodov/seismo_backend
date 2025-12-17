@@ -103,6 +103,10 @@ DATABASES = {
         'PASSWORD': config['psw'],
         'HOST': config['ip'],
         'PORT': '3306',
+        'OPTIONS':{
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES', time_zone='+05:00'",
+            'charset': 'utf8mb4',
+        }
     }
 }
 
