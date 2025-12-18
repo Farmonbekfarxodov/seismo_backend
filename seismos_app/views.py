@@ -2421,10 +2421,8 @@ def create_earthquake_map_with_wells(df_earthquakes, all_wells, selected_wells, 
         <p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>
         <p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>
         <p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>
-        <hr>
-        <p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid blue; display: inline-block; margin-right: 8px;"></div> Tanlangan skvajinalar</p>
-        <hr>
-
+        <p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #ADD8E6; display: inline-block; margin-right: 8px;"></div>Tanlanmagan skvajinalar</p>
+        <p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid blue; display: inline-block; margin-right: 8px;"></div>Tanlangan skvajinalar</p>
     </div>
     '''
     m.get_root().html.add_child(folium.Element(legend_html))
@@ -2530,7 +2528,16 @@ def results_view(request):
         selected_keys = request.POST.getlist("wells")
         selected_params = request.POST.getlist("params")
 
-        filter_mode = request.POST.get("filter_mode","mlgr")
+        filter_mode = request.POST.get("filter_mode", "mlgr")
+
+        # ✅ YANGI: Ko'rsatish nazorati
+        hide_map = request.POST.get('hide_map') == '1'
+        hide_graphs = request.POST.get('hide_graphs') == '1'
+
+        # Agar ikkalasi ham belgilangan bo'lsa, ignore qilamiz
+        if hide_map and hide_graphs:
+            hide_map = False
+            hide_graphs = False
 
         # Raqamli qiymatlarni xavfsiz olish
         try:
@@ -2557,7 +2564,7 @@ def results_view(request):
         use_catalog = True
         request.session['use_catalog'] = True
 
-        # sessionda saqlash
+        # sessionda saqlash (✅ ko'rsatish holatlari ham qo'shildi)
         request.session['selected_keys'] = selected_keys
         request.session['selected_params'] = selected_params
         request.session['min_mag'] = min_mag
@@ -2568,6 +2575,8 @@ def results_view(request):
         request.session['median_window'] = median_window
         request.session['use_catalog'] = True
         request.session['filter_mode'] = filter_mode
+        request.session['hide_map'] = hide_map  # ✅ YANGI
+        request.session['hide_graphs'] = hide_graphs  # ✅ YANGI
 
     else:
         selected_keys = request.session.get("selected_keys", [])
@@ -2579,7 +2588,9 @@ def results_view(request):
         filter_end_date = request.session.get("filter_end_date")
         use_catalog = request.session.get("use_catalog", False)
         median_window = request.session.get("median_window", None)
-        filter_mode = request.session.get("filter_mode","mlgr")
+        filter_mode = request.session.get("filter_mode", "mlgr")
+        hide_map = request.session.get("hide_map", False)  # ✅ YANGI
+        hide_graphs = request.session.get("hide_graphs", False)  # ✅ YANGI
 
     # Tanlangan skvajinalar nomini olish
     selected_well_names = []
@@ -2620,6 +2631,8 @@ def results_view(request):
                 "current_min_mlgr": min_mlgr,
                 "current_start_date": filter_start_date or "",
                 "current_end_date": filter_end_date or "",
+                "current_hide_map": hide_map,  # ✅ YANGI
+                "current_hide_graphs": hide_graphs,  # ✅ YANGI
                 "error": "To'liq ma'lumotlar mavjud emas. Iltimos, oldingi qadamlarga qayting."
             },
         )
@@ -2709,167 +2722,157 @@ def results_view(request):
             earthquake_mask = (all_earthquakes_df["combined_datetime"] >= default_start_date)
             filtered_earthquakes_df = all_earthquakes_df[earthquake_mask].copy()
 
-        # Ma'lumot yig'ish (graph_data)
-        graph_data = []
-
-        for key in selected_keys:
-            for param in selected_params:
-                ssdi_id = lst_stansiya.get(key, {}).get(param)
-                if not ssdi_id:
-                    continue
-
-                # SQL injection oldini olish uchun oddiy tekshiruv (ssdi_id odatda xavfsiz)
-                query = text(f"SELECT date, `{ssdi_id}` FROM alldata WHERE `{ssdi_id}` IS NOT NULL")
-                try:
-                    data = conn.execute(query).fetchall()
-                except Exception as e:
-                    logging.error(f"Query xatosi {key} - {param}: {e}")
-                    continue
-
-                if not data:
-                    continue
-
-                df_temp = pd.DataFrame(data, columns=['date', 'value'])
-                df_temp['date'] = pd.to_datetime(df_temp['date'], errors='coerce')
-                df_temp.dropna(subset=['date', 'value'], inplace=True)
-
-                if user_start_date and user_end_date:
-                    df_temp = df_temp[
-                        (df_temp['date'] >= user_start_date) &
-                        (df_temp['date'] <= user_end_date)
-                        ].copy()
-                else:
-                    df_temp = df_temp[df_temp['date'] >= default_start_date].copy()
-
-                if df_temp.empty:
-                    continue
-
-                x_val = df_temp['date'].tolist()
-                y_val = df_temp['value'].tolist()
-
-                if not y_val:
-                    continue
-
-                # Median window
-                if median_window and median_window > 0:
-                    df_temp_med = pd.DataFrame({'date': x_val, 'value': y_val})
-                    df_temp_med['date'] = pd.to_datetime(df_temp_med['date'])
-
-                    df_daily_median = (
-                        df_temp_med.groupby(df_temp_med['date'].dt.date)['value']
-                        .median().reset_index().rename(columns={'value': 'daily_median'})
-                    )
-                    df_daily_median['rolling_median'] = (
-                        df_daily_median['daily_median']
-                        .rolling(window=median_window, min_periods=1, center=True).median()
-                    )
-                    x_val = pd.to_datetime(df_daily_median['date']).tolist()
-                    y_val = df_daily_median['rolling_median'].tolist()
-
-                mean, sigma = np.mean(y_val), np.std(y_val)
-                if sigma == 0:
-                    continue
-
-                _, skvajina = key.split(" | ")
-                graph_data.append((x_val, y_val, mean, sigma, param, key, skvajina))
-
-        if not graph_data:
-            return render(request, "seismos_app/results1.html",
-                          {"error": "Hech qanday mos keluvchi ma'lumot topilmadi."})
-
-        # ---------------------------------------------------------
-        # YANGI QISM: Grafiklar ro'yxatini shakllantirish
-        # ---------------------------------------------------------
-
+        # ✅ Grafiklar yaratish (faqat agar hide_graphs False bo'lsa)
         graphs_list = []
-        delta = timedelta(days=15)
-        color_pool = generate_colors(len(graph_data))
 
-        for idx, (x, y, mean, sigma, param, key, skv) in enumerate(graph_data):
-            # Har bir iteratsiyada YANGI va ALOHIDA Figure yaratamiz
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
+        if not hide_graphs:
+            # Ma'lumot yig'ish (graph_data)
+            graph_data = []
 
-            trace_color = color_pool[idx]
-            row = 1
-            col = 1
+            for key in selected_keys:
+                for param in selected_params:
+                    ssdi_id = lst_stansiya.get(key, {}).get(param)
+                    if not ssdi_id:
+                        continue
 
-            # 1. Asosiy ma'lumotlar va anomaliyalarni chizish
-            y_all = plot_data_with_anomalies(
-                fig, x, y, mean, sigma, btn_value, row, col, trace_color, param, key
-            )
+                    query = text(f"SELECT date, `{ssdi_id}` FROM alldata WHERE `{ssdi_id}` IS NOT NULL")
+                    try:
+                        data = conn.execute(query).fetchall()
+                    except Exception as e:
+                        logging.error(f"Query xatosi {key} - {param}: {e}")
+                        continue
 
-            # 2. Y o'qi diapazoni
-            fig.update_yaxes(
-                title_text=f"{param} Qiymati",
-                range=[min(y_all) * 0.9, max(y_all) * 1.1],
-                row=row, col=col, secondary_y=False
-            )
+                    if not data:
+                        continue
 
-            # 3. Zilzilalarni chizish (stem plot)
-            lat, lon = well_coords.get(skv, (0, 0))
-            if not filtered_earthquakes_df.empty:
-                draw_magnitude_values(
-                    fig, filtered_earthquakes_df, row, col,
-                    min_mag=min_mag, well_lat=lat, well_lon=lon, min_mlgr=min_mlgr,filter_mode = filter_mode
+                    df_temp = pd.DataFrame(data, columns=['date', 'value'])
+                    df_temp['date'] = pd.to_datetime(df_temp['date'], errors='coerce')
+                    df_temp.dropna(subset=['date', 'value'], inplace=True)
+
+                    if user_start_date and user_end_date:
+                        df_temp = df_temp[
+                            (df_temp['date'] >= user_start_date) &
+                            (df_temp['date'] <= user_end_date)
+                            ].copy()
+                    else:
+                        df_temp = df_temp[df_temp['date'] >= default_start_date].copy()
+
+                    if df_temp.empty:
+                        continue
+
+                    x_val = df_temp['date'].tolist()
+                    y_val = df_temp['value'].tolist()
+
+                    if not y_val:
+                        continue
+
+                    # Median window
+                    if median_window and median_window > 0:
+                        df_temp_med = pd.DataFrame({'date': x_val, 'value': y_val})
+                        df_temp_med['date'] = pd.to_datetime(df_temp_med['date'])
+
+                        df_daily_median = (
+                            df_temp_med.groupby(df_temp_med['date'].dt.date)['value']
+                            .median().reset_index().rename(columns={'value': 'daily_median'})
+                        )
+                        df_daily_median['rolling_median'] = (
+                            df_daily_median['daily_median']
+                            .rolling(window=median_window, min_periods=1, center=True).median()
+                        )
+                        x_val = pd.to_datetime(df_daily_median['date']).tolist()
+                        y_val = df_daily_median['rolling_median'].tolist()
+
+                    mean, sigma = np.mean(y_val), np.std(y_val)
+                    if sigma == 0:
+                        continue
+
+                    _, skvajina = key.split(" | ")
+                    graph_data.append((x_val, y_val, mean, sigma, param, key, skvajina))
+
+            if graph_data:
+                delta = timedelta(days=15)
+                color_pool = generate_colors(len(graph_data))
+
+                for idx, (x, y, mean, sigma, param, key, skv) in enumerate(graph_data):
+                    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+                    trace_color = color_pool[idx]
+                    row = 1
+                    col = 1
+
+                    y_all = plot_data_with_anomalies(
+                        fig, x, y, mean, sigma, btn_value, row, col, trace_color, param, key
+                    )
+
+                    fig.update_yaxes(
+                        title_text=f"{param} Qiymati",
+                        range=[min(y_all) * 0.9, max(y_all) * 1.1],
+                        row=row, col=col, secondary_y=False
+                    )
+
+                    lat, lon = well_coords.get(skv, (0, 0))
+                    if not filtered_earthquakes_df.empty:
+                        draw_magnitude_values(
+                            fig, filtered_earthquakes_df, row, col,
+                            min_mag=min_mag, well_lat=lat, well_lon=lon, min_mlgr=min_mlgr, filter_mode=filter_mode
+                        )
+
+                    fig.update_xaxes(
+                        range=[x_axis_start - delta, x_axis_end + delta],
+                        type="date",
+                        showgrid=True, griddash="dot",
+                        row=row, col=col
+                    )
+
+                    graph_title = f"{key} - {param}"
+                    title_date = f" ({filter_start_date} - {filter_end_date})" if filter_start_date and filter_end_date else " "
+
+                    fig.update_layout(
+                        title_text=f"{graph_title}{title_date}",
+                        height=500,
+                        autosize=True,
+                        showlegend=False,
+                        plot_bgcolor="gainsboro",
+                        hovermode="x unified",
+                        hoverdistance=1,
+                        margin=dict(l=60, r=60, t=80, b=60),
+                        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.9)")
+                    )
+
+                    div_id = f"plot_{idx}"
+                    filename = f"Seysmik_{skv}_{param}_{datetime.datetime.now().strftime('%Y%m%d')}"
+
+                    config = {
+                        "displayModeBar": True,
+                        "displaylogo": False,
+                        "responsive": True,
+                        "modeBarButtonsToRemove": ['toImage'],
+                    }
+
+                    graph_html = fig.to_html(
+                        full_html=False,
+                        include_plotlyjs=False,
+                        config=config,
+                        div_id=div_id
+                    )
+
+                    graphs_list.append({
+                        'html': graph_html,
+                        'title': graph_title,
+                        'div_id': div_id,
+                        'filename': filename
+                    })
+
+        # ✅ Folium xaritasini yaratish (faqat agar hide_map False bo'lsa)
+        folium_map_html = None
+        if not hide_map:
+            try:
+                folium_map_html = add_map_data_folium(
+                    selected_keys, well_coords, filtered_earthquakes_df, min_mag, min_mlgr, filter_mode=filter_mode
                 )
-
-            # 4. X o'qi sozlamalari
-            fig.update_xaxes(
-                range=[x_axis_start - delta, x_axis_end + delta],
-                type="date",
-                showgrid=True, griddash="dot",
-                row=row, col=col
-            )
-
-            # 5. Sarlavha va Layout
-            graph_title = f"{key} - {param}"
-            title_date = f" ({filter_start_date} - {filter_end_date})" if filter_start_date and filter_end_date else " "
-
-            fig.update_layout(
-                title_text=f"{graph_title}{title_date}",
-                height=500,  # Har bir grafik balandligi
-                autosize=True,
-                showlegend=False,
-                plot_bgcolor="gainsboro",
-                hovermode="x unified",
-                margin=dict(l=60, r=60, t=80, b=60),
-                legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.9)")
-            )
-
-            # 6. ID va Fayl nomini generatsiya qilish
-            div_id = f"plot_{idx}"
-            filename = f"Seysmik_{skv}_{param}_{datetime.datetime.now().strftime('%Y%m%d')}"
-
-            config = {
-                "displayModeBar": True,
-                "displaylogo": False,
-                "responsive": True,
-                "modeBarButtonsToRemove": ['toImage'],  # Biz o'z tugmamizni qo'shamiz
-            }
-
-            # 7. HTML ga aylantirish (JS ni qayta yuklamaslik uchun include_plotlyjs=False)
-            graph_html = fig.to_html(
-                full_html=False,
-                include_plotlyjs=False,
-                config=config,
-                div_id=div_id
-            )
-
-            graphs_list.append({
-                'html': graph_html,
-                'title': graph_title,
-                'div_id': div_id,
-                'filename': filename
-            })
-
-        # Folium xaritasini yaratish
-        try:
-            folium_map_html = add_map_data_folium(
-                selected_keys, well_coords, filtered_earthquakes_df, min_mag, min_mlgr, filter_mode=filter_mode
-            )
-        except Exception as e:
-            logging.error(f"Folium xaritasini yaratishda xato: {e}")
-            folium_map_html = "<p>Xarita yaratishda xato yuz berdi.</p>"
+            except Exception as e:
+                logging.error(f"Folium xaritasini yaratishda xato: {e}")
+                folium_map_html = "<p>Xarita yaratishda xato yuz berdi.</p>"
 
         # Context tayyorlash
         context = {
@@ -2887,15 +2890,21 @@ def results_view(request):
             "current_end_date": filter_end_date or "",
             "current_median_window": median_window or "",
             "current_filter_mode": filter_mode,
+            "current_hide_map": hide_map,  # ✅ YANGI
+            "current_hide_graphs": hide_graphs,  # ✅ YANGI
             "median_values": [3, 5, 7, 15, 31, 91, 183, 365, 731],
 
-            # Asosiy natijalar (YANGI)
+            # Asosiy natijalar
             "graphs_list": graphs_list,
             "folium_map": folium_map_html,
+
+            # ✅ Ko'rsatish holatlarini template uchun
+            "show_graphs": not hide_graphs,
+            "show_map": not hide_map,
         }
 
         # Data diapazoni info uchun
-        if graph_data:
+        if not hide_graphs and graphs_list:
             all_dates = [d for item in graph_data for d in item[0]]
             if all_dates:
                 context["data_min_date"] = min(pd.to_datetime(all_dates)).strftime('%Y-%m-%d')

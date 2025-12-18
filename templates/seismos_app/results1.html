@@ -89,12 +89,67 @@
         font-size: 16px;
     }
 
+    /* ✅ YANGI: Pill Buttons Style */
+    .display-control-group {
+        display: flex;
+        flex-direction: row;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+
+    .pill-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 20px;
+        background: white;
+        border: 2px solid #e0e0e0;
+        border-radius: 50px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        font-size: 15px;
+        user-select: none;
+    }
+
+    .pill-button input {
+        width: 20px;
+        height: 20px;
+        cursor: pointer;
+        margin: 0;
+    }
+
+    .pill-button:hover {
+        background: #f0f4ff;
+        border-color: #007bff;
+        transform: translateX(5px);
+    }
+
+    .pill-button:has(input:checked) {
+        background: linear-gradient(135deg, #007bff 0%, #0056b3 100%);
+        border-color: #007bff;
+        color: white;
+        box-shadow: 0 4px 15px rgba(0, 123, 255, 0.3);
+    }
+
+    .pill-button:has(input:checked):hover {
+        transform: translateX(5px) scale(1.02);
+    }
+
+    .pill-icon {
+        font-size: 18px;
+        transition: transform 0.3s ease;
+    }
+
+    .pill-button:hover .pill-icon {
+        transform: scale(1.1);
+    }
+
     /* Responsive folium map */
     #folium-map-container {
         width: 100%;
         max-width: 1200px;
         height: 600px;
-        margin: 0 auto; /* Markazlashtirish */
+        margin: 0 auto;
     }
 
     /* Grafik container */
@@ -168,37 +223,33 @@
                 </div>
 
                 <div class="form-group">
-                <small>Min M/lgR</small>
+                    <small>Min M/lgR</small>
+                    <div style="display: flex; gap: 25px; padding: 12px; background-color: #f8f9fa; border-radius: 6px; border: 1px solid #dee2e6; align-items: center;">
+                        <label style="display: flex; align-items: center; cursor: pointer; margin: 0;">
+                            <input type="radio" name="filter_mode" value="mlgr"
+                                   {% if current_filter_mode == 'mlgr' or not current_filter_mode %}checked{% endif %}
+                                   style="margin-right: 8px; cursor: pointer; width: 18px; height: 18px;">
+                            <span style="font-size: 14px;">M/lgR bo'yicha</span>
+                        </label>
 
-                <div style="display: flex; gap: 25px; padding: 12px; background-color: #f8f9fa; border-radius: 6px; border: 1px solid #dee2e6; align-items: center;">
-                    <label style="display: flex; align-items: center; cursor: pointer; margin: 0;">
-                        <input type="radio" name="filter_mode" value="mlgr"
-                               {% if current_filter_mode == 'mlgr' or not current_filter_mode %}checked{% endif %}
-                               style="margin-right: 8px; cursor: pointer; width: 18px; height: 18px;">
-                        <span style="font-size: 14px;">M/lgR bo'yicha</span>
-                    </label>
+                        <label style="display: flex; align-items: center; cursor: pointer; margin: 0;">
+                            <input type="radio" name="filter_mode" value="mb"
+                                   {% if current_filter_mode == 'mb' %}checked{% endif %}
+                                   style="margin-right: 8px; cursor: pointer; width: 18px; height: 18px;">
+                            <span style="font-size: 14px; color: #007bff; font-weight: 500;">
+                                Mb bo'yicha
+                            </span>
+                        </label>
 
-                    <label style="display: flex; align-items: center; cursor: pointer; margin: 0;">
-                        <input type="radio" name="filter_mode" value="mb"
-                               {% if current_filter_mode == 'mb' %}checked{% endif %}
-                               style="margin-right: 8px; cursor: pointer; width: 18px; height: 18px;">
-                        <span style="font-size: 14px; color: #007bff; font-weight: 500;">
-                            Mb bo'yicha
-                        </span>
-                    </label>
-
-                    <!-- Min M/lgR input -->
-                    <input id="min_mlgr_input" type="number" step="0.1" class="form-control"
-                           name="min_mlgr" placeholder="M/lgR"
-                           value="{{ current_min_mlgr }}" required
-                           style="width:150px;">
+                        <input id="min_mlgr_input" type="number" step="0.1" class="form-control"
+                               name="min_mlgr" placeholder="M/lgR"
+                               value="{{ current_min_mlgr }}" required
+                               style="width:150px;">
+                    </div>
                 </div>
-            </div>
-
 
                 <div class="form-group">
                     <small>Mediana</small>
-
                     <select name="median_window" class="form-control">
                         <option value="">Tanlanmagan</option>
                         {% for val in median_values %}
@@ -217,10 +268,30 @@
                     <input type="date" class="form-control" name="start_date"
                            value="{{ current_start_date|default:'' }}">
                 </div>
+
                 <div class="form-group">
                      <small>Tugash</small>
                     <input type="date" class="form-control" name="end_date"
                            value="{{ current_end_date|default:'' }}">
+                </div>
+
+                <!-- ✅ YANGI: Ko'rsatish nazorati - Pill Buttons -->
+                <div class="form-group">
+                    <small>Ko'rsatish nazorati</small>
+                    <div class="display-control-group">
+                        <label class="pill-button">
+                            <input type="checkbox" name="hide_graphs" value="1"
+                                   {% if current_hide_graphs %}checked{% endif %}>
+                            <i class="fas fa-chart-line pill-icon"></i>
+                            <span>Xarita ko'rsatilsin </span>
+                        </label>
+                        <label class="pill-button">
+                            <input type="checkbox" name="hide_map" value="1"
+                                   {% if current_hide_map %}checked{% endif %}>
+                            <i class="fas fa-map-marked-alt pill-icon"></i>
+                            <span>Grafiklar ko'rsatilsin</span>
+                        </label>
+                    </div>
                 </div>
 
                 <button type="submit" class="btn btn-primary mt-4" id="submitButton" style="grid-column: span 2;">
@@ -248,39 +319,46 @@
             </div>
         </div>
 
-        {% if graphs_list %}
-            <div class="container-fluid px-4">
-                {% for graph in graphs_list %}
-                <div class="card mb-5 shadow-sm graph-card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0 text-primary font-weight-bold">{{ graph.title }}</h5>
+        <!-- ✅ Grafiklar bo'limi (show_graphs = True bo'lsagina) -->
+        {% if show_graphs %}
+            {% if graphs_list %}
+                <div class="container-fluid px-4">
+                    {% for graph in graphs_list %}
+                    <div class="card mb-5 shadow-sm graph-card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0 text-primary font-weight-bold">{{ graph.title }}</h5>
 
-                        <button class="btn btn-outline-success btn-sm"
-                                onclick="downloadPlotlyImage('{{ graph.div_id }}', '{{ graph.filename }}')">
-                            <i class="fas fa-download"></i> Grafikni yuklash (PNG)
-                        </button>
-                    </div>
-                    <div class="card-body p-1">
-                        <div class="plotly-graph-container">
-                            {{ graph.html | safe }}
+                            <button class="btn btn-outline-success btn-sm"
+                                    onclick="downloadPlotlyImage('{{ graph.div_id }}', '{{ graph.filename }}')">
+                                <i class="fas fa-download"></i> Grafikni yuklash (PNG)
+                            </button>
+                        </div>
+                        <div class="card-body p-1">
+                            <div class="plotly-graph-container">
+                                {{ graph.html | safe }}
+                            </div>
                         </div>
                     </div>
+                    {% endfor %}
                 </div>
-                {% endfor %}
-            </div>
-        {% else %}
-            <div class="alert alert-warning mx-3">
-                Tanlangan parametrlar uchun ma'lumot topilmadi. Boshqa parametrlarni tanlang yoki sana oralig'ini o'zgartiring.
+            {% else %}
+                <div class="alert alert-warning mx-3">
+                    Tanlangan parametrlar uchun ma'lumot topilmadi. Boshqa parametrlarni tanlang yoki sana oralig'ini o'zgartiring.
+                </div>
+            {% endif %}
+        {% endif %}
+
+        <!-- ✅ Xarita bo'limi (show_map = True bo'lsagina) -->
+        {% if show_map %}
+            <div class="container mt-5 mb-5">
+                <div class="px-3 py-2 border-bottom mb-3">
+                    <h3>Barcha skvajinalar xaritasi</h3>
+                </div>
+                <div id="folium-map-container" class="shadow border rounded">
+                    {{ folium_map | safe }}
+                </div>
             </div>
         {% endif %}
-        <div class="container mt-5 mb-5">
-            <div class="px-3 py-2 border-bottom mb-3">
-                <h3>Barcha skvajinalar xaritasi</h3>
-            </div>
-            <div id="folium-map-container" class="shadow border rounded">
-                {{ folium_map | safe }}
-            </div>
-        </div>
     {% endif %}
 </div>
 
@@ -298,13 +376,13 @@
             width: 1400,
             height: 800,
             filename: filename,
-            scale: 2 // Yuqori sifat (High Resolution)
+            scale: 2
         });
     }
 
 document.addEventListener("DOMContentLoaded", () => {
 
-    // Plotly grafiklarini ekran o'lchamiga moslashtirish (Resize fix)
+    // Plotly grafiklarini ekran o'lchamiga moslashtirish
     window.addEventListener('resize', function() {
         var plots = document.querySelectorAll('.js-plotly-plot');
         plots.forEach(function(plot) {
@@ -337,8 +415,6 @@ document.addEventListener("DOMContentLoaded", () => {
         if (form) {
             form.addEventListener('submit', (e) => {
                 validate();
-                // Submitting oldin M/lgR maydonini tekshirishni kafolatlaymiz
-                toggleRequired();
                 if (!form.checkValidity()) {
                     e.preventDefault();
                 }
@@ -363,10 +439,8 @@ document.addEventListener("DOMContentLoaded", () => {
     radioMlgr.addEventListener("change", updateMlgrState);
     radioMb.addEventListener("change", updateMlgrState);
 
-    // page load holatini to‘g‘rilash
+    // Page load holatini to'g'rilash
     updateMlgrState();
-
-
 
     // Checkboxlarni sanash funksiyasi
     function updateSelectedCount(details) {
