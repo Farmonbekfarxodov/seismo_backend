@@ -8,4 +8,5 @@ urlpatterns = [
     path('parametrs/',views.parametrs_view,name='parametrs'),
     path('results/',views.results_view,name='results'),
     path('map-only/', views.earthquake_map_view, name='map_only'),
+    path('api/analyze-pattern/', views.analyze_pattern_view, name='analyze_pattern'),
 ]

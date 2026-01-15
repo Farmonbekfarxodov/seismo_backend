@@ -110,7 +110,8 @@ class CustomUserAdmin(BaseUserAdmin):
         from django.urls import reverse
 
         if obj.pk:
-            url = reverse('admin:your_app_name_loginhistory_changelist') + f'?user__id__exact={obj.pk}'
+            # O'zgartirilgan qator: 'your_app_name' o'rniga 'app_users' ishlatildi
+            url = reverse('admin:app_users_loginhistory_changelist') + f'?user__id__exact={obj.pk}'
             count = obj.login_history.count()
             return format_html(
                 '<a href="{}" target="_blank">Login tarixini ko\'rish ({} marta)</a>',

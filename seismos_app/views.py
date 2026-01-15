@@ -23,9 +23,10 @@ from jinja2.utils import missing
 from sqlalchemy import create_engine, text, exc
 from plotly.subplots import make_subplots
 from folium.plugins import Fullscreen
-from scipy.stats import norm
+from scipy.stats import norm,pearsonr,spearmanr
 from matplotlib.patches import Patch
-
+from tslearn.metrics import dtw
+from scipy.spatial.distance import euclidean
 
 
 # Setup logging
@@ -2430,6 +2431,250 @@ def create_earthquake_map_with_wells(df_earthquakes, all_wells, selected_wells, 
     folium.LayerControl().add_to(m)
 
     return m._repr_html_()
+
+
+def normalize_series(series):
+    """
+    Seriyani 0-1 oralig'ida normalizatsiya qilish
+    """
+    series = np.array(series, dtype=float)
+    min_val = np.min(series)
+    max_val = np.max(series)
+    if max_val - min_val == 0:
+        return np.zeros_like(series)
+    return (series - min_val) / (max_val - min_val)
+
+
+def calculate_pattern_similarity(reference, candidate):
+    """
+    Ikki pattern o'rtasidagi o'xshashlikni hisoblash
+
+    Args:
+        reference: Tanlangan pattern (list yoki np.array)
+        candidate: Taqqoslanayotgan pattern (list yoki np.array)
+
+    Returns:
+        dict: O'xshashlik skorlari
+    """
+    # Normalizatsiya
+    ref_norm = normalize_series(reference)
+    cand_norm = normalize_series(candidate)
+
+    results = {
+        'dtw_score': 0,
+        'pearson_score': 0,
+        'spearman_score': 0,
+        'combined_score': 0
+    }
+
+    # 1. DTW (Dynamic Time Warping)
+    try:
+        # tslearn DTW - path ni ham qaytaradi
+        dtw_distance = dtw(ref_norm.reshape(-1, 1), cand_norm.reshape(-1, 1))
+
+        # DTW ni score ga aylantirish (0-100%)
+        # Maksimal mumkin masofa = pattern uzunligi
+        max_possible_distance = len(ref_norm)
+        dtw_score = max(0, 100 * (1 - dtw_distance / max_possible_distance))
+        results['dtw_score'] = round(dtw_score, 2)
+
+    except Exception as e:
+        logging.error(f"DTW calculation error: {e}")
+        results['dtw_score'] = 0
+
+    # 2. Pearson Correlation
+    try:
+        pearson_corr, _ = pearsonr(ref_norm, cand_norm)
+        # -1 to 1 → 0 to 100%
+        pearson_score = (pearson_corr + 1) * 50
+        results['pearson_score'] = round(pearson_score, 2)
+
+    except Exception as e:
+        logging.error(f"Pearson calculation error: {e}")
+        results['pearson_score'] = 0
+
+    # 3. Spearman Correlation
+    try:
+        spearman_corr, _ = spearmanr(ref_norm, cand_norm)
+        spearman_score = (spearman_corr + 1) * 50
+        results['spearman_score'] = round(spearman_score, 2)
+
+    except Exception as e:
+        logging.error(f"Spearman calculation error: {e}")
+        results['spearman_score'] = 0
+
+    # 4. Combined Score (o'rtacha)
+    results['combined_score'] = round(
+        (results['dtw_score'] + results['pearson_score'] + results['spearman_score']) / 3,
+        2
+    )
+
+    return results
+
+
+def find_similar_patterns_optimized(
+        reference_dates,
+        reference_values,
+        full_dates,
+        full_values,
+        min_similarity=70,
+        min_duration_days=5
+):
+    """
+    O'xshash patternlarni topish (optimallashtirilgan)
+
+    Args:
+        reference_dates: Tanlangan qismning sanalar ro'yxati
+        reference_values: Tanlangan qismning qiymatlar ro'yxati
+        full_dates: To'liq sanalar ro'yxati
+        full_values: To'liq qiymatlar ro'yxati
+        min_similarity: Minimal o'xshashlik (%)
+        min_duration_days: Minimal davomiylik (kun)
+
+    Returns:
+        list: O'xshash patternlar ro'yxati
+    """
+    # Sanalarni datetime ga aylantirish
+    reference_dates = pd.to_datetime(reference_dates)
+    full_dates = pd.to_datetime(full_dates)
+
+    pattern_length = len(reference_values)
+
+    # Pattern juda qisqa bo'lsa
+    if pattern_length < min_duration_days:
+        logging.warning(f"Tanlangan pattern juda qisqa: {pattern_length} kun")
+        return []
+
+    similar_patterns = []
+
+    # Sliding window
+    total_iterations = len(full_values) - pattern_length + 1
+
+    logging.info(f"Pattern tahlil boshlandi: {total_iterations} ta pozitsiya tekshiriladi")
+
+    for i in range(total_iterations):
+        # Kandidat qismni olish
+        candidate_dates = full_dates.iloc[i:i + pattern_length]
+        candidate_values = full_values[i:i + pattern_length]
+
+        # Reference pattern bilan bir xil qismni o'tkazib yuborish
+        if candidate_dates.iloc[0] == reference_dates.iloc[0]:
+            continue
+
+        # Davomiylikni tekshirish
+        duration_days = (candidate_dates.iloc[-1] - candidate_dates.iloc[0]).days
+        if duration_days < min_duration_days:
+            continue
+
+        # O'xshashlikni hisoblash
+        similarity = calculate_pattern_similarity(reference_values, candidate_values)
+
+        # Filtrlash (minimal 70%)
+        if similarity['combined_score'] >= min_similarity:
+            similar_patterns.append({
+                'start_date': candidate_dates.iloc[0],
+                'end_date': candidate_dates.iloc[-1],
+                'dates': candidate_dates.tolist(),
+                'values': list(candidate_values),
+                'similarity': similarity,
+                'duration_days': duration_days
+            })
+
+    # O'xshashlik bo'yicha saralash
+    similar_patterns.sort(key=lambda x: x['similarity']['combined_score'], reverse=True)
+
+    logging.info(f"Topildi: {len(similar_patterns)} ta o'xshash pattern (>={min_similarity}%)")
+
+    return similar_patterns
+
+
+def analyze_pattern_view(request):
+    """
+    AJAX endpoint - pattern tahlil qilish
+    """
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Only POST method allowed'}, status=405)
+
+    try:
+        # JSON parse qilish
+        data = json.loads(request.body)
+
+        selected_points = data.get('selectedData')
+        well_key = data.get('wellKey')
+        param_name = data.get('paramName')
+
+        if not all([selected_points, well_key, param_name]):
+            return JsonResponse({'error': 'Kerakli parametrlar topilmadi'}, status=400)
+
+        # Selected data dan dates va values olish
+        selected_dates = [point['x'] for point in selected_points]
+        selected_values = [point['y'] for point in selected_points]
+
+        logging.info(f"Pattern tahlil: {well_key} - {param_name}, {len(selected_dates)} kun")
+
+        # Ma'lumotlar bazasidan to'liq ma'lumotlarni olish
+        lst_stansiya, _ = fetch_data()
+        ssdi_id = lst_stansiya.get(well_key, {}).get(param_name)
+
+        if not ssdi_id:
+            return JsonResponse({'error': 'Parametr topilmadi'}, status=404)
+
+        engine = connect_db()
+        conn = engine.connect()
+
+        # To'liq ma'lumotlarni olish
+        query = text(f"SELECT date, `{ssdi_id}` FROM alldata WHERE `{ssdi_id}` IS NOT NULL ORDER BY date")
+        result = conn.execute(query).fetchall()
+
+        if not result:
+            return JsonResponse({'error': 'Ma\'lumot topilmadi'}, status=404)
+
+        df_full = pd.DataFrame(result, columns=['date', 'value'])
+        df_full['date'] = pd.to_datetime(df_full['date'], errors='coerce')
+        df_full.dropna(subset=['date', 'value'], inplace=True)
+
+        # O'xshash patternlarni topish
+        similar_patterns = find_similar_patterns_optimized(
+            reference_dates=selected_dates,
+            reference_values=selected_values,
+            full_dates=df_full['date'],
+            full_values=df_full['value'].tolist(),
+            min_similarity=70,  # 70% dan yuqori
+            min_duration_days=5
+        )
+
+        conn.close()
+        engine.dispose()
+
+        # Response tayyorlash
+        response_data = {
+            'success': True,
+            'reference': {
+                'dates': selected_dates,
+                'values': selected_values,
+                'start': selected_dates[0],
+                'end': selected_dates[-1],
+                'length': len(selected_dates)
+            },
+            'similar_patterns': [
+                {
+                    'start_date': p['start_date'].strftime('%Y-%m-%d'),
+                    'end_date': p['end_date'].strftime('%Y-%m-%d'),
+                    'dates': [d.strftime('%Y-%m-%d') for d in p['dates']],
+                    'values': p['values'],
+                    'similarity': p['similarity'],
+                    'duration_days': p['duration_days']
+                }
+                for p in similar_patterns[:10]  # Top 10
+            ],
+            'total_found': len(similar_patterns)
+        }
+
+        return JsonResponse(response_data)
+
+    except Exception as e:
+        logging.error(f"Pattern analysis error: {e}", exc_info=True)
+        return JsonResponse({'error': str(e)}, status=500)
 
 def selection_view(request):
     """
