@@ -23,11 +23,13 @@ from jinja2.utils import missing
 from sqlalchemy import create_engine, text, exc
 from plotly.subplots import make_subplots
 from folium.plugins import Fullscreen
-from scipy.stats import norm,pearsonr,spearmanr
+from scipy.stats import norm, pearsonr, spearmanr
 from matplotlib.patches import Patch
 from tslearn.metrics import dtw
 from scipy.spatial.distance import euclidean
-
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from decouple import config as env_config
 
 # Setup logging
 logging.basicConfig(
@@ -43,7 +45,6 @@ LATITUDE_COLUMN = "Latitude"
 LONGITUDE_COLUMN = "Longitude"
 
 MAIN_MAGNITUDE_COLUMN = "Mb"
-
 
 DEFAULT_ELEMENTS_GROUPS = {
     "gazli": ["He", "H2", "O2", "N2", "CH4", "CO2"],
@@ -75,18 +76,17 @@ COLOR_PALETTE = [
 
 # Database Utilities
 def get_db_config():
-    """Reads database configuration from user_info.json."""
-    config_path = os.path.join(settings.BASE_DIR, "user_info.json")
     try:
-        with open(config_path) as f:
-            return json.load(f)
-    except FileNotFoundError:
-        logging.error(f"Configuration file not found at {config_path}")
+        return{
+            'db':env_config('DB_NAME'),
+            'user':env_config('DB_USER'),
+            'psw': env_config('DB_PASSWORD'),
+            'ip': env_config('DB_HOST', default='localhost')
+        }
+    except Exception as e:
+        logging.error(f"Database configuration error: {e}")
+        logging.error(f"Make sure .env file exists and contains NAME, USER, PASSWORD, HOST")
         raise
-    except json.JSONDecodeError:
-        logging.error(f"Error decoding JSON from {config_path}. Check file format.")
-        raise
-
 
 def connect_db():
     """Establishes and returns a database engine connection."""
@@ -176,27 +176,27 @@ def destenc_vectorized(lat1, lon1, lat2_series, lon2_series):
     d_lat = (lat2_series - lat1) * deg_to_rad
     d_lon = (lon2_series - lon1) * deg_to_rad
     a = (
-        np.sin(d_lat / 2) ** 2
-        + np.cos(lat1 * deg_to_rad)
-        * np.cos(lat2_series * deg_to_rad)
-        * np.sin(d_lon / 2) ** 2
+            np.sin(d_lat / 2) ** 2
+            + np.cos(lat1 * deg_to_rad)
+            * np.cos(lat2_series * deg_to_rad)
+            * np.sin(d_lon / 2) ** 2
     )
     c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
     return 6371 * c
 
 
 def process_dataframe(
-    df,
-    min_mag,
-    min_mlgr,
-    well_lat,
-    well_lon,
-    date_col,
-    time_col,
-    lat_col,
-    lon_col,
-    main_mag_col,
-    secondary_mag_col,
+        df,
+        min_mag,
+        min_mlgr,
+        well_lat,
+        well_lon,
+        date_col,
+        time_col,
+        lat_col,
+        lon_col,
+        main_mag_col,
+        secondary_mag_col,
 ):
     """
     Processes the earthquake DataFrame to filter by main magnitude, calculate distance
@@ -326,7 +326,6 @@ def generate_well_colors(well_names):
     """
     base_colors = [
 
-
         '#0000FF',  # Ko'k
         '#FF00FF',  # Magenta
         '#00FFFF',  # Cyan
@@ -374,21 +373,96 @@ def generate_well_colors(well_names):
 
     return well_color_map
 
+
+# Custom DTW va normalizatsiya (oldin bor bo'lsa, qo'shmang)
+def custom_dtw(x, y):
+    x = np.array(x)
+    y = np.array(y)
+    n, m = len(x), len(y)
+    dt = np.full((n+1, m+1), np.inf)
+    dt[0, 0] = 0
+    for i in range(1, n+1):
+        for j in range(1, m+1):
+            cost = abs(x[i-1] - y[j-1])
+            dt[i, j] = cost + min(dt[i-1, j], dt[i, j-1], dt[i-1, j-1])
+    return dt[-1, -1]
+
+def normalize_series(series):
+    series = np.array(series, dtype=float)
+    min_val = np.min(series)
+    max_val = np.max(series)
+    if max_val - min_val == 0:
+        return np.zeros_like(series)
+    return (series - min_val) / (max_val - min_val)
+
+def calculate_pattern_similarity(reference, candidate):
+    ref_norm = normalize_series(reference)
+    cand_norm = normalize_series(candidate)
+    results = {'dtw_score': 0, 'pearson_score': 0, 'spearman_score': 0, 'combined_score': 0}
+    try:
+        dtw_distance = custom_dtw(ref_norm, cand_norm)
+        max_possible_distance = len(ref_norm)
+        dtw_score = max(0, 100 * (1 - dtw_distance / max_possible_distance))
+        results['dtw_score'] = round(dtw_score, 2)
+    except:
+        pass
+    try:
+        pearson_corr, _ = pearsonr(ref_norm, cand_norm)
+        results['pearson_score'] = round((pearson_corr + 1) * 50, 2)
+    except:
+        pass
+    try:
+        spearman_corr, _ = spearmanr(ref_norm, cand_norm)
+        results['spearman_score'] = round((spearman_corr + 1) * 50, 2)
+    except:
+        pass
+    results['combined_score'] = round(
+        (results['dtw_score'] + results['pearson_score'] + results['spearman_score']) / 3, 2
+    )
+    return results
+
+# Yangi: Anomaliya segmentlarida o'xshashlik topish
+def find_similar_anomalies(anomaly_segments, min_similarity=70):
+    if len(anomaly_segments) < 2:
+        return []  # Hech bo'lmaganda 2 ta segment kerak
+    similar_pairs = []
+    reference = anomaly_segments[0]['values']  # Birinchi anomaliya reference
+    for seg in anomaly_segments[1:]:
+        similarity = calculate_pattern_similarity(reference, seg['values'])
+        if similarity['combined_score'] >= min_similarity:
+            similar_pairs.append({
+                'start_date': seg['start_date'],
+                'end_date': seg['end_date'],
+                'similarity': similarity
+            })
+    similar_pairs.sort(key=lambda x: x['similarity']['combined_score'], reverse=True)
+    return similar_pairs
+
+
 def plot_data_with_anomalies(
-    fig,
-    x_val,
-    y_val,
-    mean,
-    sigma,
-    btn_value,
-    row_idx,
-    col_idx,
-    trace_color,
-    element_name,
-    key_name,
+        fig,
+        x_val,
+        y_val,
+        mean,
+        sigma,
+        btn_value,
+        row_idx,
+        col_idx,
+        trace_color,
+        element_name,
+        key_name,
+        min_similarity=70,  # Yangi parametr: minimal o'xshashlik foizi
+        min_anomaly_length=5,  # Minimal anomaliya segment uzunligi (nuqta soni)
+        highlight_similar=True,  # O'xshash anomaliyalarni belgilashni yoqish/o'chirish
 ):
     """
     Ma'lumotlarning butun chizig'ini chizadi va anomaliya qismlarini qizil rangda belgilaydi.
+    Qo'shimcha: Anomaliya segmentlari ichidan o'xshashlarini topib, yashil rangda belgilaydi.
+
+    Yangi parametrlar:
+        min_similarity: O'xshash deb hisoblash uchun minimal foiz (default 70%)
+        min_anomaly_length: Minimal anomaliya segment uzunligi (nuqta soni)
+        highlight_similar: O'xshash anomaliyalarni grafikda ko'rsatish (True/False)
     """
     if isinstance(x_val, pd.Series):
         x_val = x_val.tolist()
@@ -417,104 +491,47 @@ def plot_data_with_anomalies(
     upper_bound = mean + btn_value * sigma
     lower_bound = mean - btn_value * sigma
 
-    y_all_values = [y for y in y_val if not np.isnan(y)]  # NaN larni olib tashlash
+    y_all_values = [y for y in y_val if not np.isnan(y)]
     y_all_values.extend([upper_bound, lower_bound, mean])
 
     yaxis_index = (row_idx - 1) * 1 + col_idx
     yref = "y" if yaxis_index == 1 else f"y{2 * row_idx - 1}"
 
     # UB, MEAN va LB chiziqlarini chizish
-    fig.add_shape(
-        type="line",
-        x0=min(x_val),
-        x1=max(x_val),
-        y0=upper_bound,
-        y1=upper_bound,
-        line=dict(color="green", width=1.5),
-        row=row_idx,
-        col=col_idx,
-        yref=yref,
-        xref="x",
-    )
-    fig.add_annotation(
-        x=max(x_val),
-        y=upper_bound,
-        text=f"UB ({btn_value}σ)",
-        showarrow=False,
-        font=dict(color="green", size=10),
-        xanchor="right",
-        yanchor="bottom",
-        row=row_idx,
-        col=col_idx,
-    )
+    fig.add_shape(type="line", x0=min(x_val), x1=max(x_val), y0=upper_bound, y1=upper_bound,
+                  line=dict(color="green", width=1.5), row=row_idx, col=col_idx, yref=yref, xref="x")
+    fig.add_annotation(x=max(x_val), y=upper_bound, text=f"UB ({btn_value}σ)", showarrow=False,
+                       font=dict(color="green", size=10), xanchor="right", yanchor="bottom",
+                       row=row_idx, col=col_idx)
 
-    fig.add_shape(
-        type="line",
-        x0=min(x_val),
-        x1=max(x_val),
-        y0=mean,
-        y1=mean,
-        line=dict(color="magenta", width=1.5),
-        row=row_idx,
-        col=col_idx,
-        yref=yref,
-        xref="x",
-    )
-    fig.add_annotation(
-        x=max(x_val),
-        y=mean,
-        text="Mean",
-        showarrow=False,
-        font=dict(color="magenta", size=10),
-        xanchor="right",
-        yanchor="bottom",
-        row=row_idx,
-        col=col_idx,
-    )
+    fig.add_shape(type="line", x0=min(x_val), x1=max(x_val), y0=mean, y1=mean,
+                  line=dict(color="magenta", width=1.5), row=row_idx, col=col_idx, yref=yref, xref="x")
+    fig.add_annotation(x=max(x_val), y=mean, text="Mean", showarrow=False,
+                       font=dict(color="magenta", size=10), xanchor="right", yanchor="bottom",
+                       row=row_idx, col=col_idx)
 
-    fig.add_shape(
-        type="line",
-        x0=min(x_val),
-        x1=max(x_val),
-        y0=lower_bound,
-        y1=lower_bound,
-        line=dict(color="blue", width=1.5),
-        row=row_idx,
-        col=col_idx,
-        yref=yref,
-        xref="x",
-    )
-    fig.add_annotation(
-        x=max(x_val),
-        y=lower_bound,
-        text=f"LB ({-btn_value}σ)",
-        showarrow=False,
-        font=dict(color="blue", size=10),
-        xanchor="right",
-        yanchor="top",
-        row=row_idx,
-        col=col_idx,
-    )
+    fig.add_shape(type="line", x0=min(x_val), x1=max(x_val), y0=lower_bound, y1=lower_bound,
+                  line=dict(color="blue", width=1.5), row=row_idx, col=col_idx, yref=yref, xref="x")
+    fig.add_annotation(x=max(x_val), y=lower_bound, text=f"LB ({-btn_value}σ)", showarrow=False,
+                       font=dict(color="blue", size=10), xanchor="right", yanchor="top",
+                       row=row_idx, col=col_idx)
 
-    # Asosiy grafik (connectgaps=False saqlangan)
+    # Asosiy grafik
     fig.add_trace(
         go.Scatter(
-            x=x_val,
-            y=y_val,
-            mode="lines",
+            x=x_val, y=y_val, mode="lines",
             line=dict(color=trace_color, width=1.5),
             name=f"{element_name} ({key_name})",
             showlegend=True,
             hoverinfo="x+y",
             hovertemplate=f"Vaqt: %{{x|%d-%m-%Y}}<br>{element_name} Qiymati: %{{y}}<extra></extra>",
-            connectgaps=False  # Bo'shliqlarni tutashtirmaslik
+            connectgaps=False
         ),
-        row=row_idx,
-        col=col_idx,
-        secondary_y=False,
+        row=row_idx, col=col_idx, secondary_y=False
     )
 
-    # Anomaliya chiziqlari
+    # ==================== ANOMALIYA SEGMENTLARINI YIG'ISH ====================
+    anomaly_segments = []  # Yangi: barcha anomaliya segmentlarini saqlash
     current_anomalous_segment_x = []
     current_anomalous_segment_y = []
     is_anomalous_prev = False
@@ -535,15 +552,15 @@ def plot_data_with_anomalies(
         intersect_x = None
         intersect_y = None
 
-        # Upper bound bilan kesishishni tekshirish
+        # Upper bound bilan kesishish
         if (y_prev < upper_bound <= y_curr) or (y_curr < upper_bound <= y_prev):
             if abs(y_curr - y_prev) > 1e-9:
                 ratio = (upper_bound - y_prev) / (y_curr - y_prev)
-                if 0 <= ratio <= 1:  # Faqat mos keladigan kesishishni qabul qilish
+                if 0 <= ratio <= 1:
                     intersect_x = x_prev + (x_curr - x_prev) * ratio
                     intersect_y = upper_bound
 
-        # Lower bound bilan kesishishni tekshirish
+        # Lower bound bilan kesishish
         if (y_prev > lower_bound >= y_curr) or (y_curr > lower_bound >= y_prev):
             if abs(y_curr - y_prev) > 1e-9:
                 ratio = (lower_bound - y_prev) / (y_curr - y_prev)
@@ -552,16 +569,26 @@ def plot_data_with_anomalies(
                 if intersect_x is None and 0 <= ratio <= 1:
                     intersect_x = new_intersect_x
                     intersect_y = new_intersect_y
-                elif intersect_x and abs((new_intersect_x - x_prev).total_seconds()) < abs((intersect_x - x_prev).total_seconds()) and 0 <= ratio <= 1:
+                elif intersect_x and abs((new_intersect_x - x_prev).total_seconds()) < abs(
+                        (intersect_x - x_prev).total_seconds()) and 0 <= ratio <= 1:
                     intersect_x = new_intersect_x
                     intersect_y = new_intersect_y
 
         # Anomaliya o'tishini tekshirish
         if is_anomalous_curr != is_anomalous_prev:
-            if is_anomalous_prev and len(current_anomalous_segment_x) > 1:  # Oxirgi segmentni yopish uchun len > 1
+            if is_anomalous_prev and len(current_anomalous_segment_x) > 1:
                 if intersect_x is not None:
                     current_anomalous_segment_x.append(intersect_x)
                     current_anomalous_segment_y.append(intersect_y)
+
+                # Anomaliya segmentini saqlash (faqat yetarli uzunlikdagi)
+                if len(current_anomalous_segment_x) >= min_anomaly_length:
+                    anomaly_segments.append({
+                        'start_date': current_anomalous_segment_x[0],
+                        'end_date': current_anomalous_segment_x[-1],
+                        'values': current_anomalous_segment_y[:]
+                    })
+
                 fig.add_trace(
                     go.Scatter(
                         x=current_anomalous_segment_x,
@@ -571,11 +598,9 @@ def plot_data_with_anomalies(
                         showlegend=False,
                         hoverinfo="x+y",
                         hovertemplate="Vaqt: %{x|%d-%m-%Y}<br>Anomaliya: %{y}<extra></extra>",
-                        connectgaps=False  # Qo'shimcha: anomaliya segmentlarida ham bo'shliqlarni tutashtirmaslik
+                        connectgaps=False
                     ),
-                    row=row_idx,
-                    col=col_idx,
-                    secondary_y=False,
+                    row=row_idx, col=col_idx, secondary_y=False
                 )
                 current_anomalous_segment_x = []
                 current_anomalous_segment_y = []
@@ -593,8 +618,14 @@ def plot_data_with_anomalies(
 
         is_anomalous_prev = is_anomalous_curr
 
-    # Oxirgi segmentni to‘g‘ri yopish
+    # Oxirgi segmentni yopish va saqlash
     if is_anomalous_prev and len(current_anomalous_segment_x) > 1:
+        if len(current_anomalous_segment_x) >= min_anomaly_length:
+            anomaly_segments.append({
+                'start_date': current_anomalous_segment_x[0],
+                'end_date': current_anomalous_segment_x[-1],
+                'values': current_anomalous_segment_y[:]
+            })
         fig.add_trace(
             go.Scatter(
                 x=current_anomalous_segment_x,
@@ -606,12 +637,70 @@ def plot_data_with_anomalies(
                 hovertemplate="Vaqt: %{x|%d-%m-%Y}<br>Anomaliya: %{y}<extra></extra>",
                 connectgaps=False
             ),
-            row=row_idx,
-            col=col_idx,
-            secondary_y=False,
+            row=row_idx, col=col_idx, secondary_y=False
         )
 
+    # ==================== ANOMALIYA SEGMENTLARI ICHIDA O'XSHASHLIKNI TOPISH ====================
+    if highlight_similar and len(anomaly_segments) >= 2:
+        try:
+            # Birinchi anomaliya - reference sifatida olinadi
+            reference_values = anomaly_segments[0]['values']
+
+            for seg in anomaly_segments[1:]:
+                similarity = calculate_pattern_similarity(reference_values, seg['values'])
+                if similarity['combined_score'] >= min_similarity:
+                    # O'xshash anomaliyani yashil shaffof to'rtburchak bilan belgilash
+                    fig.add_vrect(
+                        x0=seg['start_date'],
+                        x1=seg['end_date'],
+                        fillcolor="green",
+                        opacity=0.25,
+                        line_width=0,
+                        annotation_text=f"{similarity['combined_score']}%",
+                        annotation_position="top left",
+                        annotation=dict(font_size=9, font_color="darkgreen", bgcolor="rgba(255,255,255,0.7)"),
+                        row=row_idx,
+                        col=col_idx,
+                        yref=yref,
+                        xref="x"
+                    )
+        except Exception as e:
+            logging.warning(f"Anomaliya o'xshashlik hisobida xato: {e}")
+
     return y_all_values
+
+
+@csrf_exempt  # AJAX uchun vaqtincha, keyin token bilan xavfsiz qilish mumkin
+def set_reference_segment(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            segment = data.get('segment')
+
+            if not segment:
+                return JsonResponse({'status': 'error', 'message': 'Segment ma\'lumotlari yo\'q'}, status=400)
+
+            # Sessionda saqlash
+            request.session['selected_reference_segment'] = {
+                'index': segment.get('index'),
+                'start': segment.get('start'),
+                'end': segment.get('end'),
+                # Agar values ham yuborilgan bo'lsa qo'shish mumkin
+            }
+            request.session.modified = True
+
+            return JsonResponse({
+                'status': 'success',
+                'message': 'Reference segment tanlandi',
+                'selected': segment
+            })
+
+        except json.JSONDecodeError:
+            return JsonResponse({'status': 'error', 'message': 'JSON format xatosi'}, status=400)
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+    return JsonResponse({'status': 'error', 'message': 'Faqat POST so\'rov qabul qilinadi'}, status=405)
 
 
 def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4,
@@ -817,7 +906,6 @@ def distance_haversine(lat1, lon1, lat2, lon2):
     return d
 
 def get_all_shapefiles():
-
     shapefile_paths = []
 
     search_paths = [
@@ -838,7 +926,7 @@ def get_all_shapefiles():
         found_files = glob.glob(search_path)
         shapefile_paths.extend(found_files)
 
-        #dublikatlarni olib tashlash
+        # dublikatlarni olib tashlash
         shapefile_paths = list(set(shapefile_paths))
 
         logging.info(f"Topilgan shapefilelar: {len(shapefile_paths)} ta")
@@ -1135,7 +1223,7 @@ def load_all_cracks_shapefiles():
             if gdf.crs and gdf.crs != 'EPSG:4326':
                 gdf = gdf.to_crs('EPSG:4326')
 
-            #Fayl nomini qo'shish
+            # Fayl nomini qo'shish
             gdf['source_file'] = os.path.basename(shapefile_path)
 
             all_cracks.append(gdf)
@@ -1149,7 +1237,7 @@ def load_all_cracks_shapefiles():
         logging.warning("Hech qanday shapefile yuklanmadi")
         return None
 
-    #Barcha malumotlarni  birlashtirish
+    # Barcha malumotlarni  birlashtirish
     try:
         combined_gdf = gpd.GeoDataFrame(pd.concat(all_cracks, ignore_index=True))
         logging.info(f"Umumiy yoriqlar soni: {len(combined_gdf)}")
@@ -1169,17 +1257,17 @@ def add_cracks_to_map(folium_map, cracks_gdf):
 
     # CONF bo'yicha asosiy ranglar
     conf_colors = {
-        "A": (255, 0, 0),      # qizil
-        "B": (200, 0, 0),      # qizil (biroz farqli bo'lishi mumkin)
-        "C": (255, 165, 0),    # sariq/oranj
+        "A": (255, 0, 0),  # qizil
+        "B": (200, 0, 0),  # qizil (biroz farqli bo'lishi mumkin)
+        "C": (255, 165, 0),  # sariq/oranj
         "D": (128, 128, 128),  # kulrang
     }
 
     # RATE bo'yicha qalinlik va alpha
     rate_styles = {
-        "1": {"weight": 6, "alpha": 1.0},   # eng qalin, to‘q
-        "2": {"weight": 4, "alpha": 0.8},   # o‘rtacha
-        "3": {"weight": 2, "alpha": 0.6},   # eng yupqa, eng och
+        "1": {"weight": 6, "alpha": 1.0},  # eng qalin, to‘q
+        "2": {"weight": 4, "alpha": 0.8},  # o‘rtacha
+        "3": {"weight": 2, "alpha": 0.6},  # eng yupqa, eng och
     }
 
     default_color = "blue"
@@ -1828,7 +1916,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                             console.error("Xarita topilmadi");
                             return;
                         }}
-            
+
                         circlesLayer = L.layerGroup();
                         circlesInfo.forEach(function(info) {{
                             var circle = L.circle([wellLat, wellLon], {{
@@ -1838,29 +1926,29 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                                 fill: false,
                                 opacity: 0.7
                             }});
-            
+
                             circle.bindTooltip(
                                 "M=" + info.M + ", R=" + info.R_km.toFixed(1) + " km (M/lgR=" + info.mlgr + ")",
                                 {{permanent: false, direction: 'top'}}
                             );
-            
+
                             circlesLayer.addLayer(circle);
                         }});
-                        
+
                         //Mb rejimida aylanalar darhol ko'rinadi
                         if (isVisible) {{
                             circlesLayer.addTo(map);
                         }}
-            
+
                         map.eachLayer(function(layer) {{
                             if (layer instanceof L.Marker) {{
                                 var latlng = layer.getLatLng();
                                 if (Math.abs(latlng.lat - wellLat) < 0.0001 && 
                                     Math.abs(latlng.lng - wellLon) < 0.0001) {{
-            
+
                                     layer.on('click', function(e) {{
                                         L.DomEvent.stopPropagation(e);
-            
+
                                         if (isVisible) {{
                                             map.removeLayer(circlesLayer);
                                             isVisible = false;
@@ -1920,7 +2008,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
 
                     else:
                         color = "yellow"
-                        radius = mag_val *1.5
+                        radius = mag_val * 1.5
                 else:
 
                     tooltip_html = f"""
@@ -2257,9 +2345,9 @@ def create_earthquake_map_with_wells(df_earthquakes, all_wells, selected_wells, 
                                 </tr>
                                 <tr style="background-color: #f8f9fa;">
                                     <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
-                                    
+
                                 </tr>
-                               
+
                             </table>
                             <p style="margin-top: 10px; color: {colors['base']}; font-weight: bold;">✓ Tanlangan skvajina</p>
                         </div>
@@ -2433,256 +2521,13 @@ def create_earthquake_map_with_wells(df_earthquakes, all_wells, selected_wells, 
     return m._repr_html_()
 
 
-def normalize_series(series):
-    """
-    Seriyani 0-1 oralig'ida normalizatsiya qilish
-    """
-    series = np.array(series, dtype=float)
-    min_val = np.min(series)
-    max_val = np.max(series)
-    if max_val - min_val == 0:
-        return np.zeros_like(series)
-    return (series - min_val) / (max_val - min_val)
-
-
-def calculate_pattern_similarity(reference, candidate):
-    """
-    Ikki pattern o'rtasidagi o'xshashlikni hisoblash
-
-    Args:
-        reference: Tanlangan pattern (list yoki np.array)
-        candidate: Taqqoslanayotgan pattern (list yoki np.array)
-
-    Returns:
-        dict: O'xshashlik skorlari
-    """
-    # Normalizatsiya
-    ref_norm = normalize_series(reference)
-    cand_norm = normalize_series(candidate)
-
-    results = {
-        'dtw_score': 0,
-        'pearson_score': 0,
-        'spearman_score': 0,
-        'combined_score': 0
-    }
-
-    # 1. DTW (Dynamic Time Warping)
-    try:
-        # tslearn DTW - path ni ham qaytaradi
-        dtw_distance = dtw(ref_norm.reshape(-1, 1), cand_norm.reshape(-1, 1))
-
-        # DTW ni score ga aylantirish (0-100%)
-        # Maksimal mumkin masofa = pattern uzunligi
-        max_possible_distance = len(ref_norm)
-        dtw_score = max(0, 100 * (1 - dtw_distance / max_possible_distance))
-        results['dtw_score'] = round(dtw_score, 2)
-
-    except Exception as e:
-        logging.error(f"DTW calculation error: {e}")
-        results['dtw_score'] = 0
-
-    # 2. Pearson Correlation
-    try:
-        pearson_corr, _ = pearsonr(ref_norm, cand_norm)
-        # -1 to 1 → 0 to 100%
-        pearson_score = (pearson_corr + 1) * 50
-        results['pearson_score'] = round(pearson_score, 2)
-
-    except Exception as e:
-        logging.error(f"Pearson calculation error: {e}")
-        results['pearson_score'] = 0
-
-    # 3. Spearman Correlation
-    try:
-        spearman_corr, _ = spearmanr(ref_norm, cand_norm)
-        spearman_score = (spearman_corr + 1) * 50
-        results['spearman_score'] = round(spearman_score, 2)
-
-    except Exception as e:
-        logging.error(f"Spearman calculation error: {e}")
-        results['spearman_score'] = 0
-
-    # 4. Combined Score (o'rtacha)
-    results['combined_score'] = round(
-        (results['dtw_score'] + results['pearson_score'] + results['spearman_score']) / 3,
-        2
-    )
-
-    return results
-
-
-def find_similar_patterns_optimized(
-        reference_dates,
-        reference_values,
-        full_dates,
-        full_values,
-        min_similarity=70,
-        min_duration_days=5
-):
-    """
-    O'xshash patternlarni topish (optimallashtirilgan)
-
-    Args:
-        reference_dates: Tanlangan qismning sanalar ro'yxati
-        reference_values: Tanlangan qismning qiymatlar ro'yxati
-        full_dates: To'liq sanalar ro'yxati
-        full_values: To'liq qiymatlar ro'yxati
-        min_similarity: Minimal o'xshashlik (%)
-        min_duration_days: Minimal davomiylik (kun)
-
-    Returns:
-        list: O'xshash patternlar ro'yxati
-    """
-    # Sanalarni datetime ga aylantirish
-    reference_dates = pd.to_datetime(reference_dates)
-    full_dates = pd.to_datetime(full_dates)
-
-    pattern_length = len(reference_values)
-
-    # Pattern juda qisqa bo'lsa
-    if pattern_length < min_duration_days:
-        logging.warning(f"Tanlangan pattern juda qisqa: {pattern_length} kun")
-        return []
-
-    similar_patterns = []
-
-    # Sliding window
-    total_iterations = len(full_values) - pattern_length + 1
-
-    logging.info(f"Pattern tahlil boshlandi: {total_iterations} ta pozitsiya tekshiriladi")
-
-    for i in range(total_iterations):
-        # Kandidat qismni olish
-        candidate_dates = full_dates.iloc[i:i + pattern_length]
-        candidate_values = full_values[i:i + pattern_length]
-
-        # Reference pattern bilan bir xil qismni o'tkazib yuborish
-        if candidate_dates.iloc[0] == reference_dates.iloc[0]:
-            continue
-
-        # Davomiylikni tekshirish
-        duration_days = (candidate_dates.iloc[-1] - candidate_dates.iloc[0]).days
-        if duration_days < min_duration_days:
-            continue
-
-        # O'xshashlikni hisoblash
-        similarity = calculate_pattern_similarity(reference_values, candidate_values)
-
-        # Filtrlash (minimal 70%)
-        if similarity['combined_score'] >= min_similarity:
-            similar_patterns.append({
-                'start_date': candidate_dates.iloc[0],
-                'end_date': candidate_dates.iloc[-1],
-                'dates': candidate_dates.tolist(),
-                'values': list(candidate_values),
-                'similarity': similarity,
-                'duration_days': duration_days
-            })
-
-    # O'xshashlik bo'yicha saralash
-    similar_patterns.sort(key=lambda x: x['similarity']['combined_score'], reverse=True)
-
-    logging.info(f"Topildi: {len(similar_patterns)} ta o'xshash pattern (>={min_similarity}%)")
-
-    return similar_patterns
-
-
-def analyze_pattern_view(request):
-    """
-    AJAX endpoint - pattern tahlil qilish
-    """
-    if request.method != 'POST':
-        return JsonResponse({'error': 'Only POST method allowed'}, status=405)
-
-    try:
-        # JSON parse qilish
-        data = json.loads(request.body)
-
-        selected_points = data.get('selectedData')
-        well_key = data.get('wellKey')
-        param_name = data.get('paramName')
-
-        if not all([selected_points, well_key, param_name]):
-            return JsonResponse({'error': 'Kerakli parametrlar topilmadi'}, status=400)
-
-        # Selected data dan dates va values olish
-        selected_dates = [point['x'] for point in selected_points]
-        selected_values = [point['y'] for point in selected_points]
-
-        logging.info(f"Pattern tahlil: {well_key} - {param_name}, {len(selected_dates)} kun")
-
-        # Ma'lumotlar bazasidan to'liq ma'lumotlarni olish
-        lst_stansiya, _ = fetch_data()
-        ssdi_id = lst_stansiya.get(well_key, {}).get(param_name)
-
-        if not ssdi_id:
-            return JsonResponse({'error': 'Parametr topilmadi'}, status=404)
-
-        engine = connect_db()
-        conn = engine.connect()
-
-        # To'liq ma'lumotlarni olish
-        query = text(f"SELECT date, `{ssdi_id}` FROM alldata WHERE `{ssdi_id}` IS NOT NULL ORDER BY date")
-        result = conn.execute(query).fetchall()
-
-        if not result:
-            return JsonResponse({'error': 'Ma\'lumot topilmadi'}, status=404)
-
-        df_full = pd.DataFrame(result, columns=['date', 'value'])
-        df_full['date'] = pd.to_datetime(df_full['date'], errors='coerce')
-        df_full.dropna(subset=['date', 'value'], inplace=True)
-
-        # O'xshash patternlarni topish
-        similar_patterns = find_similar_patterns_optimized(
-            reference_dates=selected_dates,
-            reference_values=selected_values,
-            full_dates=df_full['date'],
-            full_values=df_full['value'].tolist(),
-            min_similarity=70,  # 70% dan yuqori
-            min_duration_days=5
-        )
-
-        conn.close()
-        engine.dispose()
-
-        # Response tayyorlash
-        response_data = {
-            'success': True,
-            'reference': {
-                'dates': selected_dates,
-                'values': selected_values,
-                'start': selected_dates[0],
-                'end': selected_dates[-1],
-                'length': len(selected_dates)
-            },
-            'similar_patterns': [
-                {
-                    'start_date': p['start_date'].strftime('%Y-%m-%d'),
-                    'end_date': p['end_date'].strftime('%Y-%m-%d'),
-                    'dates': [d.strftime('%Y-%m-%d') for d in p['dates']],
-                    'values': p['values'],
-                    'similarity': p['similarity'],
-                    'duration_days': p['duration_days']
-                }
-                for p in similar_patterns[:10]  # Top 10
-            ],
-            'total_found': len(similar_patterns)
-        }
-
-        return JsonResponse(response_data)
-
-    except Exception as e:
-        logging.error(f"Pattern analysis error: {e}", exc_info=True)
-        return JsonResponse({'error': str(e)}, status=500)
-
 def selection_view(request):
     """
     Handles the selection of wells and parametrs for analysis.
     """
     lst_stansiya, _ = fetch_data()
     all_params = []
-    median_values = [3,5,7,15,31,91,183,365,731]
+    median_values = [3, 5, 7, 15, 31, 91, 183, 365, 731]
 
     for group_name, params_list in DEFAULT_ELEMENTS_GROUPS.items():
         all_params.extend(params_list)
@@ -2716,25 +2561,24 @@ def selection_view(request):
     return render(
         request,
         "seismos_app/results1.html",
-        {"wells": lst_stansiya.keys(), "params": all_params,"median_values":median_values},
+        {"wells": lst_stansiya.keys(), "params": all_params, "median_values": median_values},
     )
 
 
 def parametrs_view(request):
-
     if request.method == "POST":
         try:
             min_mag = float(request.POST["min_mag"])
             btn_value = float(request.POST["sigma"])
             min_mlgr = float(request.POST["min_mlgr"])
 
-            #catalog jadvalidan foydalanish
+            # catalog jadvalidan foydalanish
             request.session.update(
                 {
-                    "use_catalog":True,
-                    "min_mag":min_mag,
-                    "btn_value":btn_value,
-                    "min_mlgr":min_mlgr
+                    "use_catalog": True,
+                    "min_mag": min_mag,
+                    "btn_value": btn_value,
+                    "min_mlgr": min_mlgr
                 }
             )
             return redirect("seismos:results")
@@ -2743,14 +2587,14 @@ def parametrs_view(request):
             return render(
                 request,
                 "seismos_app/results1.html",
-                {"error":"Iltimos barcha sonli maydonlarga to'gri qiymat kiriting"}
+                {"error": "Iltimos barcha sonli maydonlarga to'gri qiymat kiriting"}
             )
         except Exception as e:
             logging.error(f"Parametr input error:{e}")
             return render(
                 request,
                 "seismos_app/results1.html",
-                {"error":f"Xato yuz berdi:{e},Iltimos qayta urinib ko'ring"}
+                {"error": f"Xato yuz berdi:{e},Iltimos qayta urinib ko'ring"}
             )
     return render(request, "seismos_app/results1.html")
 

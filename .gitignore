@@ -179,3 +179,4 @@ media/
 seismic_app.log
 
 __pycache__/
+user_info.json
