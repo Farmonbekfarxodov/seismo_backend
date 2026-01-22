@@ -36,7 +36,7 @@ class AllIzmereniya(models.Model):
 
 
 class Malumot(models.Model):
-    nomi = models.CharField(max_length=100)
+    nomi = models.CharField(max_length=100, db_index=True)
 
 
     mineralizatsiya = models.ImageField(
@@ -47,6 +47,9 @@ class Malumot(models.Model):
 
     class Meta:
         db_table = 'malumot1'
+        indexes = [
+            models.Index(fields=['nomi'], name='idx_malumot_nomi'),
+        ]
 
     def __str__(self):
         return self.nomi
