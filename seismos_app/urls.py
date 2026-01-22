@@ -7,7 +7,5 @@ urlpatterns = [
     path('',views.selection_view,name='selection'),
     path('parametrs/',views.parametrs_view,name='parametrs'),
     path('results/',views.results_view,name='results'),
-    path('map-only/', views.earthquake_map_view, name='map_only'),
     path('set-reference/',views.set_reference_segment,name='set_reference_segment'),
-
 ]
