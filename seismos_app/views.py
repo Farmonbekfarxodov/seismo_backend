@@ -19,6 +19,7 @@ from dateutil.relativedelta import relativedelta
 from django.conf import settings
 from django.shortcuts import render, redirect
 from django.core.files.storage import FileSystemStorage
+from django.views.decorators.http import require_http_methods
 from jinja2.utils import missing
 from sqlalchemy import create_engine, text, exc
 from plotly.subplots import make_subplots
@@ -2234,7 +2235,6 @@ def earthquake_map_view(request):
             logging.error(f'Earthquake map error: {e}', exc_info=True)
 
     return render(request, 'seismos_app/map_only.html', context)
-
 
 def create_earthquake_map_with_wells(df_earthquakes, all_wells, selected_wells, min_mag):
     """

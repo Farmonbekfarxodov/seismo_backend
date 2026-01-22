@@ -1,0 +1,16 @@
+body {
+    background-color: #f8f9fa;
+}
+h2 {
+    color: #343a40;
+    margin-bottom: 20px;
+}
+.form-check {
+    margin-bottom: 10px;
+}
+.list-group-item {
+    margin-bottom: 10px;
+}
+.alert {
+    margin-bottom: 20px;
+}

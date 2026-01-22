@@ -12,7 +12,6 @@ urlpatterns = [
     path('upload/', include('download_base_app.urls', namespace="download_base")),
     path('catalog-list/', include('upload_catalog_app.urls', namespace="catalog")),
     path('informativlik/', include('app_informativlik.urls', namespace="informativlik")),
-    path('anomaly/', include('anomaly_patterns_app.urls',namespace="anomaly_patterns")),
     path('api/', include('app_users.urls')),
 
     path('login/', TemplateView.as_view(template_name='app_users/login.html'), name='login'),

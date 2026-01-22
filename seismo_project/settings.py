@@ -40,7 +40,6 @@ INSTALLED_APPS = [
     'app_users',
     'upload_catalog_app',
     'app_informativlik',
-    'anomaly_patterns_app',
 ]
 
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv())
@@ -89,7 +88,7 @@ WSGI_APPLICATION = 'seismo_project.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DDATABASES = {
+DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': config('DB_NAME'),

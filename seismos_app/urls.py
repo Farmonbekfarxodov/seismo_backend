@@ -9,4 +9,5 @@ urlpatterns = [
     path('results/',views.results_view,name='results'),
     path('map-only/', views.earthquake_map_view, name='map_only'),
     path('set-reference/',views.set_reference_segment,name='set_reference_segment'),
+
 ]
