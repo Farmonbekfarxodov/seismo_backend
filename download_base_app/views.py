@@ -9,6 +9,8 @@ from collections import defaultdict
 from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+from decouple import config
+
 
 # ✅ Logging sozlamalari
 logging.basicConfig(
@@ -139,21 +141,36 @@ STATIONS_AND_WELLS = {
     },
 }
 
-LOGIN_URL = "https://api.geofizik.uz/api/login"
-DATA_URL = "https://api.geofizik.uz/api/hydrogen-seismologies"
-USERNAME = "Rasulov Alisher"
-PASSWORD = "rasulovalisher"
-
+LOGIN_URL = config("LOGIN")
+DATA_URL = config('DATA')
+USERNAME = config('USER_NAME')
+PASSWORD = config('PASS_WORD')
 
 def get_auth_token():
     try:
         payload = {"username": USERNAME, "password": PASSWORD}
+
+        logger.info(f"Login urinishi: {LOGIN_URL}")
+        logger.info(f"Username: {USERNAME}")
+
         response = requests.post(LOGIN_URL, json=payload, timeout=10)
+        logger.info(f"Status code: {response.status_code}")
+        logger.info(f"Response: {response.text[:500]}")
+
         response.raise_for_status()
+
         token = response.json().get("result", {}).get("token")
         if token:
             logger.info("✅ Token muvaffaqiyatli olindi")
-        return token
+            return token
+        else:
+            logger.error("Responseda token topilmadi")
+            logger.error(f"Response structure: {response.json()}")
+
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"❌ HTTP xatosi: {e}")
+        logger.error(f"Response: {e.response.text if e.response else 'No response'}")
+        return None
     except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
         logger.error(f"❌ Login xatosi: {e}")
         return None

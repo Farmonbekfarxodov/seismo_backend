@@ -1,52 +1,50 @@
 // =====================================
-// Earthquake Map with Leaflet.js
+// Earthquake Map with Leaflet. js
 // =====================================
 
 let map;
 let markersLayer;
 let earthquakeData = [];
 
-// Magnitude bo'yicha rang berish
+// Magnitude bo'yicha rang
 function getMagnitudeColor(magnitude) {
-    if (magnitude >= 7.0) return '#8B0000'; // Dark red - Kuchli
-    if (magnitude >= 6.0) return '#DC143C'; // Crimson
-    if (magnitude >= 5.0) return '#FF4500'; // Orange red
-    if (magnitude >= 4.0) return '#FFA500'; // Orange
-    if (magnitude >= 3.0) return '#FFD700'; // Gold
-    if (magnitude >= 2.0) return '#FFFF00'; // Yellow
-    return '#90EE90'; // Light green - Zaif
+    if (magnitude >= 7.0) return '#8B0000'; // Kuchli
+    if (magnitude >= 6.0) return '#DC143C';
+    if (magnitude >= 5.0) return '#FF4500';
+    if (magnitude >= 4.0) return '#FFA500';
+    if (magnitude >= 3.0) return '#FFD700';
+    if (magnitude >= 2.0) return '#FFFF00';
+    return '#90EE90'; // Zaif
 }
 
 // Magnitude bo'yicha radius
 function getMagnitudeRadius(magnitude) {
-    return Math.max(magnitude * 2, 4); // Minimal 4px
+    return Math.max(magnitude * 2, 4);
 }
 
 // Xarita initsializatsiya
 function initMap(lat = 41.2995, lon = 69.2401, zoom = 6) {
-    // O'zbekiston markazi
     map = L.map('map').setView([lat, lon], zoom);
 
-    // Tile layer (OpenStreetMap)
-    L.tileLayer('https://{s}.tile.openstreetmap. org/{z}/{x}/{y}. png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    // Tile layer
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
         maxZoom: 18,
     }).addTo(map);
 
-    // Marker cluster group
+    // Marker cluster
     markersLayer = L. markerClusterGroup({
         maxClusterRadius: 50,
-        spiderfyOnMaxZoom: true,
-        showCoverageOnHover:  false,
-        zoomToBoundsOnClick: true
+        spiderfyOnMaxZoom:  true,
+        showCoverageOnHover: false,
     });
 
     map.addLayer(markersLayer);
 
-    // Fullscreen control
+    // Fullscreen
     map.addControl(new L.Control.Fullscreen());
 
-    // Scale control
+    // Scale
     L.control.scale().addTo(map);
 }
 
@@ -56,13 +54,9 @@ function addEarthquakeMarker(eq) {
     const lon = parseFloat(eq.longitude);
     const mag = parseFloat(eq.magnitude);
     const depth = parseFloat(eq.depth);
-    const date = eq.date;
-    const time = eq.time;
-    const epicenter = eq.epicenter || 'Noma\'lum';
 
     if (isNaN(lat) || isNaN(lon)) return;
 
-    // Circle marker yaratish
     const marker = L.circleMarker([lat, lon], {
         radius: getMagnitudeRadius(mag),
         fillColor: getMagnitudeColor(mag),
@@ -72,34 +66,29 @@ function addEarthquakeMarker(eq) {
         fillOpacity: 0.7
     });
 
-    // Popup content
     const popupContent = `
-        <div style="font-family: Arial, sans-serif; min-width: 200px;">
-            <h4 style="margin: 0 0 10px 0; color: #2c3e50;">Zilzila Ma'lumotlari</h4>
+        <div style="font-family: Arial; min-width: 200px;">
+            <h4 style="margin: 0 0 10px 0;">Zilzila Ma'lumotlari</h4>
             <table style="width: 100%; font-size: 12px;">
                 <tr>
-                    <td style="font-weight: bold; padding: 3px;">Magnitudа:</td>
-                    <td style="padding: 3px;"><span style="color: ${getMagnitudeColor(mag)}; font-weight: bold;">${mag.toFixed(1)}</span></td>
+                    <td><b>Magnituda:</b></td>
+                    <td><span style="color: ${getMagnitudeColor(mag)}; font-weight: bold;">${mag.toFixed(1)}</span></td>
                 </tr>
                 <tr>
-                    <td style="font-weight: bold; padding: 3px;">Chuqurlik:</td>
-                    <td style="padding: 3px;">${depth.toFixed(1)} km</td>
+                    <td><b>Chuqurlik:</b></td>
+                    <td>${depth.toFixed(1)} km</td>
                 </tr>
                 <tr>
-                    <td style="font-weight: bold; padding: 3px;">Sana:</td>
-                    <td style="padding: 3px;">${date}</td>
+                    <td><b>Sana:</b></td>
+                    <td>${eq.date}</td>
                 </tr>
                 <tr>
-                    <td style="font-weight: bold; padding: 3px;">Vaqt:</td>
-                    <td style="padding: 3px;">${time}</td>
+                    <td><b>Vaqt:</b></td>
+                    <td>${eq.time}</td>
                 </tr>
                 <tr>
-                    <td style="font-weight:  bold; padding: 3px;">Epitsenter:</td>
-                    <td style="padding: 3px;">${epicenter}</td>
-                </tr>
-                <tr>
-                    <td style="font-weight: bold; padding: 3px;">Koordinata:</td>
-                    <td style="padding: 3px;">${lat.toFixed(4)}, ${lon.toFixed(4)}</td>
+                    <td><b>Epitsenter:</b></td>
+                    <td>${eq.epicenter || "Noma'lum"}</td>
                 </tr>
             </table>
         </div>
@@ -114,9 +103,8 @@ async function loadEarthquakeData(filters = {}) {
     try {
         showLoading(true);
 
-        const url = new URL('/api/earthquakes/', window.location.origin);
+        const url = new URL('/seismos/api/earthquakes/', window.location.origin);
 
-        // Filtrlarni URL params ga qo'shish
         if (filters.start_date) url.searchParams.append('start_date', filters.start_date);
         if (filters.end_date) url.searchParams.append('end_date', filters.end_date);
         if (filters.min_magnitude) url.searchParams.append('min_mag', filters.min_magnitude);
@@ -129,20 +117,14 @@ async function loadEarthquakeData(filters = {}) {
         }
 
         const data = await response.json();
-        earthquakeData = data.earthquakes || [];
+        earthquakeData = data. earthquakes || [];
 
-        // Eski markerlarni tozalash
         markersLayer.clearLayers();
+        earthquakeData.forEach(eq => addEarthquakeMarker(eq));
 
-        // Yangi markerlarni qo'shish
-        earthquakeData. forEach(eq => addEarthquakeMarker(eq));
-
-        // Statistika yangilash
-        updateStatistics(data. statistics);
-
+        updateStatistics(data.statistics);
         showLoading(false);
 
-        // Agar ma'lumot bo'lsa, xaritani markazga keltirish
         if (earthquakeData.length > 0) {
             map.fitBounds(markersLayer.getBounds(), { padding: [50, 50] });
         }
@@ -159,10 +141,10 @@ function updateStatistics(stats) {
     if (! stats) return;
 
     document.getElementById('total-count').textContent = stats.total || 0;
-    document.getElementById('max-magnitude').textContent = stats.max_magnitude?. toFixed(1) || 'N/A';
+    document.getElementById('max-magnitude').textContent = stats. max_magnitude?. toFixed(1) || 'N/A';
     document. getElementById('avg-magnitude').textContent = stats. avg_magnitude?.toFixed(2) || 'N/A';
     document.getElementById('date-range').textContent =
-        `${stats.start_date || 'N/A'} - ${stats. end_date || 'N/A'}`;
+        `${stats.start_date || 'N/A'} - ${stats.end_date || 'N/A'}`;
 }
 
 // Loading indicator
@@ -175,7 +157,7 @@ function showLoading(show) {
 
 // Error message
 function showError(message) {
-    const errorDiv = document. getElementById('error-message');
+    const errorDiv = document.getElementById('error-message');
     if (errorDiv) {
         errorDiv.textContent = message;
         errorDiv.style.display = 'block';
@@ -185,7 +167,7 @@ function showError(message) {
     }
 }
 
-// Filter formani submit qilish
+// Filter qo'llash
 function applyFilters() {
     const filters = {
         start_date:  document.getElementById('filter-start-date')?.value,
@@ -208,13 +190,9 @@ function clearFilters() {
 
 // Sahifa yuklanganda
 document.addEventListener('DOMContentLoaded', function() {
-    // Xaritani initsializatsiya qilish
     initMap();
-
-    // Dastlabki ma'lumotlarni yuklash
     loadEarthquakeData();
 
-    // Filter form event listeners
     const applyBtn = document.getElementById('apply-filters');
     if (applyBtn) {
         applyBtn.addEventListener('click', applyFilters);
@@ -222,6 +200,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     const clearBtn = document.getElementById('clear-filters');
     if (clearBtn) {
-        clearBtn. addEventListener('click', clearFilters);
+        clearBtn.addEventListener('click', clearFilters);
     }
 });

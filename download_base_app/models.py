@@ -1,11 +1,14 @@
-
-
 from django.db import models
 
 class Station(models.Model):
     api_code = models.CharField(max_length=50, unique=True, help_text="API'dagi stansiya kodi (masalan, 'SMRM')")
     db_name = models.CharField(max_length=255, help_text="Bazada saqlanadigan to'liq nomi (masalan, 'Namangan KPS')")
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['api_code'], name='idx_station_api'),
+            models.Index(fields=['db_name'], name='idx_station_db'),
+        ]
     def __str__(self):
         return self.db_name
 
@@ -14,6 +17,13 @@ class Well(models.Model):
     api_name = models.CharField(max_length=255, help_text="API'dagi quduq nomi (masalan, 'Jumabozo'r 1')")
     db_name = models.CharField(max_length=255, help_text="Bazad a saqlanadigan quduq nomi (masalan, 'Jumabozor 1')")
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['station','api_name'], name='idx_well_station_api'),
+            models.Index(fields=['station','db_name'], name='idx_well_station_db'),
+            models.Index(fields=['api_name'], name='idx_well_api'),
+            models.Index(fields=['db_name'], name='idx_well_db')
+        ]
     def __str__(self):
         return f"{self.station.db_name} - {self.db_name}"
 
