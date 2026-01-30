@@ -24,7 +24,9 @@ from django.views.decorators.csrf import csrf_exempt
 from decouple import config as env_config
 from typing import Dict, Tuple, List, Optional
 from django.core.cache import cache
-
+from sqlalchemy.pool import QueuePool, NullPool
+from threading import Lock
+from django.core.cache import caches
 
 from download_base_app.views import logger
 from .models import Skvajina, AllIzmereniya, Malumot
@@ -74,6 +76,15 @@ COLOR_PALETTE = [
     "plum",
 ]
 
+# Global cache
+_cached_cracks = None
+_cached_seismogenic_zones = None
+_cache_lock = Lock()
+
+# Global variables
+_global_engine = None
+_engine_lock = Lock()
+
 
 # Database Utilities
 def get_db_config():
@@ -89,58 +100,149 @@ def get_db_config():
         logging.error(f"Make sure .env file exists and contains NAME, USER, PASSWORD, HOST")
         raise
 
+
+
+
+def get_db_engine():
+    """
+    ✅ SINGLETON: Bitta engine yaratish va qayta ishlatish
+    Thread-safe implementation
+    """
+    global _global_engine
+
+    if _global_engine is None:
+        with _engine_lock:
+            # Double-check locking
+            if _global_engine is None:
+                try:
+                    config = get_db_config()
+
+                    _global_engine = create_engine(
+                        f"mysql+mysqlconnector://{config['user']}:{config['psw']}@{config['ip']}/{config['db']}",
+
+                        # ✅ Connection pooling settings
+                        poolclass=QueuePool,
+                        pool_size=10,  # Normal connections
+                        max_overflow=20,  # Extra connections agar kerak bo'lsa
+                        pool_recycle=3600,  # 1 soat keyin connection refresh
+                        pool_pre_ping=True,  # Connection alive tekshirish
+                        pool_timeout=30,  # Connection kutish vaqti
+
+                        # ✅ Performance settings
+                        echo=False,  # SQL log'ni o'chirish (production)
+                        connect_args={
+                            'connect_timeout': 10,
+                            'autocommit': True,
+                        }
+                    )
+
+                    logger.info("✅ Created DB engine with connection pooling")
+
+                except Exception as e:
+                    logger.error(f"❌ Failed to create DB engine: {e}")
+                    raise
+
+    return _global_engine
+
+
 def connect_db():
-    """Establishes and returns a database engine connection."""
-    try:
-        config = get_db_config()
-        engine = create_engine(
-            f"mysql+mysqlconnector://{config['user']}:{config['psw']}@{config['ip']}/{config['db']}"
-        )
-        logging.info("Successfully created DB engine.")
-        return engine
-    except Exception as e:
-        logging.error(f"DB engine creation error: {e}")
-        raise
+    """
+    ✅ OPTIMIZED: Singleton engine ishlatish
+    """
+    return get_db_engine()
+
+
+def close_db_engine():
+    """
+    Engine'ni yopish (graceful shutdown uchun)
+    """
+    global _global_engine
+
+    if _global_engine is not None:
+        _global_engine.dispose()
+        _global_engine = None
+        logger.info("✅ DB engine closed")
 
 
 # --- Data Fetching ---
-def fetch_data() -> Tuple[Dict[str,Dict[str,str]], Dict[str, Tuple[float,float]]]:
 
-    cache_key = 'seismos_fetch_data'
+def fetch_data() -> Tuple[Dict[str, Dict[str, str]], Dict[str, Tuple[float, float]]]:
+    """
+    ✅ OPTIMIZED: Select related bilan
+    """
+    cache_key = 'seismos_fetch_data_v2'
     cached_data = cache.get(cache_key)
 
     if cached_data:
-        logger.info("Data fetched from cache")
+        logger.info("✅ Data from cache")
         return cached_data
 
     try:
-        #ORM orqali All_izmereniyadan ma'lumotlarni olish
-        izmeneriya_list = AllIzmereniya.objects.select_related().values(
-            'stansiya','skvajina','izmereniya', 'ssdi_id'
-        )
-        lst_stansiya = {}
+        from .models import AllIzmereniya, Skvajina
 
-        for item in izmeneriya_list:
+        # ✅ Select only needed fields (kamroq memory)
+        izmereniya_list = AllIzmereniya.objects.only(
+            'stansiya', 'skvajina', 'izmereniya', 'ssdi_id'
+        ).values('stansiya', 'skvajina', 'izmereniya', 'ssdi_id')
+
+        lst_stansiya = {}
+        for item in izmereniya_list:
             key = f"{item['stansiya']} | {item['skvajina']}"
             if key not in lst_stansiya:
                 lst_stansiya[key] = {}
             lst_stansiya[key][item['izmereniya']] = item['ssdi_id']
 
-        # Skvajina koordinatalarini olish
-        wells = Skvajina.objects.values('naim','Latitude','Longitude')
+        # ✅ Select only needed fields
+        wells = Skvajina.objects.only('naim', 'Latitude', 'Longitude').filter(
+            Latitude__isnull=False,
+            Longitude__isnull=False
+        ).values('naim', 'Latitude', 'Longitude')
+
         well_coords = {
             well['naim'].strip(): (well['Latitude'], well['Longitude'])
             for well in wells
-            if well['Latitude'] is not None and well['Longitude'] is not None
         }
-        result = (lst_stansiya,well_coords)
+
+        result = (lst_stansiya, well_coords)
         cache.set(cache_key, result, 3600)
 
-        logger.info(f"Fetched {len(lst_stansiya) } stations and {len(well_coords)} wells")
+        logger.info(f"✅ Fetched {len(lst_stansiya)} stations, {len(well_coords)} wells")
         return result
 
     except Exception as e:
-        logger.error(f"Error in fetch_data: {e}", exc_info = True)
+        logger.error(f"Error: {e}", exc_info=True)
+        return {}, {}
+
+
+def fetch_data_with_multi_cache():
+    """
+    ✅ Multi-level caching: Local memory → Redis → Database
+    """
+    cache_key = 'seismos_fetch_data_v2'
+
+    # Level 1: Local memory (eng tez)
+    local_cache = caches['local']
+    cached = local_cache.get(cache_key)
+    if cached:
+        logger.info("✅ Data from local cache")
+        return cached
+
+    # Level 2: Redis (tez)
+    redis_cache = caches['default']
+    cached = redis_cache.get(cache_key)
+    if cached:
+        logger.info("✅ Data from Redis")
+        local_cache.set(cache_key, cached, 300)  # Local'ga ham saqlash
+        return cached
+
+    # Level 3: Database (sekin)
+    result = _fetch_data_from_db()
+
+    # Cache'ga saqlash
+    local_cache.set(cache_key, result, 300)
+    redis_cache.set(cache_key, result, 3600)
+
+    return result
 
 def get_all_wells_coordinates() -> Dict[str, Tuple[float, float]]:
     cache_key = 'all_wells_coordinates'
@@ -1207,45 +1309,143 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
         logging.error(f"Seysmogen zonalarni xaritaga qo'shishda xato: {e}")
         return {}
 
+
+
+
+
+
+
+
+
 def load_all_cracks_shapefiles():
-    shapefile_paths = get_all_shapefiles()
+    """
+    ✅ CACHED: Birinchi marta disk'dan, keyin memory'dan
+    """
+    global _cached_cracks
 
-    if not shapefile_paths:
-        logging.warning("Hech qanday shapefile topilmadi")
-        return None
+    if _cached_cracks is not None:
+        logger.info("✅ Cracks loaded from memory cache")
+        return _cached_cracks
 
-    all_cracks = []
+    with _cache_lock:
+        # Double-check
+        if _cached_cracks is not None:
+            return _cached_cracks
 
-    for shapefile_path in shapefile_paths:
+        shapefile_paths = get_all_shapefiles()
+
+        if not shapefile_paths:
+            logger.warning("No shapefiles found")
+            return None
+
+        all_cracks = []
+
+        for shapefile_path in shapefile_paths:
+            try:
+                gdf = gpd.read_file(shapefile_path)
+
+                if gdf.crs and gdf.crs != 'EPSG:4326':
+                    gdf = gdf.to_crs('EPSG:4326')
+
+                gdf['source_file'] = os.path.basename(shapefile_path)
+                all_cracks.append(gdf)
+
+                logger.info(f"Loaded: {os.path.basename(shapefile_path)} - {len(gdf)} features")
+
+            except Exception as e:
+                logger.error(f"Error loading {shapefile_path}: {e}")
+                continue
+
+        if not all_cracks:
+            return None
+
         try:
-            gdf = gpd.read_file(shapefile_path)
+            combined_gdf = gpd.GeoDataFrame(pd.concat(all_cracks, ignore_index=True))
+            _cached_cracks = combined_gdf
 
-            if gdf.crs and gdf.crs != 'EPSG:4326':
-                gdf = gdf.to_crs('EPSG:4326')
-
-            # Fayl nomini qo'shish
-            gdf['source_file'] = os.path.basename(shapefile_path)
-
-            all_cracks.append(gdf)
-            logging.info(f"Yuklandi:{os.path.basename(shapefile_path)}-{len(gdf)} ta yoriq")
+            logger.info(f"✅ Cached {len(combined_gdf)} cracks in memory")
+            return combined_gdf
 
         except Exception as e:
-            logging.error(f"Shapefile {shapefile_path}:{e}")
-            continue
+            logger.error(f"Error combining shapefiles: {e}")
+            return None
 
-    if not all_cracks:
-        logging.warning("Hech qanday shapefile yuklanmadi")
-        return None
 
-    # Barcha malumotlarni  birlashtirish
-    try:
-        combined_gdf = gpd.GeoDataFrame(pd.concat(all_cracks, ignore_index=True))
-        logging.info(f"Umumiy yoriqlar soni: {len(combined_gdf)}")
-        return combined_gdf
-    except Exception as e:
-        logging.error(f"Shapefilelarni birlashtirishda xato:{e}")
-        return None
+def load_seismogenic_zones():
+    """
+    ✅ CACHED: Birinchi marta disk'dan, keyin memory'dan
+    """
+    global _cached_seismogenic_zones
 
+    if _cached_seismogenic_zones is not None:
+        logger.info("✅ Seismogenic zones loaded from memory cache")
+        return _cached_seismogenic_zones
+
+    with _cache_lock:
+        # Double-check
+        if _cached_seismogenic_zones is not None:
+            return _cached_seismogenic_zones
+
+        shapefile_paths = get_seismogenic_shapefiles()
+
+        if not shapefile_paths:
+            logger.warning("No seismogenic shapefiles found")
+            return None
+
+        all_zones = []
+
+        for shapefile_path in shapefile_paths:
+            try:
+                filename = os.path.basename(shapefile_path)
+                if 'SEYSMOGEN' not in filename.upper() and 'SEISMOGEN' not in filename.upper() and 'EXPORT' not in filename.upper():
+                    continue
+
+                gdf = gpd.read_file(shapefile_path)
+
+                if gdf.crs is None:
+                    gdf.set_crs('EPSG:4326', inplace=True)
+                elif gdf.crs.to_string() != 'EPSG:4326':
+                    gdf = gdf.to_crs('EPSG:4326')
+
+                if gdf.empty or 'geometry' not in gdf.columns or gdf.geometry.isnull().all():
+                    logger.warning(f"{filename} empty geometry")
+                    continue
+
+                gdf['source_file'] = filename
+                all_zones.append(gdf)
+
+                logger.info(f"Loaded seismogenic zone: {filename} - {len(gdf)} features")
+
+            except Exception as e:
+                logger.error(f"Error loading {shapefile_path}: {e}")
+                continue
+
+        if not all_zones:
+            logger.warning("No seismogenic zones loaded")
+            return None
+
+        try:
+            combined_gdf = gpd.GeoDataFrame(pd.concat(all_zones, ignore_index=True))
+            _cached_seismogenic_zones = combined_gdf
+
+            logger.info(f"✅ Cached {len(combined_gdf)} seismogenic zones in memory")
+            return combined_gdf
+
+        except Exception as e:
+            logger.error(f"Error combining seismogenic zones: {e}")
+            return None
+
+
+def clear_shapefile_cache():
+    """
+    Cache'ni tozalash (agar shapefile'lar yangilansa)
+    """
+    global _cached_cracks, _cached_seismogenic_zones
+
+    _cached_cracks = None
+    _cached_seismogenic_zones = None
+
+    logger.info("✅ Shapefile cache cleared")
 
 def add_cracks_to_map(folium_map, cracks_gdf):
     """
@@ -1343,215 +1543,133 @@ def add_cracks_to_map(folium_map, cracks_gdf):
         logging.error(f"Yer yoriqlarini xaritaga qo'shishda xato: {e}")
         return {}
 
-def get_well_detailed_info(well_name: "Union[str, List[str]]") -> "Union[Dict, Dict[str, Dict]]":
+
+# seismos_app/views.py
+
+def get_well_detailed_info(well_name):
     """
-    If `well_name` is a string returns a dict with detailed info for that well.
-    If `well_name` is a list/tuple/set of names, returns a dict mapping each name -> info
-    (batch DB query + per-item caching).
+    ✅ UNIVERSAL: String yoki List qabul qiladi
     """
+    # List bo'lsa - batch loading
+    if isinstance(well_name, list):
+        return _get_multiple_wells_info(well_name)
+
+    # String bo'lsa - single query
+    if isinstance(well_name, str):
+        return _get_single_well_info(well_name)
+
+    # Invalid input
+    return _get_default_well_info(str(well_name) if well_name else "Unknown")
+
+
+def _get_single_well_info(well_name: str) -> Dict:
+    """Bitta skvajina uchun ma'lumot"""
+    cache_key = f'well_info_{well_name.strip()}'
+    cached = cache.get(cache_key)
+
+    if cached:
+        return cached
+
     try:
-        # Handle batch input (list/tuple/set)
-        if isinstance(well_name, (list, tuple, set)):
-            names = [str(n).strip() for n in well_name if n is not None]
-            # Prepare result and determine which names need DB fetch
-            result: Dict[str, Dict] = {}
-            to_fetch = []
-            for name in names:
-                cache_key = f"well_info_{name}"
-                cached = cache.get(cache_key)
-                if cached:
-                    result[name] = cached
-                else:
-                    to_fetch.append(name)
+        from .models import Malumot
 
-            if to_fetch:
-                try:
-                    rows = Malumot.objects.filter(nomi__in=to_fetch).values(
-                        'nomi', 'quduq_turi', 'suv_qatlami', 'chuqurlik',
-                        'seysmotektonik_holat', 'strategrafik_taqsimoti',
-                        'litologik_tarkibi', 'mineralizatsiya'
-                    )
-                except Exception as db_e:
-                    logger.error(f"Error querying Malumot for wells {to_fetch}: {db_e}")
-                    # Fill missing with defaults
-                    for name in to_fetch:
-                        default_info = {
-                            "nomi": name,
-                            "quduq_turi": "Ma'lumot yo'q",
-                            "suv_qatlami": "Ma'lumot yo'q",
-                            "chuqurlik": "Ma'lumot yo'q",
-                            "seysmotektonik_holat": "Ma'lumot yo'q",
-                            "strategrafik_taqsimoti": "Ma'lumot yo'q",
-                            "litologik_tarkibi": "Ma'lumot yo'q",
-                            "mineralizatsiya_base64": None,
-                        }
-                        result[name] = default_info
-                        cache.set(f"well_info_{name}", default_info, 3600)
-                    return result
-
-                # Process fetched rows
-                fetched_names = set()
-                for row in rows:
-                    name = (row.get('nomi') or '').strip()
-                    fetched_names.add(name)
-                    info = {
-                        "nomi": name,
-                        "quduq_turi": row.get('quduq_turi') or "Ma'lumot yo'q",
-                        "suv_qatlami": row.get('suv_qatlami') or "Ma'lumot yo'q",
-                        "chuqurlik": row.get('chuqurlik') or "Ma'lumot yo'q",
-                        "seysmotektonik_holat": row.get('seysmotektonik_holat') or "Ma'lumot yo'q",
-                        "strategrafik_taqsimoti": row.get('strategrafik_taqsimoti') or "Ma'lumot yo'q",
-                        "litologik_tarkibi": row.get('litologik_tarkibi') or "Ma'lumot yo'q",
-                        "mineralizatsiya_base64": None,
-                    }
-
-                    mineralizatsiya = row.get('mineralizatsiya')
-                    if mineralizatsiya is not None and mineralizatsiya != "Ma'lumot yo'q":
-                        try:
-                            # If it's a file path
-                            if isinstance(mineralizatsiya, str) and os.path.exists(mineralizatsiya):
-                                with open(mineralizatsiya, 'rb') as img_file:
-                                    encoded = base64.b64encode(img_file.read()).decode('utf-8')
-                                    ext = os.path.splitext(mineralizatsiya)[1].lower()
-                                    if ext in ['.jpg', '.jpeg']:
-                                        mime_type = 'image/jpeg'
-                                    elif ext == '.png':
-                                        mime_type = 'image/png'
-                                    elif ext == '.gif':
-                                        mime_type = 'image/gif'
-                                    else:
-                                        mime_type = 'image/png'
-                                    info['mineralizatsiya_base64'] = f"data:{mime_type};base64,{encoded}"
-
-                            # If it's bytes/blob
-                            elif isinstance(mineralizatsiya, (bytes, bytearray)):
-                                encoded = base64.b64encode(mineralizatsiya).decode('utf-8')
-                                info['mineralizatsiya_base64'] = f"data:image/png;base64,{encoded}"
-
-                        except Exception as img_error:
-                            logger.error(f"Mineralizatsiya image load error for {name}: {img_error}")
-                            info['mineralizatsiya_base64'] = None
-
-                    result[name] = info
-                    cache.set(f"well_info_{name}", info, 3600)
-
-                # For any requested names not found in DB, provide defaults
-                for name in to_fetch:
-                    if name not in fetched_names:
-                        default_info = {
-                            "nomi": name,
-                            "quduq_turi": "Ma'lumot yo'q",
-                            "suv_qatlami": "Ma'lumot yo'q",
-                            "chuqurlik": "Ma'lumot yo'q",
-                            "seysmotektonik_holat": "Ma'lumot yo'q",
-                            "strategrafik_taqsimoti": "Ma'lumot yo'q",
-                            "litologik_tarkibi": "Ma'lumot yo'q",
-                            "mineralizatsiya_base64": None,
-                        }
-                        result[name] = default_info
-                        cache.set(f"well_info_{name}", default_info, 3600)
-
-            return result
-
-        # Handle single string input
-        name = str(well_name).strip()
-        cache_key = f"well_info_{name}"
-        cached = cache.get(cache_key)
-        if cached:
-            logger.debug(f"Well info from cache: {name}")
-            return cached
-
-        default_info = {
-            "nomi": name,
-            "quduq_turi": "Ma'lumot yo'q",
-            "suv_qatlami": "Ma'lumot yo'q",
-            "chuqurlik": "Ma'lumot yo'q",
-            "seysmotektonik_holat": "Ma'lumot yo'q",
-            "strategrafik_taqsimoti": "Ma'lumot yo'q",
-            "litologik_tarkibi": "Ma'lumot yo'q",
-            "mineralizatsiya_base64": None
-        }
-
-        try:
-            malumot = Malumot.objects.filter(nomi=name).values(
-                'nomi', 'quduq_turi', 'suv_qatlami', 'chuqurlik',
-                'seysmotektonik_holat', 'strategrafik_taqsimoti',
-                'litologik_tarkibi', 'mineralizatsiya'
-            ).first()
-        except Exception as db_e:
-            logger.error(f"Error querying Malumot for {name}: {db_e}")
-            cache.set(cache_key, default_info, 3600)
-            return default_info
+        malumot = Malumot.objects.filter(nomi=well_name.strip()).first()
 
         if not malumot:
-            logger.debug(f"No info found for: {name}")
-            cache.set(cache_key, default_info, 3600)
-            return default_info
+            result = _get_default_well_info(well_name)
+            cache.set(cache_key, result, 3600)
+            return result
 
-        info = {
-            "nomi": (malumot.get('nomi') or name).strip(),
-            "quduq_turi": malumot.get('quduq_turi') or "Ma'lumot yo'q",
-            "suv_qatlami": malumot.get('suv_qatlami') or "Ma'lumot yo'q",
-            "chuqurlik": malumot.get('chuqurlik') or "Ma'lumot yo'q",
-            "seysmotektonik_holat": malumot.get('seysmotektonik_holat') or "Ma'lumot yo'q",
-            "strategrafik_taqsimoti": malumot.get('strategrafik_taqsimoti') or "Ma'lumot yo'q",
-            "litologik_tarkibi": malumot.get('litologik_tarkibi') or "Ma'lumot yo'q",
-            "mineralizatsiya_base64": None
-        }
-
-        mineralizatsiya = malumot.get('mineralizatsiya')
-        if mineralizatsiya is not None and mineralizatsiya != "Ma'lumot yo'q":
-            try:
-                if isinstance(mineralizatsiya, str) and os.path.exists(mineralizatsiya):
-                    with open(mineralizatsiya, 'rb') as img_file:
-                        encoded = base64.b64encode(img_file.read()).decode('utf-8')
-                        ext = os.path.splitext(mineralizatsiya)[1].lower()
-                        if ext in ['.jpg', '.jpeg']:
-                            mime_type = 'image/jpeg'
-                        elif ext == '.png':
-                            mime_type = 'image/png'
-                        elif ext == '.gif':
-                            mime_type = 'image/gif'
-                        else:
-                            mime_type = 'image/png'
-                        info['mineralizatsiya_base64'] = f"data:{mime_type};base64,{encoded}"
-
-                elif isinstance(mineralizatsiya, (bytes, bytearray)):
-                    encoded = base64.b64encode(mineralizatsiya).decode('utf-8')
-                    info['mineralizatsiya_base64'] = f"data:image/png;base64,{encoded}"
-
-            except Exception as img_error:
-                logger.error(f"Mineralizatsiya image load error ({name}): {img_error}")
-                info['mineralizatsiya_base64'] = None
-
-        cache.set(cache_key, info, 3600)
-        return info
+        result = _build_well_info_dict(malumot)
+        cache.set(cache_key, result, 3600)
+        return result
 
     except Exception as e:
-        logger.error(f"Skvajina ma'lumotlarini yuklashda xatolik ({well_name}): {e}")
-        # If input was iterable, return mapping with defaults
-        if isinstance(well_name, (list, tuple, set)):
-            return {str(n).strip(): {
-                "nomi": str(n).strip(),
-                "quduq_turi": "Ma'lumot yo'q",
-                "suv_qatlami": "Ma'lumot yo'q",
-                "chuqurlik": "Ma'lumot yo'q",
-                "seysmotektonik_holat": "Ma'lumot yo'q",
-                "strategrafik_taqsimoti": "Ma'lumot yo'q",
-                "litologik_tarkibi": "Ma'lumot yo'q",
-                "mineralizatsiya_base64": None
-            } for n in well_name}
-        else:
-            return {
-                "nomi": str(well_name).strip() if well_name is not None else '',
-                "quduq_turi": "Ma'lumot yo'q",
-                "suv_qatlami": "Ma'lumot yo'q",
-                "chuqurlik": "Ma'lumot yo'q",
-                "seysmotektonik_holat": "Ma'lumot yo'q",
-                "strategrafik_taqsimoti": "Ma'lumot yo'q",
-                "litologik_tarkibi": "Ma'lumot yo'q",
-                "mineralizatsiya_base64": None
-            }
+        logger.error(f"Error: {e}", exc_info=True)
+        return _get_default_well_info(well_name)
+
+
+def _get_multiple_wells_info(well_names: List[str]) -> Dict[str, Dict]:
+    """
+    ✅ BATCH LOADING: Bir marta barcha ma'lumotlarni olish
+    """
+    if not well_names:
+        return {}
+
+    cache_key = f'all_wells_info_{hash(tuple(sorted(well_names)))}'
+    cached = cache.get(cache_key)
+
+    if cached:
+        logger.info(f"✅ Cache hit: {len(cached)} wells")
+        return cached
+
+    try:
+        from .models import Malumot
+
+        # ✅ FAQAT 1 TA QUERY!
+        malumotlar = Malumot.objects.filter(nomi__in=well_names).select_related()
+
+        result = {}
+
+        for malumot in malumotlar:
+            result[malumot.nomi.strip()] = _build_well_info_dict(malumot)
+
+        # Topilmaganlari uchun default
+        for well_name in well_names:
+            if well_name not in result:
+                result[well_name] = _get_default_well_info(well_name)
+
+        cache.set(cache_key, result, 3600)
+        logger.info(f"✅ Loaded {len(result)} wells in ONE query")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        return {name: _get_default_well_info(name) for name in well_names}
+
+
+def _build_well_info_dict(malumot) -> Dict:
+    """Ma'lumot obyektidan dictionary yaratish"""
+    result = {
+        "nomi": malumot.nomi or "Ma'lumot yo'q",
+        "quduq_turi": malumot.quduq_turi or "Ma'lumot yo'q",
+        "suv_qatlami": malumot.suv_qatlami or "Ma'lumot yo'q",
+        "chuqurlik": malumot.chuqurlik or "Ma'lumot yo'q",
+        "seysmotektonik_holat": malumot.seysmotektonik_holat or "Ma'lumot yo'q",
+        "strategrafik_taqsimoti": malumot.strategrafik_taqsimoti or "Ma'lumot yo'q",
+        "litologik_tarkibi": malumot.litologik_tarkibi or "Ma'lumot yo'q",
+        "mineralizatsiya_base64": None,
+    }
+
+    # Rasm processing
+    if malumot.mineralizatsiya:
+        try:
+            if hasattr(malumot.mineralizatsiya, 'path') and os.path.exists(malumot.mineralizatsiya.path):
+                with open(malumot.mineralizatsiya.path, 'rb') as img_file:
+                    encoded = base64.b64encode(img_file.read()).decode('utf-8')
+                    ext = os.path.splitext(malumot.mineralizatsiya.path)[1].lower()
+                    mime_type = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                                 '.png': 'image/png', '.gif': 'image/gif'}.get(ext, 'image/png')
+                    result["mineralizatsiya_base64"] = f"data:{mime_type};base64,{encoded}"
+        except Exception as e:
+            logger.error(f"Image error: {e}")
+
+    return result
+
+
+def _get_default_well_info(well_name: str) -> Dict:
+    """Default ma'lumot"""
+    return {
+        "nomi": well_name,
+        "quduq_turi": "Ma'lumot yo'q",
+        "suv_qatlami": "Ma'lumot yo'q",
+        "chuqurlik": "Ma'lumot yo'q",
+        "seysmotektonik_holat": "Ma'lumot yo'q",
+        "strategrafik_taqsimoti": "Ma'lumot yo'q",
+        "litologik_tarkibi": "Ma'lumot yo'q",
+        "mineralizatsiya_base64": None,
+    }
 
 
 def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, min_mlgr, filter_mode='mlgr'):
@@ -2894,20 +3012,24 @@ def validate_and_parse_dates(
     return user_start_date, user_end_date, x_axis_start, x_axis_end
 
 
+# seismos_app/views.py
+
 def fetch_and_filter_earthquakes(
         min_mag: float,
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None
 ) -> pd.DataFrame:
+    """
+    ✅ OPTIMIZED: dtype va vectorization
+    """
     cache_key = f'earthquakes_{min_mag}_{start_date}_{end_date}'
     cached = cache.get(cache_key)
 
     if cached is not None:
-        logger.info("Earthquakes loaded from cache")
+        logger.info("✅ Earthquakes from cache")
         return cached
 
     try:
-        # ✅ TO'G'RI: __gte
         queryset = Catalog.objects.filter(Mb__gte=min_mag)
 
         if start_date is None:
@@ -2922,22 +3044,28 @@ def fetch_and_filter_earthquakes(
             'Event_date', 'Event_time', 'Latitude', 'Longitude', 'Depth', 'Mb'
         ).order_by('-Event_date', '-Event_time')
 
+        # ✅ OPTIMIZED: dtype specification
         df = pd.DataFrame(list(earthquakes))
 
         if df.empty:
-            logger.warning(f"No earthquakes found (Mb >= {min_mag})")
             cache.set(cache_key, df, 1800)
             return df
 
-        # Data processing
-        df[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(df[MAIN_MAGNITUDE_COLUMN], errors='coerce')
-        df.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
+        # ✅ Optimize dtypes
+        df = df.astype({
+            'Latitude': 'float32',  # float64 → float32 (2x kam memory)
+            'Longitude': 'float32',
+            'Depth': 'float32',
+            'Mb': 'float32',
+        })
 
+        # ✅ Time processing (vectorized)
         if TIME_COLUMN in df.columns:
             df[TIME_COLUMN] = df[TIME_COLUMN].apply(
                 lambda x: x.strftime('%H:%M:%S') if hasattr(x, 'strftime') else str(x)
             )
 
+        # ✅ Combined datetime (vectorized)
         df["combined_datetime"] = pd.to_datetime(
             df[DATE_COLUMN].astype(str) + " " + df[TIME_COLUMN].astype(str),
             format="%Y-%m-%d %H:%M:%S",
@@ -2945,13 +3073,13 @@ def fetch_and_filter_earthquakes(
         )
         df.dropna(subset=["combined_datetime"], inplace=True)
 
-        logger.info(f"Fetched {len(df)} earthquakes")
+        logger.info(f"✅ Fetched {len(df)} earthquakes")
         cache.set(cache_key, df, 1800)
 
         return df
 
     except Exception as e:
-        logger.error(f"Error fetching earthquakes: {e}", exc_info=True)
+        logger.error(f"Error: {e}", exc_info=True)
         return pd.DataFrame()
 
 
@@ -3324,3 +3452,27 @@ def generate_folium_map(
     except Exception as e:
         logger.error(f"Error creating Folium map: {e}", exc_info=True)
         return "<p> Xarita yaratishda xato yuz berdi.</p>"
+
+
+import atexit
+
+
+def _cleanup_db_engine():
+    """
+    ✅ Process to'xtaganda engine'ni yopish
+    """
+    global _global_engine
+
+    if _global_engine is not None:
+        try:
+            _global_engine.dispose()
+            _global_engine = None
+            logger.info("✅ DB engine closed on shutdown")
+        except Exception as e:
+            logger.error(f"❌ Error closing DB engine: {e}")
+
+
+# ✅ Atexit ro'yxatdan o'tkazish
+atexit.register(_cleanup_db_engine)
+
+logger.info("✅ DB engine cleanup registered")

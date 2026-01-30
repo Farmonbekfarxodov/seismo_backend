@@ -81,9 +81,6 @@ TEMPLATES = [
 WSGI_APPLICATION = 'seismo_project.wsgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
-
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
@@ -96,6 +93,32 @@ DATABASES = {
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES', time_zone='+05:00'",
             'charset': 'utf8mb4',
         }
+    }
+}
+
+# settings.py
+
+# ✅ Multi-level cache (Memory + Redis)
+# seismo_project/settings.py
+
+CACHES = {
+    'default': {
+        # ✅ TO'G'RI: django_redis backend
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': 'redis://127.0.0.1:6379/1',
+
+        # ✅ OPTIONS to'g'ri strukturada
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            'CONNECTION_POOL_KWARGS': {
+                'max_connections': 50,
+                'retry_on_timeout': True,
+            },
+            'SOCKET_CONNECT_TIMEOUT': 5,
+            'SOCKET_TIMEOUT': 5,
+        },
+        'KEY_PREFIX': 'seismo',
+        'TIMEOUT': 3600,
     }
 }
 
