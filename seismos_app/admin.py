@@ -12,8 +12,8 @@ class SkvajinaAdmin(admin.ModelAdmin):
 
 @admin.register(AllIzmereniya)
 class AllIzmereniyaAdmin(admin.ModelAdmin):
-    list_display = ("stansiya", "skvajina", "izmereniya", "ssid_id")
-    search_fields = ("stansiya", "skvajina", "izmereniya", "ssid_id")
+    list_display = ("stansiya", "skvajina", "izmereniya", "ssdi_id")
+    search_fields = ("stansiya", "skvajina", "izmereniya", "ssdi_id")
     list_filter = ("stansiya", "skvajina")
     ordering = ("stansiya", "skvajina")
 

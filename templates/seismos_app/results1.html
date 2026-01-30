@@ -482,57 +482,12 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     });
 });
-document.addEventListener('DOMContentLoaded', function() {
-    // Barcha Plotly grafiklarini topamiz
-    document.querySelectorAll('.js-plotly-plot').forEach(function(plotDiv) {
-        const graphDiv = plotDiv.querySelector('.plotly');
 
-        graphDiv.on('plotly_click', function(data) {
-            if (!data || !data.points || data.points.length === 0) return;
+// The Plotly click handler that posted selected segments to the server
+// (set_reference_segment) has been removed per request. If you still
+// need client-side selection behavior, we can implement a non-AJAX
+// alternative (e.g., store selection in localStorage or display a UI).
 
-            const point = data.points[0];
-            const custom = point.customdata;
-
-            if (!custom || custom.length < 3) return; // segment indeksi yo'q
-
-            const segmentIndex = custom[0];
-            const startDate = custom[1];
-            const endDate = custom[2];
-
-            // Serverga yuborish
-           fetch("{% url 'seismos:set_reference_segment' %}", {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': '{{ csrf_token }}'
-                },
-                body: JSON.stringify({
-                    segment: {
-                        index: segmentIndex,
-                        start: startDate,
-                        end: endDate
-                    }
-                })
-            })
-            .then(response => response.json())
-            .then(result => {
-                if (result.status === 'success') {
-                    alert('Tanlangan segment reference sifatida saqlandi!\n' +
-                          'Sana oralig‘i: ' + startDate + ' – ' + endDate);
-
-                    // Sahifani yangilash (yoki faqat grafikni qayta yuklash)
-                    location.reload();  // eng oddiy yo‘l
-                } else {
-                    alert('Xato: ' + result.message);
-                }
-            })
-            .catch(error => {
-                console.error('Xato:', error);
-                alert('Server bilan aloqa xatosi');
-            });
-        });
-    });
-});
 </script>
 
 {% endblock %}

@@ -8,29 +8,29 @@ import plotly.graph_objects as go
 import folium
 import geopandas as gpd
 import glob
-import io
-import xlsxwriter
 import base64
 
 from datetime import timedelta
 from math import pi, sin, cos, atan2, sqrt
-
 from dateutil.relativedelta import relativedelta
 from django.conf import settings
 from django.shortcuts import render, redirect
-from django.core.files.storage import FileSystemStorage
-from django.views.decorators.http import require_http_methods
-from jinja2.utils import missing
-from sqlalchemy import create_engine, text, exc
+from sqlalchemy import create_engine, text
 from plotly.subplots import make_subplots
 from folium.plugins import Fullscreen
-from scipy.stats import norm, pearsonr, spearmanr
-from matplotlib.patches import Patch
-from tslearn.metrics import dtw
-from scipy.spatial.distance import euclidean
+from scipy.stats import pearsonr, spearmanr
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from decouple import config as env_config
+from typing import Dict, Tuple, List, Optional
+from django.core.cache import cache
+
+
+from download_base_app.views import logger
+from .models import Skvajina, AllIzmereniya, Malumot
+from upload_catalog_app.models import Catalog
+
+
 
 # Setup logging
 logging.basicConfig(
@@ -104,69 +104,68 @@ def connect_db():
 
 
 # --- Data Fetching ---
-def fetch_data():
-    """
-    Fetches station, well, measurement, and coordinates data from the database.
-    Returns:
-        tuple: (dict of station measurements, dict of well coordinates)
-    """
-    engine = None
+def fetch_data() -> Tuple[Dict[str,Dict[str,str]], Dict[str, Tuple[float,float]]]:
+
+    cache_key = 'seismos_fetch_data'
+    cached_data = cache.get(cache_key)
+
+    if cached_data:
+        logger.info("Data fetched from cache")
+        return cached_data
+
     try:
-        engine = connect_db()
-
-        query_izmereniya = (
-            "SELECT stansiya, skvajina, izmereniya, ssdi_id FROM all_izmereniya"
+        #ORM orqali All_izmereniyadan ma'lumotlarni olish
+        izmeneriya_list = AllIzmereniya.objects.select_related().values(
+            'stansiya','skvajina','izmereniya', 'ssdi_id'
         )
-        df_izmereniya = pd.read_sql(query_izmereniya, engine)
-
         lst_stansiya = {}
-        for (st, sk), group in df_izmereniya.groupby(["stansiya", "skvajina"]):
-            lst_stansiya[f"{st} | {sk}"] = dict(
-                zip(group["izmereniya"], group["ssdi_id"])
-            )
 
-        coords_query = "SELECT naim, Latitude, Longitude FROM skvajina"
-        coords_df = pd.read_sql(coords_query, engine)
+        for item in izmeneriya_list:
+            key = f"{item['stansiya']} | {item['skvajina']}"
+            if key not in lst_stansiya:
+                lst_stansiya[key] = {}
+            lst_stansiya[key][item['izmereniya']] = item['ssdi_id']
+
+        # Skvajina koordinatalarini olish
+        wells = Skvajina.objects.values('naim','Latitude','Longitude')
         well_coords = {
-            row["naim"].strip(): (row["Latitude"], row["Longitude"])
-            for _, row in coords_df.iterrows()
+            well['naim'].strip(): (well['Latitude'], well['Longitude'])
+            for well in wells
+            if well['Latitude'] is not None and well['Longitude'] is not None
+        }
+        result = (lst_stansiya,well_coords)
+        cache.set(cache_key, result, 3600)
+
+        logger.info(f"Fetched {len(lst_stansiya) } stations and {len(well_coords)} wells")
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in fetch_data: {e}", exc_info = True)
+
+def get_all_wells_coordinates() -> Dict[str, Tuple[float, float]]:
+    cache_key = 'all_wells_coordinates'
+    cached = cache.get(cache_key)
+
+    if cached:
+        return cached
+
+    try:
+        wells = Skvajina.objects.filter(
+            Latitude__isnull = False,
+            Longitude__isnull = False,
+        ).values('naim','Latitude','Longitude')
+
+        all_wells = {
+            well['naim'].strip():(well['Latitude'], well['Longitude'])
+            for well in wells
         }
 
-        return lst_stansiya, well_coords
-    except exc.SQLAlchemyError as e:
-        logging.error(f"Database query error in fetch_data: {e}")
-        return {}, {}
-    except Exception as e:
-        logging.error(f"An unexpected error occurred in fetch_data: {e}")
-        return {}, {}
-    finally:
-        if engine:
-            engine.dispose()
-
-
-def get_all_wells_coordinates():
-    """
-    Barcha skvajinalarning koordinatalarini olish uchun alohida funksiya
-    """
-    engine = None
-    try:
-        engine = connect_db()
-        coords_query = "SELECT naim, Latitude, Longitude FROM skvajina"
-        coords_df = pd.read_sql(coords_query, engine)
-        all_wells = {}
-        for _, row in coords_df.iterrows():
-            well_name = row["naim"].strip()
-            if row["Latitude"] is not None and row["Longitude"] is not None:
-                all_wells[well_name] = (row["Latitude"], row["Longitude"])
+        cache.set(cache_key, all_wells, 3600)
         return all_wells
+
     except Exception as e:
-        logging.error(f"Error fetching all wells coordinates: {e}")
+        logger.error(f"Error fetching wells coordinates: {e}")
         return {}
-    finally:
-        if engine:
-            engine.dispose()
-
-
 # --- Utility Functions ---
 def destenc_vectorized(lat1, lon1, lat2_series, lon2_series):
     """
@@ -843,7 +842,7 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4,
     if stem_x:
         # ✅ LEGEND: Rejimga qarab turli nom
         if filter_mode == 'mb':
-            legend_name = f"{MAIN_MAGNITUDE_COLUMN} Magnituda (≥{min_mag}) - Faqat Mb"
+            legend_name = f"{MAIN_MAGNITUDE_COLUMN} Magnituda (≥{min_mag}): Faqat Mb"
         else:
             legend_name = f"{MAIN_MAGNITUDE_COLUMN} Magnituda (≥{min_mag}, M/lgR≥{min_mlgr})"
 
@@ -1344,99 +1343,215 @@ def add_cracks_to_map(folium_map, cracks_gdf):
         logging.error(f"Yer yoriqlarini xaritaga qo'shishda xato: {e}")
         return {}
 
-
-def get_well_detailed_info(well_name):
+def get_well_detailed_info(well_name: "Union[str, List[str]]") -> "Union[Dict, Dict[str, Dict]]":
     """
-    Bitta quduq haqida batafsil ma'lumot olish (mineralizatsiya rasmi bilan)
+    If `well_name` is a string returns a dict with detailed info for that well.
+    If `well_name` is a list/tuple/set of names, returns a dict mapping each name -> info
+    (batch DB query + per-item caching).
     """
-    engine = None
-    default_info = {
-        "nomi": well_name.strip(),
-        "quduq_turi": "Ma'lumot yo'q",
-        "suv_qatlami": "Ma'lumot yo'q",
-        "chuqurlik": "Ma'lumot yo'q",
-        "seysmotektonik_holat": "Ma'lumot yo'q",
-        "strategrafik_taqsimoti": "Ma'lumot yo'q",
-        "litologik_tarkibi": "Ma'lumot yo'q",
-        "mineralizatsiya_base64": None,
-    }
-
     try:
-        engine = connect_db()
+        # Handle batch input (list/tuple/set)
+        if isinstance(well_name, (list, tuple, set)):
+            names = [str(n).strip() for n in well_name if n is not None]
+            # Prepare result and determine which names need DB fetch
+            result: Dict[str, Dict] = {}
+            to_fetch = []
+            for name in names:
+                cache_key = f"well_info_{name}"
+                cached = cache.get(cache_key)
+                if cached:
+                    result[name] = cached
+                else:
+                    to_fetch.append(name)
 
-        query = """
-                SELECT nomi, 
-                       quduq_turi, 
-                       suv_qatlami, 
-                       chuqurlik, 
-                       seysmotektonik_holat, 
-                       strategrafik_taqsimoti, 
-                       litologik_tarkibi,
-                       mineralizatsiya
-                FROM malumot1
-                WHERE nomi = %s
-                """
-
-        df = pd.read_sql(query, engine, params=(well_name.strip(),))
-
-        if not df.empty:
-            row = df.iloc[0]
-
-            result = {
-                "nomi": row.get("nomi", "Ma'lumot yo'q"),
-                "quduq_turi": row.get("quduq_turi", "Ma'lumot yo'q"),
-                "suv_qatlami": row.get("suv_qatlami", "Ma'lumot yo'q"),
-                "chuqurlik": row.get("chuqurlik", "Ma'lumot yo'q"),
-                "seysmotektonik_holat": row.get("seysmotektonik_holat", "Ma'lumot yo'q"),
-                "strategrafik_taqsimoti": row.get("strategrafik_taqsimoti", "Ma'lumot yo'q"),
-                "litologik_tarkibi": row.get("litologik_tarkibi", "Ma'lumot yo'q"),
-                "mineralizatsiya_base64": None,
-            }
-
-            # MINERALIZATSIYA rasmini qayta ishlash
-            mineralizatsiya = row.get("mineralizatsiya")
-
-            if mineralizatsiya is not None and mineralizatsiya != "Ma'lumot yo'q":
+            if to_fetch:
                 try:
-                    # Variant 1: Agar fayl yo'li (string) bo'lsa
-                    if isinstance(mineralizatsiya, str) and os.path.exists(mineralizatsiya):
-                        with open(mineralizatsiya, 'rb') as img_file:
-                            encoded = base64.b64encode(img_file.read()).decode('utf-8')
-                            ext = os.path.splitext(mineralizatsiya)[1].lower()
+                    rows = Malumot.objects.filter(nomi__in=to_fetch).values(
+                        'nomi', 'quduq_turi', 'suv_qatlami', 'chuqurlik',
+                        'seysmotektonik_holat', 'strategrafik_taqsimoti',
+                        'litologik_tarkibi', 'mineralizatsiya'
+                    )
+                except Exception as db_e:
+                    logger.error(f"Error querying Malumot for wells {to_fetch}: {db_e}")
+                    # Fill missing with defaults
+                    for name in to_fetch:
+                        default_info = {
+                            "nomi": name,
+                            "quduq_turi": "Ma'lumot yo'q",
+                            "suv_qatlami": "Ma'lumot yo'q",
+                            "chuqurlik": "Ma'lumot yo'q",
+                            "seysmotektonik_holat": "Ma'lumot yo'q",
+                            "strategrafik_taqsimoti": "Ma'lumot yo'q",
+                            "litologik_tarkibi": "Ma'lumot yo'q",
+                            "mineralizatsiya_base64": None,
+                        }
+                        result[name] = default_info
+                        cache.set(f"well_info_{name}", default_info, 3600)
+                    return result
 
-                            if ext in ['.jpg', '.jpeg']:
-                                mime_type = 'image/jpeg'
-                            elif ext == '.png':
-                                mime_type = 'image/png'
-                            elif ext == '.gif':
-                                mime_type = 'image/gif'
-                            else:
-                                mime_type = 'image/png'
+                # Process fetched rows
+                fetched_names = set()
+                for row in rows:
+                    name = (row.get('nomi') or '').strip()
+                    fetched_names.add(name)
+                    info = {
+                        "nomi": name,
+                        "quduq_turi": row.get('quduq_turi') or "Ma'lumot yo'q",
+                        "suv_qatlami": row.get('suv_qatlami') or "Ma'lumot yo'q",
+                        "chuqurlik": row.get('chuqurlik') or "Ma'lumot yo'q",
+                        "seysmotektonik_holat": row.get('seysmotektonik_holat') or "Ma'lumot yo'q",
+                        "strategrafik_taqsimoti": row.get('strategrafik_taqsimoti') or "Ma'lumot yo'q",
+                        "litologik_tarkibi": row.get('litologik_tarkibi') or "Ma'lumot yo'q",
+                        "mineralizatsiya_base64": None,
+                    }
 
-                            result["mineralizatsiya_base64"] = f"data:{mime_type};base64,{encoded}"
+                    mineralizatsiya = row.get('mineralizatsiya')
+                    if mineralizatsiya is not None and mineralizatsiya != "Ma'lumot yo'q":
+                        try:
+                            # If it's a file path
+                            if isinstance(mineralizatsiya, str) and os.path.exists(mineralizatsiya):
+                                with open(mineralizatsiya, 'rb') as img_file:
+                                    encoded = base64.b64encode(img_file.read()).decode('utf-8')
+                                    ext = os.path.splitext(mineralizatsiya)[1].lower()
+                                    if ext in ['.jpg', '.jpeg']:
+                                        mime_type = 'image/jpeg'
+                                    elif ext == '.png':
+                                        mime_type = 'image/png'
+                                    elif ext == '.gif':
+                                        mime_type = 'image/gif'
+                                    else:
+                                        mime_type = 'image/png'
+                                    info['mineralizatsiya_base64'] = f"data:{mime_type};base64,{encoded}"
 
-                    # Variant 2: Agar binary data (bytes/BLOB) bo'lsa
-                    elif isinstance(mineralizatsiya, bytes):
-                        encoded = base64.b64encode(mineralizatsiya).decode('utf-8')
-                        # Odatda PNG yoki JPEG deb faraz qilamiz
-                        result["mineralizatsiya_base64"] = f"data:image/png;base64,{encoded}"
+                            # If it's bytes/blob
+                            elif isinstance(mineralizatsiya, (bytes, bytearray)):
+                                encoded = base64.b64encode(mineralizatsiya).decode('utf-8')
+                                info['mineralizatsiya_base64'] = f"data:image/png;base64,{encoded}"
 
-                except Exception as img_error:
-                    logging.error(f"Mineralizatsiya rasmini yuklashda xato ({well_name}): {img_error}")
-                    result["mineralizatsiya_base64"] = None
+                        except Exception as img_error:
+                            logger.error(f"Mineralizatsiya image load error for {name}: {img_error}")
+                            info['mineralizatsiya_base64'] = None
+
+                    result[name] = info
+                    cache.set(f"well_info_{name}", info, 3600)
+
+                # For any requested names not found in DB, provide defaults
+                for name in to_fetch:
+                    if name not in fetched_names:
+                        default_info = {
+                            "nomi": name,
+                            "quduq_turi": "Ma'lumot yo'q",
+                            "suv_qatlami": "Ma'lumot yo'q",
+                            "chuqurlik": "Ma'lumot yo'q",
+                            "seysmotektonik_holat": "Ma'lumot yo'q",
+                            "strategrafik_taqsimoti": "Ma'lumot yo'q",
+                            "litologik_tarkibi": "Ma'lumot yo'q",
+                            "mineralizatsiya_base64": None,
+                        }
+                        result[name] = default_info
+                        cache.set(f"well_info_{name}", default_info, 3600)
 
             return result
-        else:
-            logging.warning(f"Skvajina ma'lumotlari topilmadi ({well_name}).")
+
+        # Handle single string input
+        name = str(well_name).strip()
+        cache_key = f"well_info_{name}"
+        cached = cache.get(cache_key)
+        if cached:
+            logger.debug(f"Well info from cache: {name}")
+            return cached
+
+        default_info = {
+            "nomi": name,
+            "quduq_turi": "Ma'lumot yo'q",
+            "suv_qatlami": "Ma'lumot yo'q",
+            "chuqurlik": "Ma'lumot yo'q",
+            "seysmotektonik_holat": "Ma'lumot yo'q",
+            "strategrafik_taqsimoti": "Ma'lumot yo'q",
+            "litologik_tarkibi": "Ma'lumot yo'q",
+            "mineralizatsiya_base64": None
+        }
+
+        try:
+            malumot = Malumot.objects.filter(nomi=name).values(
+                'nomi', 'quduq_turi', 'suv_qatlami', 'chuqurlik',
+                'seysmotektonik_holat', 'strategrafik_taqsimoti',
+                'litologik_tarkibi', 'mineralizatsiya'
+            ).first()
+        except Exception as db_e:
+            logger.error(f"Error querying Malumot for {name}: {db_e}")
+            cache.set(cache_key, default_info, 3600)
             return default_info
 
-    except Exception as e:
-        logging.error(f"Skvajina ma'lumotlarini yuklashda xatolik ({well_name}): {e}")
-        return default_info
+        if not malumot:
+            logger.debug(f"No info found for: {name}")
+            cache.set(cache_key, default_info, 3600)
+            return default_info
 
-    finally:
-        if engine:
-            engine.dispose()
+        info = {
+            "nomi": (malumot.get('nomi') or name).strip(),
+            "quduq_turi": malumot.get('quduq_turi') or "Ma'lumot yo'q",
+            "suv_qatlami": malumot.get('suv_qatlami') or "Ma'lumot yo'q",
+            "chuqurlik": malumot.get('chuqurlik') or "Ma'lumot yo'q",
+            "seysmotektonik_holat": malumot.get('seysmotektonik_holat') or "Ma'lumot yo'q",
+            "strategrafik_taqsimoti": malumot.get('strategrafik_taqsimoti') or "Ma'lumot yo'q",
+            "litologik_tarkibi": malumot.get('litologik_tarkibi') or "Ma'lumot yo'q",
+            "mineralizatsiya_base64": None
+        }
+
+        mineralizatsiya = malumot.get('mineralizatsiya')
+        if mineralizatsiya is not None and mineralizatsiya != "Ma'lumot yo'q":
+            try:
+                if isinstance(mineralizatsiya, str) and os.path.exists(mineralizatsiya):
+                    with open(mineralizatsiya, 'rb') as img_file:
+                        encoded = base64.b64encode(img_file.read()).decode('utf-8')
+                        ext = os.path.splitext(mineralizatsiya)[1].lower()
+                        if ext in ['.jpg', '.jpeg']:
+                            mime_type = 'image/jpeg'
+                        elif ext == '.png':
+                            mime_type = 'image/png'
+                        elif ext == '.gif':
+                            mime_type = 'image/gif'
+                        else:
+                            mime_type = 'image/png'
+                        info['mineralizatsiya_base64'] = f"data:{mime_type};base64,{encoded}"
+
+                elif isinstance(mineralizatsiya, (bytes, bytearray)):
+                    encoded = base64.b64encode(mineralizatsiya).decode('utf-8')
+                    info['mineralizatsiya_base64'] = f"data:image/png;base64,{encoded}"
+
+            except Exception as img_error:
+                logger.error(f"Mineralizatsiya image load error ({name}): {img_error}")
+                info['mineralizatsiya_base64'] = None
+
+        cache.set(cache_key, info, 3600)
+        return info
+
+    except Exception as e:
+        logger.error(f"Skvajina ma'lumotlarini yuklashda xatolik ({well_name}): {e}")
+        # If input was iterable, return mapping with defaults
+        if isinstance(well_name, (list, tuple, set)):
+            return {str(n).strip(): {
+                "nomi": str(n).strip(),
+                "quduq_turi": "Ma'lumot yo'q",
+                "suv_qatlami": "Ma'lumot yo'q",
+                "chuqurlik": "Ma'lumot yo'q",
+                "seysmotektonik_holat": "Ma'lumot yo'q",
+                "strategrafik_taqsimoti": "Ma'lumot yo'q",
+                "litologik_tarkibi": "Ma'lumot yo'q",
+                "mineralizatsiya_base64": None
+            } for n in well_name}
+        else:
+            return {
+                "nomi": str(well_name).strip() if well_name is not None else '',
+                "quduq_turi": "Ma'lumot yo'q",
+                "suv_qatlami": "Ma'lumot yo'q",
+                "chuqurlik": "Ma'lumot yo'q",
+                "seysmotektonik_holat": "Ma'lumot yo'q",
+                "strategrafik_taqsimoti": "Ma'lumot yo'q",
+                "litologik_tarkibi": "Ma'lumot yo'q",
+                "mineralizatsiya_base64": None
+            }
 
 
 def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, min_mlgr, filter_mode='mlgr'):
@@ -1450,6 +1565,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     selected_well_names_list = []  # Rang uchun tartiblangan ro'yxat
     filtered_earthquakes_by_well = []
 
+    all_well_names_on_map = list(all_wells.keys())
+    wells_info_dict = get_well_detailed_info(all_well_names_on_map)
+    logger.info(f"Loaded {len(wells_info_dict)} wells info in ONE query")
     # ============================================================
     # 1-QISM: ZILZILALARNI FILTRLASH
     # ============================================================
@@ -1641,7 +1759,16 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
     # ============================================================
     for well_name, (lat, lon) in all_wells.items():
         if well_name not in selected_well_names:
-            well_info = get_well_detailed_info(well_name)
+            well_info = wells_info_dict.get(well_name, {
+                "nomi": well_name,
+                "quduq_turi": "Ma'lumot yo'q",
+                "suv_qatlami": "Ma'lumot yo'q",
+                "chuqurlik": "Ma'lumot yo'q",
+                "seysmotektonik_holat": "Ma'lumot yo'q",
+                "strategrafik_taqsimoti": "Ma'lumot yo'q",
+                "litologik_tarkibi": "Ma'lumot yo'q",
+                "mineralizatsiya_base64": None,
+            })
 
             mineralizatsiya_html = ""
             if well_info.get('mineralizatsiya_base64'):
@@ -1786,7 +1913,6 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                                         }});
                                     }}
                                 }}
-                            }});
                         }});
                     }})();
                     </script>
@@ -1810,7 +1936,16 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 'shades': ['rgba(0,0,255,0.5)', 'rgba(0,0,255,0.7)', 'rgba(0,0,255,0.9)']
             })
 
-            well_info = get_well_detailed_info(skvajina)
+            well_info = wells_info_dict.get(skvajina, {
+                "nomi": skvajina,
+                "quduq_turi": "Ma'lumot yo'q",
+                "suv_qatlami": "Ma'lumot yo'q",
+                "chuqurlik": "Ma'lumot yo'q",
+                "seysmotektonik_holat": "Ma'lumot yo'q",
+                "strategrafik_taqsimoti": "Ma'lumot yo'q",
+                "litologik_tarkibi": "Ma'lumot yo'q",
+                "mineralizatsiya_base64": None,
+            })
 
             mineralizatsiya_html = ""
             if well_info.get('mineralizatsiya_base64'):
@@ -1918,6 +2053,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                             return;
                         }}
 
+                        // Aylanalar layerini yaratish
                         circlesLayer = L.layerGroup();
                         circlesInfo.forEach(function(info) {{
                             var circle = L.circle([wellLat, wellLon], {{
@@ -1936,7 +2072,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                             circlesLayer.addLayer(circle);
                         }});
 
-                        //Mb rejimida aylanalar darhol ko'rinadi
+                        // Mb rejimida aylanalar darhol ko'rinadi
                         if (isVisible) {{
                             circlesLayer.addTo(map);
                         }}
@@ -1986,9 +2122,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                 date_val = "Nomalum"
             if isinstance(date_val, (pd.Timestamp, datetime.datetime)):
                 date_val = date_val.strftime("%d.%m.%Y")
-            distance_val = row.get("R(km)", "Nomalum")
-            mlgr_val = row.get("M/lgR", "Nomalum")
-            depth_val = row.get("Depth", "Nomalum")
+            distance_val = row.get("R(km)", "Noma'lum")
+            mlgr_val = row.get("M/lgR", "Noma'lum")
+            depth_val = row.get("Depth", "Noma'lum")
 
             if mag_val is not None and not np.isnan(mag_val) and mag_val > 0 and lat is not None and lon is not None:
                 if filter_mode == 'mb':
@@ -2017,7 +2153,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                         Sana: {date_val}<br>
                         Magnituda (Mb): {mag_val:.2f}<br>
                         Chuqurlik (km): {depth_val}<br>
-                        Masofa (km): {distance_val:.1f}<br>
+                        Masofa (km): {distance_val:.1f} km<br>
                         M/lgR: {mlgr_val:.2f}<br>
                     """
 
@@ -2194,9 +2330,9 @@ def create_earthquake_map_with_wells(df_earthquakes, all_wells, selected_wells, 
                                 </tr>
                                 <tr style="background-color: #f8f9fa;">
                                     <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
-
+                                    <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
                                 </tr>
-
+                                {mineralizatsiya_html}
                             </table>
                             <p style="margin-top: 10px; color: {colors['base']}; font-weight: bold;">✓ Tanlangan skvajina</p>
                         </div>
@@ -2303,64 +2439,112 @@ def create_earthquake_map_with_wells(df_earthquakes, all_wells, selected_wells, 
         except Exception as e:
             logging.error(f"Aylanalar qo'shishda xato ({well_name}): {e}")
 
-    # 8. ZILZILALARNI QO'SHISH
-    if not df_earthquakes.empty:
-        for idx, row in df_earthquakes.iterrows():
-            lat = row['Latitude']
-            lon = row['Longitude']
-            mag = row['Mb']
-
+    # ============================================================
+    # 10-QISM: ZILZILALARNI QO'SHISH
+    # ============================================================
+    if not all_filtered_earthquakes.empty:
+        for idx, row in all_filtered_earthquakes.iterrows():
+            lat = row.get(LATITUDE_COLUMN, None)
+            lon = row.get(LONGITUDE_COLUMN, None)
+            mag_val = row.get(MAIN_MAGNITUDE_COLUMN, None)
+            date_val = row.get(DATE_COLUMN, "Nomalum")
             try:
-                date_str = pd.to_datetime(row['Event_date']).strftime('%d.%m.%Y')
-            except:
-                date_str = str(row['Event_date'])
+                date_val = pd.to_datetime(date_val).strftime("%d.%m.%Y")
+            except Exception:
+                date_val = "Nomalum"
+            if isinstance(date_val, (pd.Timestamp, datetime.datetime)):
+                date_val = date_val.strftime("%d.%m.%Y")
+            distance_val = row.get("R(km)", "Noma'lum")
+            mlgr_val = row.get("M/lgR", "Noma'lum")
+            depth_val = row.get("Depth", "Noma'lum")
 
-            depth = row.get('Depth', 'Noma\'lum')
+            if mag_val is not None and not np.isnan(mag_val) and mag_val > 0 and lat is not None and lon is not None:
+                if filter_mode == 'mb':
+                    tooltip_html = f"""
+                        <b>Zilzila</b><br>
+                        Sana:{date_val}<br>
+                        Magnituda (Mb):{mag_val:.2f}<br>
+                        Chuqurlik (km): {depth_val}<br>
+                         <i>Faqat Mb rejimi (masofa hisoblanmagan)</i>
+                """
+                    if mag_val >= 2.8:
+                        color = "red"
+                        radius = mag_val * 2.5
 
-            tooltip_html = f"""
-                <b>Zilzila</b><br>
-                <b>Sana:</b> {date_str}<br>
-                <b>Magnituda (Mb):</b> {mag:.2f}<br>
-                <b>Chuqurlik:</b> {depth} km
-            """
+                    elif mag_val >= 2.0:
+                        color = "orange"
+                        radius = mag_val * 2
 
-            if mag >= 6:
-                color = "darkred"
-                radius = mag * 3
-            elif mag >= 5:
-                color = "red"
-                radius = mag * 2.5
-            elif mag >= 4:
-                color = "orange"
-                radius = mag * 2
-            else:
-                color = "yellow"
-                radius = mag * 1.5
+                    else:
+                        color = "yellow"
+                        radius = mag_val * 1.5
+                else:
 
-            folium.CircleMarker(
-                location=[lat, lon],
-                radius=radius,
-                color=color,
-                fill=True,
-                fillColor=color,
-                fillOpacity=0.7,
-                weight=2,
-                tooltip=tooltip_html
-            ).add_to(m)
+                    tooltip_html = f"""
+                        <b>Zilzila</b><br>
+                        Sana: {date_val}<br>
+                        Magnituda (Mb): {mag_val:.2f}<br>
+                        Chuqurlik (km): {depth_val}<br>
+                        Masofa (km): {distance_val:.1f} km<br>
+                        M/lgR: {mlgr_val:.2f}<br>
+                    """
 
-    # 9. LEGEND
+                    if mag_val >= 6:
+                        color = "darkred"
+                        radius = mag_val * 3
+                    elif mag_val >= 5:
+                        color = "red"
+                        radius = mag_val * 2.5
+                    elif mag_val >= 4:
+                        color = "orange"
+                        radius = mag_val * 2
+                    else:
+                        color = "yellow"
+                        radius = mag_val * 1.5
+
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=radius,
+                    color=color,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.7,
+                    stroke=True,
+                    weight=2,
+                    tooltip=tooltip_html
+                ).add_to(m)
+
+    # ============================================================
+    # 11-QISM: LEGEND QO'SHISH
+    # ============================================================
+    if filter_mode == 'mb':
+        legend_items = [
+            '<p><b>Xarita elementlari:</b></p>',
+            '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb > 2.8</p>',
+            '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 2.0-2.8</p>',
+            '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 2.0</p>',
+            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #ADD8E6; display: inline-block; margin-right: 8px;"></div> Tanlanmagan skvajinalar</p>',
+            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #0B43FA; display: inline-block; margin-right: 8px;"></div> Tanlangan skvajinalar (har xil rangda)</p>',
+            '<p style="font-style:italic; color:#666;">Filtrlash: Faqat Mb (masofa hisobsiz)</p>',
+        ]
+    else:
+        legend_items = [
+            '<p><b>Xarita elementlari:</b></p>',
+            '<p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>',
+            '<p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>',
+            '<p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>',
+            '<p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>',
+            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #ADD8E6; display: inline-block; margin-right: 8px;"></div> Tanlanmagan skvajinalar</p>',
+            '<p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #0B43FA; display: inline-block; margin-right: 8px;"></div> Tanlangan skvajinalar (har xil rangda)</p>',
+
+        ]
+
     legend_html = f'''
     <div style="position: fixed; 
-                bottom: 50px; left: 50px; width: 200px; 
+                bottom: 50px; left: 50px; width: 160px; height: 180px; 
                 background-color: white; border:2px solid grey; z-index:9999; 
                 font-size:12px; padding: 10px; overflow-y: auto;">
-        <p><b>Xarita Elementlari:</b></p>
-        <p><i class="fa fa-circle" style="color:darkred"></i> Zilzila Mb ≥ 6.0</p>
-        <p><i class="fa fa-circle" style="color:red"></i> Zilzila Mb 5.0-5.9</p>
-        <p><i class="fa fa-circle" style="color:orange"></i> Zilzila Mb 4.0-4.9</p>
-        <p><i class="fa fa-circle" style="color:yellow"></i> Zilzila Mb < 4.0</p>
-        <p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid #ADD8E6; display: inline-block; margin-right: 8px;"></div>Tanlanmagan skvajinalar</p>
-        <p><div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 15px solid blue; display: inline-block; margin-right: 8px;"></div>Tanlangan skvajinalar</p>
+    {''.join(legend_items)}
     </div>
     '''
     m.get_root().html.add_child(folium.Element(legend_html))
@@ -2449,415 +2633,694 @@ def parametrs_view(request):
 
 
 def results_view(request):
-    """
-    Generates and displays seismic analysis results.
-    Instead of one giant plot, it generates a list of individual plots
-    allowing separate downloads for each graph.
-    """
+    #session va input validatsiyasi
+    context = initialize_context(request)
 
-    # Ma'lumotlarni olish (wells va params ro'yxati uchun)
-    lst_stansiya, well_coords = fetch_data()
-    all_params = []
-    for group_name, params_list in DEFAULT_ELEMENTS_GROUPS.items():
-        all_params.extend(params_list)
-    all_params = sorted(list(set(all_params)))
+    if 'error' in context:
+        return render(request, "seismos_app/results1.html")
+
+    #CACHED
+    try:
+        lst_stansiya, well_coords = fetch_data()
+
+        page_title = generate_page_title(context['selected_keys'])
+        context['page_title'] = page_title
+        context['selected_well_names'] = extract_well_names(context['selected_keys'])
+
+        #Sana filtrlarini tekshirish
+        date_range = validate_and_parse_dates(
+            context['filter_start_date'],
+            context['filter_end_date']
+        )
+
+        if isinstance(date_range, dict) and 'error' in date_range:
+            context.update(date_range)
+            return render(request, 'seismos_app/results1.html', context)
+
+        user_start_date, user_end_date, x_axis_start, x_axis_end = date_range
+
+        #Zilzila ma'lumotlarini olish
+        filtered_earthquakes_df = fetch_and_filter_earthquakes(
+            min_mag=context['min_mag'],
+            start_date = user_start_date,
+            end_date = user_end_date
+        )
+
+        #Grafiklar yaratish
+        graphs_list = []
+        graph_data = []
+
+
+        if not context['hide_graphs']:
+            graphs_list, graph_data = generate_all_graphs(
+                selected_keys = context['selected_keys'],
+                selected_params = context['selected_params'],
+                lst_stansiya = lst_stansiya,
+                well_coords = well_coords,
+                filtered_earthquakes_df = filtered_earthquakes_df,
+                user_start_date = user_start_date,
+                user_end_date = user_end_date,
+                x_axis_start = x_axis_start,
+                x_axis_end = x_axis_end,
+                median_window = context['median_window'],
+                min_mag = context['min_mag'],
+                btn_value = context['btn_value'],
+                min_mlgr = context['min_mlgr'],
+                filter_mode = context['filter_mode']
+            )
+
+            if not graphs_list:
+                logger.warning(" No graphs were created!")
+            else:
+                logger.info(f"{len(graphs_list)} graphs created successfully")
+
+        #Xarita yaratish
+        folium_map_html = None
+
+        if not context['hide_map']:
+            folium_map_html = generate_folium_map(
+                selected_keys = context['selected_keys'],
+                well_coords = well_coords,
+                filtered_earthquakes_df = filtered_earthquakes_df,
+                min_mag = context['min_mag'],
+                min_mlgr = context['min_mlgr'],
+                filter_mode = context['filter_mode']
+            )
+
+        #Contextni to'ldirish
+        context.update({
+            'wells': lst_stansiya.keys(),
+            'graphs_list':graphs_list,
+            'folium_map': folium_map_html,
+            'show_graphs': not context['hide_graphs'],
+            'show_map': not context['hide_map'],
+
+
+        })
+
+        #Data diapozoni
+        if graph_data:
+            all_dates = [d for item in graph_data for d in item[0] if d]
+            if all_dates:
+                context["data_min_date"] = min(pd.to_datetime(all_dates)).strftime('%Y-%m-%d')
+                context["data_max_date"] = max(pd.to_datetime(all_dates)).strftime('%Y-%m-%d')
+        return render(request, 'seismos_app/results1.html', context)
+
+    except Exception as e:
+        logger.error(f"Results view error: {e}", exc_info=True)
+        return render(request, 'seismos_app/results1.html',{
+            "error":"Tizimda kutilmagan xatolik yuz berdi"
+        })
+
+def initialize_context(request) -> Dict:
+    """ Session va POST malu'motlarini validatsiya qilish"""
+
+    # ORM barcha ma'lumotlarni olish
+    lst_stansiya,_ = fetch_data()
+    all_params = sorted(list(set(sum(DEFAULT_ELEMENTS_GROUPS.values(),[]))))
 
     if request.method == "POST":
         selected_keys = request.POST.getlist("wells")
-        selected_params = request.POST.getlist("params")
+        selected_params = request.POST.getlist("params") or all_params
+        filter_mode  = request.POST.get("filter_mode", "mlgr")
 
-        filter_mode = request.POST.get("filter_mode", "mlgr")
-
-        # ✅ YANGI: Ko'rsatish nazorati
+        #Ko'rsatish nazorati
         hide_map = request.POST.get('hide_map') == '1'
         hide_graphs = request.POST.get('hide_graphs') == '1'
 
-        # Agar ikkalasi ham belgilangan bo'lsa, ignore qilamiz
+        #Ikkisi ham yoqilgan bo'lsa rad etish
         if hide_map and hide_graphs:
             hide_map = False
             hide_graphs = False
 
-        # Raqamli qiymatlarni xavfsiz olish
+        #Raqamli parametrlar
         try:
-            min_mag = float(request.POST.get("min_mag", 0))
-            btn_value = float(request.POST.get("sigma", 0))
-            min_mlgr = float(request.POST.get("min_mlgr", 0))
-        except (ValueError, TypeError):
-            min_mag = 0.0
-            btn_value = 0.0
-            min_mlgr = 0.0
+            min_mag = float(request.POST.get("min_mag", 4.0))
+            btn_value = float(request.POST.get("sigma", 2.0))
+            min_mlgr = float(request.POST.get("min_mlgr", 2.5))
+        except (ValueError,TypeError):
+            min_mag, btn_value, min_mlgr = 4.0, 2.0, 2.5
 
-        filter_start_date = request.POST.get("start_date")
-        filter_end_date = request.POST.get("end_date")
+        #Sana filtrlari
+        filter_start_date = request.POST.get("start_date", "").strip()
+        filter_end_date = request.POST.get("end_date", "").strip()
+
+        #Median window
         median_window_raw = request.POST.get("median_window", "").strip()
-
-        if not median_window_raw:
+        try:
+            median_window = int(median_window_raw) if median_window_raw else None
+        except ValueError:
             median_window = None
-        else:
-            try:
-                median_window = int(median_window_raw)
-            except ValueError:
-                median_window = None
 
-        use_catalog = True
-        request.session['use_catalog'] = True
-
-        # sessionda saqlash (✅ ko'rsatish holatlari ham qo'shildi)
-        request.session['selected_keys'] = selected_keys
-        request.session['selected_params'] = selected_params
-        request.session['min_mag'] = min_mag
-        request.session['btn_value'] = btn_value
-        request.session['min_mlgr'] = min_mlgr
-        request.session['filter_start_date'] = filter_start_date
-        request.session['filter_end_date'] = filter_end_date
-        request.session['median_window'] = median_window
-        request.session['use_catalog'] = True
-        request.session['filter_mode'] = filter_mode
-        request.session['hide_map'] = hide_map  # ✅ YANGI
-        request.session['hide_graphs'] = hide_graphs  # ✅ YANGI
+        #Sessionga saqlash
+        request.session.update({
+            'selected_keys':selected_keys,
+            'selected_params': selected_params,
+            'min_mag': min_mag,
+            'btn_value': btn_value,
+            'min_mlgr':min_mlgr,
+            'filter_start_date':filter_start_date,
+            'filter_end_date':filter_end_date,
+            'median_window':median_window,
+            'use_catalog':True,
+            'filter_mode':filter_mode,
+            'hide_map':hide_map,
+            'hide_graphs':hide_graphs,
+        })
 
     else:
+        #GET request sessiondan olish
         selected_keys = request.session.get("selected_keys", [])
-        selected_params = request.session.get("selected_params", [])
-        min_mag = request.session.get("min_mag")
-        btn_value = request.session.get("btn_value")
-        min_mlgr = request.session.get("min_mlgr")
-        filter_start_date = request.session.get("filter_start_date")
-        filter_end_date = request.session.get("filter_end_date")
+        selected_params = request.session.get("selected_params", all_params)
+        min_mag = request.session.get("min_mag", 4.0)
+        btn_value = request.session.get("btn_value", 2.0)
+        min_mlgr = request.session.get("min_mlgr",2.5)
+        filter_start_date = request.session.get("filter_start_date", "")
+        filter_end_date = request.session.get("filter_end_date", "")
         use_catalog = request.session.get("use_catalog", False)
         median_window = request.session.get("median_window", None)
         filter_mode = request.session.get("filter_mode", "mlgr")
         hide_map = request.session.get("hide_map", False)  # ✅ YANGI
         hide_graphs = request.session.get("hide_graphs", False)  # ✅ YANGI
 
-    # Tanlangan skvajinalar nomini olish
-    selected_well_names = []
+    #Validatsiya
+    if not selected_keys:
+        return{
+            "error":"Skvajinalar tanlanmagan iltimos avval skvajina tanlang",
+            "wells": lst_stansiya.keys(),
+            "params": all_params,
+            "median_values": [ 3, 5 ,7, 15, 31, 91, 183, 365, 731 ],
+        }
+
+    #Context qaytarish
+    return {
+        'selected_keys':selected_keys,
+        'selected_params':selected_params,
+        'min_mag':min_mag,
+        'btn_value':btn_value,
+        'min_mlgr':min_mlgr,
+        'filter_start_date': filter_start_date,
+        'filter_end_date': filter_end_date,
+        'median_window': median_window,
+        'filter_mode': filter_mode,
+        'hide_map': hide_map,
+        'hide_graphs': hide_graphs,
+        'params':all_params,
+        'median_values':[3,5,7,15,31,91,183,365,731],
+        #Forma uchun joriy qiymalar
+        'current_min_mag':min_mag,
+        'current_sigma':btn_value,
+        'current_min_mlgr':min_mlgr,
+        'current_start_date':filter_start_date,
+        'current_end_date':filter_end_date,
+        'current_median_window': median_window or "",
+        'current_filter_mode': filter_mode,
+        'current_hide_map':hide_map,
+        'current_hide_graphs':hide_graphs,
+        'select_wells':selected_keys,
+    }
+
+def generate_page_title(selected_keys: List[str]) -> str:
+    """ Page title yaratish """
+    well_names = extract_well_names(selected_keys)
+
+    if not well_names:
+        return  "Seysmik Tahlil"
+    elif len(well_names) == 1:
+        return f"{well_names[0]} -Seysmik Tahlil"
+    elif len(well_names) <=3:
+        return f"{', '.join(well_names)} -Seysmik Tahlil"
+    else:
+        return f"{', '.join(well_names[:3])} va boshqalar - Seysmik Tahlil"
+
+
+def extract_well_names(selected_keys: List[str]) -> List[str]:
+    """selected keys dan well nomlarini ajratib olish"""
+    well_names = []
     for key in selected_keys:
         if " | " in key:
-            _, well_name = key.split(" | ")
-            selected_well_names.append(well_name)
+            _, well_name = key.split(" | ",1)
+            well_names.append(well_name)
+    return well_names
 
-    # Page title
-    if selected_well_names:
-        if len(selected_well_names) == 1:
-            page_title = f"{selected_well_names[0]} - Seysmik Tahlil"
-        elif len(selected_well_names) <= 3:
-            page_title = f"{', '.join(selected_well_names)} - Seysmik Tahlil"
-        else:
-            page_title = f"{', '.join(selected_well_names[:3])} va boshqalar - Seysmik Tahlil"
-    else:
-        page_title = "Seysmik Tahlil"
+def validate_and_parse_dates(
+        filter_start_date: str,
+        filter_end_date:str,
+) -> Tuple:
 
-    # Input validatsiyasi
-    if not all([
-        selected_keys,
-        use_catalog,
-        min_mag is not None,
-        btn_value is not None,
-        min_mlgr is not None,
-    ]):
-        return render(
-            request,
-            "seismos_app/results1.html",
-            {
-                "wells": lst_stansiya.keys(),
-                "params": all_params,
-                "selected_wells": selected_keys,
-                "selected_params": selected_params,
-                "current_min_mag": min_mag,
-                "current_sigma": btn_value,
-                "current_min_mlgr": min_mlgr,
-                "current_start_date": filter_start_date or "",
-                "current_end_date": filter_end_date or "",
-                "current_hide_map": hide_map,  # ✅ YANGI
-                "current_hide_graphs": hide_graphs,  # ✅ YANGI
-                "error": "To'liq ma'lumotlar mavjud emas. Iltimos, oldingi qadamlarga qayting."
-            },
-        )
+    default_start_date = pd.to_datetime("1984-01-01")
+    today = pd.to_datetime("today").normalize()
 
-    if not selected_params:
-        selected_params = sorted(list(set(sum(DEFAULT_ELEMENTS_GROUPS.values(), []))))
-        request.session['selected_params'] = selected_params
 
-    # Sana filtrlarini tekshirish
     user_start_date = None
     user_end_date = None
 
     if filter_start_date:
         try:
             user_start_date = pd.to_datetime(filter_start_date)
-            if filter_end_date:
-                user_end_date = pd.to_datetime(filter_end_date)
-            else:
-                user_end_date = pd.Timestamp.today().normalize()
+            user_end_date = pd.to_datetime(filter_end_date)
 
             if user_start_date > user_end_date:
-                return render(
-                    request,
-                    "seismos_app/results1.html",
-                    {
-                        "error": "Boshlang'ich sana oxirgi sanadan katta bo'lmasligi kerak."
-                    },
-                )
-        except (ValueError, TypeError) as e:
-            logging.warning(f"Sana filtri xatosi: {e}")
-            return render(
-                request,
-                "seismos_app/results1.html",
-                {"error": f"Noto'g'ri sana formati: {e}"},
-            )
+                return {'error': "Boshlang'ich sana oxirgi sanadan katta bo'lmasligi kerak"}
 
-    # Default sanalar
-    default_start_date = pd.to_datetime("1984-01-01")
-    today = pd.to_datetime("today").normalize()
+        except (ValueError,TypeError) as e:
+            logger.warning(f"Sana filtri xatosi: {e}")
+            return {'error':f"Noto'g'ri sana formati: {e}"}
 
-    # X-o'qi uchun sanalar
+    # X o'qi uchun sanalar
     x_axis_start = user_start_date if user_start_date else default_start_date
     x_axis_end = user_end_date if user_end_date else today + relativedelta(months=2)
 
-    engine = None
-    conn = None
+    return user_start_date, user_end_date, x_axis_start, x_axis_end
+
+
+def fetch_and_filter_earthquakes(
+        min_mag: float,
+        start_date: Optional[pd.Timestamp] = None,
+        end_date: Optional[pd.Timestamp] = None
+) -> pd.DataFrame:
+    cache_key = f'earthquakes_{min_mag}_{start_date}_{end_date}'
+    cached = cache.get(cache_key)
+
+    if cached is not None:
+        logger.info("Earthquakes loaded from cache")
+        return cached
 
     try:
-        # Ma'lumotlar bazasiga ulanish
-        engine = connect_db()
-        if not engine:
-            return render(request, "seismos_app/results1.html", {"error": "Bazaga ulanish xatosi"})
-        conn = engine.connect()
+        # ✅ TO'G'RI: __gte
+        queryset = Catalog.objects.filter(Mb__gte=min_mag)
 
-        # Catalog jadvalidan zilzilalar ma'lumotlarini olish
-        query = "SELECT `Event_date`, `Event_time`, `Latitude`, `Longitude`, `Depth`, `Mb` FROM catalog"
-        dfe = pd.read_sql(query, engine)
-        dfe[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(dfe[MAIN_MAGNITUDE_COLUMN], errors='coerce')
-        dfe.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
+        if start_date is None:
+            start_date = pd.to_datetime("1984-01-01")
 
-        # Zilzilalar ma'lumotlarini qayta ishlash
-        all_earthquakes_df = dfe.copy()
-        all_earthquakes_df[TIME_COLUMN] = (
-            pd.to_timedelta(all_earthquakes_df[TIME_COLUMN])
-            .dt.total_seconds()
-            .astype(int)
-        )
-        all_earthquakes_df[TIME_COLUMN] = pd.to_datetime(
-            all_earthquakes_df[TIME_COLUMN], unit="s"
-        ).dt.strftime("%H:%M:%S")
+        queryset = queryset.filter(Event_date__gte=start_date.date())
 
-        all_earthquakes_df["combined_datetime"] = pd.to_datetime(
-            all_earthquakes_df[DATE_COLUMN].astype(str) + " " + all_earthquakes_df[TIME_COLUMN].astype(str),
-            format="%Y-%m-%d %H:%M:%S",
-            errors="coerce",
-        )
-        all_earthquakes_df.dropna(subset=["combined_datetime"], inplace=True)
+        if end_date:
+            queryset = queryset.filter(Event_date__lte=end_date.date())
 
-        # Zilzilalarni filtrlash
-        if user_start_date and user_end_date:
-            earthquake_mask = (
-                    (all_earthquakes_df["combined_datetime"] >= user_start_date)
-                    & (all_earthquakes_df["combined_datetime"] <= user_end_date)
+        earthquakes = queryset.values(
+            'Event_date', 'Event_time', 'Latitude', 'Longitude', 'Depth', 'Mb'
+        ).order_by('-Event_date', '-Event_time')
+
+        df = pd.DataFrame(list(earthquakes))
+
+        if df.empty:
+            logger.warning(f"No earthquakes found (Mb >= {min_mag})")
+            cache.set(cache_key, df, 1800)
+            return df
+
+        # Data processing
+        df[MAIN_MAGNITUDE_COLUMN] = pd.to_numeric(df[MAIN_MAGNITUDE_COLUMN], errors='coerce')
+        df.dropna(subset=[MAIN_MAGNITUDE_COLUMN], inplace=True)
+
+        if TIME_COLUMN in df.columns:
+            df[TIME_COLUMN] = df[TIME_COLUMN].apply(
+                lambda x: x.strftime('%H:%M:%S') if hasattr(x, 'strftime') else str(x)
             )
-            filtered_earthquakes_df = all_earthquakes_df[earthquake_mask].copy()
-        else:
-            earthquake_mask = (all_earthquakes_df["combined_datetime"] >= default_start_date)
-            filtered_earthquakes_df = all_earthquakes_df[earthquake_mask].copy()
 
-        # ✅ Grafiklar yaratish (faqat agar hide_graphs False bo'lsa)
-        graphs_list = []
+        df["combined_datetime"] = pd.to_datetime(
+            df[DATE_COLUMN].astype(str) + " " + df[TIME_COLUMN].astype(str),
+            format="%Y-%m-%d %H:%M:%S",
+            errors="coerce"
+        )
+        df.dropna(subset=["combined_datetime"], inplace=True)
 
-        if not hide_graphs:
-            # Ma'lumot yig'ish (graph_data)
-            graph_data = []
+        logger.info(f"Fetched {len(df)} earthquakes")
+        cache.set(cache_key, df, 1800)
 
-            for key in selected_keys:
-                for param in selected_params:
-                    ssdi_id = lst_stansiya.get(key, {}).get(param)
-                    if not ssdi_id:
-                        continue
-
-                    query = text(f"SELECT date, `{ssdi_id}` FROM alldata WHERE `{ssdi_id}` IS NOT NULL")
-                    try:
-                        data = conn.execute(query).fetchall()
-                    except Exception as e:
-                        logging.error(f"Query xatosi {key} - {param}: {e}")
-                        continue
-
-                    if not data:
-                        continue
-
-                    df_temp = pd.DataFrame(data, columns=['date', 'value'])
-                    df_temp['date'] = pd.to_datetime(df_temp['date'], errors='coerce')
-                    df_temp.dropna(subset=['date', 'value'], inplace=True)
-
-                    if user_start_date and user_end_date:
-                        df_temp = df_temp[
-                            (df_temp['date'] >= user_start_date) &
-                            (df_temp['date'] <= user_end_date)
-                            ].copy()
-                    else:
-                        df_temp = df_temp[df_temp['date'] >= default_start_date].copy()
-
-                    if df_temp.empty:
-                        continue
-
-                    x_val = df_temp['date'].tolist()
-                    y_val = df_temp['value'].tolist()
-
-                    if not y_val:
-                        continue
-
-                    # Median window
-                    if median_window and median_window > 0:
-                        df_temp_med = pd.DataFrame({'date': x_val, 'value': y_val})
-                        df_temp_med['date'] = pd.to_datetime(df_temp_med['date'])
-
-                        df_daily_median = (
-                            df_temp_med.groupby(df_temp_med['date'].dt.date)['value']
-                            .median().reset_index().rename(columns={'value': 'daily_median'})
-                        )
-                        df_daily_median['rolling_median'] = (
-                            df_daily_median['daily_median']
-                            .rolling(window=median_window, min_periods=1, center=True).median()
-                        )
-                        x_val = pd.to_datetime(df_daily_median['date']).tolist()
-                        y_val = df_daily_median['rolling_median'].tolist()
-
-                    mean, sigma = np.mean(y_val), np.std(y_val)
-                    if sigma == 0:
-                        continue
-
-                    _, skvajina = key.split(" | ")
-                    graph_data.append((x_val, y_val, mean, sigma, param, key, skvajina))
-
-            if graph_data:
-                delta = timedelta(days=15)
-                color_pool = generate_colors(len(graph_data))
-
-                for idx, (x, y, mean, sigma, param, key, skv) in enumerate(graph_data):
-                    fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-                    trace_color = color_pool[idx]
-                    row = 1
-                    col = 1
-
-                    y_all = plot_data_with_anomalies(
-                        fig, x, y, mean, sigma, btn_value, row, col, trace_color, param, key
-                    )
-
-                    fig.update_yaxes(
-                        title_text=f"{param} Qiymati",
-                        range=[min(y_all) * 0.9, max(y_all) * 1.1],
-                        row=row, col=col, secondary_y=False
-                    )
-
-                    lat, lon = well_coords.get(skv, (0, 0))
-                    if not filtered_earthquakes_df.empty:
-                        draw_magnitude_values(
-                            fig, filtered_earthquakes_df, row, col,
-                            min_mag=min_mag, well_lat=lat, well_lon=lon, min_mlgr=min_mlgr, filter_mode=filter_mode
-                        )
-
-                    fig.update_xaxes(
-                        range=[x_axis_start - delta, x_axis_end + delta],
-                        type="date",
-                        showgrid=True, griddash="dot",
-                        row=row, col=col
-                    )
-
-                    graph_title = f"{key} - {param}"
-                    title_date = f" ({filter_start_date} - {filter_end_date})" if filter_start_date and filter_end_date else " "
-
-                    fig.update_layout(
-                        title_text=f"{graph_title}{title_date}",
-                        height=500,
-                        autosize=True,
-                        showlegend=False,
-                        plot_bgcolor="gainsboro",
-                        hovermode="x unified",
-                        hoverdistance=1,
-                        margin=dict(l=60, r=60, t=80, b=60),
-                        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.9)")
-                    )
-
-                    div_id = f"plot_{idx}"
-                    filename = f"Seysmik_{skv}_{param}_{datetime.datetime.now().strftime('%Y%m%d')}"
-
-                    config = {
-                        "displayModeBar": True,
-                        "displaylogo": False,
-                        "responsive": True,
-                        "modeBarButtonsToRemove": ['toImage'],
-                    }
-
-                    graph_html = fig.to_html(
-                        full_html=False,
-                        include_plotlyjs=False,
-                        config=config,
-                        div_id=div_id
-                    )
-
-                    graphs_list.append({
-                        'html': graph_html,
-                        'title': graph_title,
-                        'div_id': div_id,
-                        'filename': filename
-                    })
-
-        # ✅ Folium xaritasini yaratish (faqat agar hide_map False bo'lsa)
-        folium_map_html = None
-        if not hide_map:
-            try:
-                folium_map_html = add_map_data_folium(
-                    selected_keys, well_coords, filtered_earthquakes_df, min_mag, min_mlgr, filter_mode=filter_mode
-                )
-            except Exception as e:
-                logging.error(f"Folium xaritasini yaratishda xato: {e}")
-                folium_map_html = "<p>Xarita yaratishda xato yuz berdi.</p>"
-
-        # Context tayyorlash
-        context = {
-            "wells": lst_stansiya.keys(),
-            "params": all_params,
-            "selected_wells": selected_keys,
-            "selected_well_names": selected_well_names,
-            "page_title": page_title,
-
-            # Input qiymatlarini qaytarish
-            "current_min_mag": min_mag,
-            "current_sigma": btn_value,
-            "current_min_mlgr": min_mlgr,
-            "current_start_date": filter_start_date or "",
-            "current_end_date": filter_end_date or "",
-            "current_median_window": median_window or "",
-            "current_filter_mode": filter_mode,
-            "current_hide_map": hide_map,  # ✅ YANGI
-            "current_hide_graphs": hide_graphs,  # ✅ YANGI
-            "median_values": [3, 5, 7, 15, 31, 91, 183, 365, 731],
-
-            # Asosiy natijalar
-            "graphs_list": graphs_list,
-            "folium_map": folium_map_html,
-
-            # ✅ Ko'rsatish holatlarini template uchun
-            "show_graphs": not hide_graphs,
-            "show_map": not hide_map,
-        }
-
-        # Data diapazoni info uchun
-        if not hide_graphs and graphs_list:
-            all_dates = [d for item in graph_data for d in item[0]]
-            if all_dates:
-                context["data_min_date"] = min(pd.to_datetime(all_dates)).strftime('%Y-%m-%d')
-                context["data_max_date"] = max(pd.to_datetime(all_dates)).strftime('%Y-%m-%d')
-
-        return render(request, "seismos_app/results1.html", context)
+        return df
 
     except Exception as e:
-        logging.error(f"Results view error: {e}", exc_info=True)
-        return render(request, "seismos_app/results1.html",
-                      {"error": "Tizimda kutilmagan xato yuz berdi."})
+        logger.error(f"Error fetching earthquakes: {e}", exc_info=True)
+        return pd.DataFrame()
 
-    finally:
+
+# seismos_app/views.py
+
+def generate_all_graphs(
+        selected_keys: List[str],
+        selected_params: List[str],
+        lst_stansiya: Dict,
+        well_coords: Dict,
+        filtered_earthquakes_df: pd.DataFrame,
+        user_start_date: Optional[pd.Timestamp],
+        user_end_date: Optional[pd.Timestamp],
+        x_axis_start: pd.Timestamp,
+        x_axis_end: pd.Timestamp,
+        median_window: Optional[int],
+        min_mag: float,
+        btn_value: float,
+        min_mlgr: float,
+        filter_mode: str
+) -> Tuple[List[Dict], List[Tuple]]:
+    """
+    ✅ OPTIMIZED: Faqat mavjud ma'lumotli grafiklarni yaratish
+    """
+    graphs_list = []
+    graph_data = []
+
+    default_start_date = pd.to_datetime("1984-01-01")
+
+    try:
+        from decouple import config as env_config
+        from sqlalchemy import create_engine, text
+
+        config = {
+            'db': env_config('DB_NAME'),
+            'user': env_config('DB_USER'),
+            'psw': env_config('DB_PASSWORD'),
+            'ip': env_config('DB_HOST', default='localhost')
+        }
+        engine = create_engine(
+            f"mysql+mysqlconnector://{config['user']}:{config['psw']}@{config['ip']}/{config['db']}"
+        )
+        conn = engine.connect()
+
+        # ============================================
+        # MA'LUMOT YIG'ISH
+        # ============================================
+        for key in selected_keys:
+            for param in selected_params:
+                ssdi_id = lst_stansiya.get(key, {}).get(param)
+                if not ssdi_id:
+                    logger.warning(f"⚠️ ssdi_id topilmadi: {key} - {param}")
+                    continue
+
+                # Query
+                query = text(f"SELECT date, `{ssdi_id}` FROM alldata WHERE `{ssdi_id}` IS NOT NULL")
+
+                try:
+                    data = conn.execute(query).fetchall()
+                except Exception as e:
+                    logger.error(f"❌ Query error {key} - {param}: {e}")
+                    continue
+
+                # ✅ YANGI: Ma'lumot bo'sh bo'lsa, o'tkazib yuborish
+                if not data or len(data) == 0:
+                    logger.warning(f"⚠️ No data found for {key} - {param}")
+                    continue
+
+                # DataFrame yaratish
+                df_temp = pd.DataFrame(data, columns=['date', 'value'])
+                df_temp['date'] = pd.to_datetime(df_temp['date'], errors='coerce')
+                df_temp['value'] = pd.to_numeric(df_temp['value'], errors='coerce')
+                df_temp.dropna(subset=['date', 'value'], inplace=True)
+
+                # ✅ YANGI: Tozalagandan keyin ham bo'sh bo'lsa
+                if df_temp.empty:
+                    logger.warning(f"⚠️ Empty DataFrame after cleaning: {key} - {param}")
+                    continue
+
+                # Sana filtri
+                if user_start_date and user_end_date:
+                    df_temp = df_temp[
+                        (df_temp['date'] >= user_start_date) &
+                        (df_temp['date'] <= user_end_date)
+                        ].copy()
+                else:
+                    df_temp = df_temp[df_temp['date'] >= default_start_date].copy()
+
+                # ✅ YANGI: Filtrlashdan keyin ham bo'sh bo'lsa
+                if df_temp.empty:
+                    logger.warning(f"⚠️ No data in date range for {key} - {param}")
+                    continue
+
+                x_val = df_temp['date'].tolist()
+                y_val = df_temp['value'].tolist()
+
+                # ✅ YANGI: y_val bo'sh yoki barcha qiymatlar NaN bo'lsa
+                if not y_val or all(pd.isna(y_val)):
+                    logger.warning(f"⚠️ All values are NaN: {key} - {param}")
+                    continue
+
+                # ✅ YANGI: Kamida 2 ta nuqta kerak grafik uchun
+                if len(y_val) < 2:
+                    logger.warning(f"⚠️ Not enough data points ({len(y_val)}): {key} - {param}")
+                    continue
+
+                # Median window processing
+                if median_window and median_window > 0:
+                    df_temp_med = pd.DataFrame({'date': x_val, 'value': y_val})
+                    df_temp_med['date'] = pd.to_datetime(df_temp_med['date'])
+
+                    df_daily_median = (
+                        df_temp_med.groupby(df_temp_med['date'].dt.date)['value']
+                        .median()
+                        .reset_index()
+                        .rename(columns={'value': 'daily_median'})
+                    )
+
+                    # ✅ FIXED: No space!
+                    df_daily_median['rolling_median'] = (
+                        df_daily_median['daily_median']
+                        .rolling(window=median_window, min_periods=1, center=True)
+                        .median()
+                    )
+
+                    x_val = pd.to_datetime(df_daily_median['date']).tolist()
+                    y_val = df_daily_median['rolling_median'].tolist()
+
+                    # ✅ YANGI: Median'dan keyin ham tekshirish
+                    if not y_val or all(pd.isna(y_val)):
+                        logger.warning(f"⚠️ All median values are NaN: {key} - {param}")
+                        continue
+
+                # Mean va sigma
+                mean, sigma = np.mean(y_val), np.std(y_val)
+
+                # ✅ YANGI: Sigma 0 bo'lsa yoki NaN bo'lsa
+                if sigma == 0 or np.isnan(sigma) or np.isnan(mean):
+                    logger.warning(f"⚠️ Invalid statistics (mean={mean}, sigma={sigma}): {key} - {param}")
+                    continue
+
+                _, skvajina = key.split(" | ")
+
+                # ✅ YANGI: Muvaffaqiyatli ma'lumotni saqlash
+                graph_data.append((x_val, y_val, mean, sigma, param, key, skvajina))
+                logger.info(f"✅ Added graph data: {key} - {param} ({len(y_val)} points)")
+
+        conn.close()
+        engine.dispose()
+
+        # ============================================
+        # GRAFIKLAR YARATISH
+        # ============================================
+        if not graph_data:
+            logger.warning("⚠️ No valid graph data found!")
+            return [], []
+
+        logger.info(f"✅ Creating {len(graph_data)} graphs...")
+
+        delta = timedelta(days=15)
+        color_pool = generate_colors(len(graph_data))
+
+        for idx, (x, y, mean, sigma, param, key, skv) in enumerate(graph_data):
+            try:
+                fig = create_single_graph(
+                    x=x,
+                    y=y,
+                    mean=mean,
+                    sigma=sigma,
+                    param=param,
+                    key=key,
+                    skv=skv,
+                    color=color_pool[idx],
+                    filtered_earthquakes_df=filtered_earthquakes_df,
+                    well_coords=well_coords,
+                    x_axis_start=x_axis_start,
+                    x_axis_end=x_axis_end,
+                    delta=delta,
+                    btn_value=btn_value,
+                    min_mag=min_mag,
+                    min_mlgr=min_mlgr,
+                    filter_mode=filter_mode,
+                    user_start_date=user_start_date,
+                    user_end_date=user_end_date
+                )
+
+                # ✅ YANGI: Grafik yaratilmasa, o'tkazib yuborish
+                if fig is None:
+                    logger.warning(f"⚠️ Failed to create graph: {key} - {param}")
+                    continue
+
+                div_id = f"plot_{idx}"
+                filename = f"Seysmik_{skv}_{param}_{datetime.datetime.now().strftime('%Y%m%d')}"
+
+                config = {
+                    "displayModeBar": True,
+                    "displaylogo": False,
+                    "responsive": True,
+                    "modeBarButtonsToRemove": ['toImage'],
+                }
+
+                graph_html = fig.to_html(
+                    full_html=False,
+                    include_plotlyjs=False,
+                    config=config,
+                    div_id=div_id
+                )
+
+                graphs_list.append({
+                    'html': graph_html,
+                    'title': f"{key} - {param}",
+                    'div_id': div_id,
+                    'filename': filename
+                })
+
+                logger.info(f"✅ Graph created: {key} - {param}")
+
+            except Exception as e:
+                logger.error(f"❌ Error creating graph {key} - {param}: {e}", exc_info=True)
+                continue
+
+        logger.info(f"✅ Successfully created {len(graphs_list)} graphs")
+
+    except Exception as e:
+        logger.error(f"❌ Error in generate_all_graphs: {e}", exc_info=True)
+
+    return graphs_list, graph_data
+
+
+def create_single_graph(
+        x: List,
+        y: List,
+        mean: float,
+        sigma: float,
+        param: str,
+        key: str,
+        skv: str,
+        color: str,
+        filtered_earthquakes_df: pd.DataFrame,
+        well_coords: Dict,
+        x_axis_start: pd.Timestamp,
+        x_axis_end: pd.Timestamp,
+        delta: timedelta,
+        btn_value: float,
+        min_mag: float,
+        min_mlgr: float,
+        filter_mode: str,
+        user_start_date: Optional[pd.Timestamp],
+        user_end_date: Optional[pd.Timestamp]
+) -> Optional[go.Figure]:
+    """
+    ✅ SAFE: None qaytaradi agar grafik yaratish mumkin bo'lmasa
+    """
+    try:
+        # ✅ YANGI: Input validation
+        if not x or not y:
+            logger.warning(f"⚠️ Empty x or y data for {key} - {param}")
+            return None
+
+        if len(x) != len(y):
+            logger.warning(f"⚠️ x and y length mismatch: {len(x)} vs {len(y)}")
+            return None
+
+        if len(x) < 2:
+            logger.warning(f"⚠️ Not enough data points: {len(x)}")
+            return None
+
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+        row, col = 1, 1
+
+        # Asosiy ma'lumotlarni chizish
         try:
-            if conn: conn.close()
-            if engine: engine.dispose()
-        except Exception:
-            pass
+            y_all = plot_data_with_anomalies(
+                fig, x, y, mean, sigma, btn_value, row, col, color, param, key
+            )
+        except Exception as e:
+            logger.error(f"❌ Error in plot_data_with_anomalies: {e}")
+            return None
+
+        # Y o'qi sozlamalari
+        if y_all and len(y_all) > 0:
+            y_min = min(y_all)
+            y_max = max(y_all)
+
+            # ✅ YANGI: Division by zero check
+            if y_min == y_max:
+                y_range = [y_min - 1, y_max + 1]
+            else:
+                y_range = [y_min * 0.9, y_max * 1.1]
+
+            fig.update_yaxes(
+                title_text=f"{param} Qiymati",
+                range=y_range,
+                row=row, col=col,
+                secondary_y=False
+            )
+
+        # Zilzilalarni qo'shish
+        lat, lon = well_coords.get(skv, (0, 0))
+
+        if not filtered_earthquakes_df.empty and lat and lon:
+            try:
+                draw_magnitude_values(
+                    fig=fig,
+                    original_df=filtered_earthquakes_df,
+                    row_index=row,
+                    col_index=col,
+                    min_mag=min_mag, well_lat=lat, well_lon=lon, min_mlgr=min_mlgr, filter_mode=filter_mode
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Could not add earthquakes: {e}")
+                # Grafikni baribir qaytarish (zilzilalarsiz)
+
+        # X o'qi sozlamalari
+        fig.update_xaxes(
+            range=[x_axis_start - delta, x_axis_end + delta],
+            type="date",
+            showgrid=True,
+            griddash="dot",
+            row=row, col=col
+        )
+
+        # Layout
+        graph_title = f"{key} - {param}"
+        title_date = ""
+
+        if user_start_date and user_end_date:
+            start_str = user_start_date.strftime('%d.%m.%Y')
+            end_str = user_end_date.strftime('%d.%m.%Y')
+            title_date = f" ({start_str} - {end_str})"
+
+        fig.update_layout(
+            title_text=f"{graph_title}{title_date}",
+            height=500,
+            autosize=True,
+            showlegend=False,
+            plot_bgcolor="gainsboro",
+            hovermode="x unified",
+            hoverdistance=1,
+            margin=dict(l=60, r=60, t=80, b=60),
+            legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.9)")
+        )
+
+        return fig
+
+    except Exception as e:
+        logger.error(f"❌ Error creating single graph: {e}", exc_info=True)
+        return None
+
+def generate_folium_map(
+        selected_keys:List[str],
+        well_coords:Dict,
+        filtered_earthquakes_df: pd.DataFrame,
+        min_mag:float,
+        min_mlgr:float,
+        filter_mode: str
+) -> str:
+    try:
+        folium_map_html = add_map_data_folium(
+            selected_keys=selected_keys,
+            well_coords=well_coords,
+            earthquake_data=filtered_earthquakes_df,
+            min_mag=min_mag,
+            min_mlgr=min_mlgr,
+            filter_mode=filter_mode
+        )
+        return folium_map_html
+
+    except Exception as e:
+        logger.error(f"Error creating Folium map: {e}", exc_info=True)
+        return "<p> Xarita yaratishda xato yuz berdi.</p>"
