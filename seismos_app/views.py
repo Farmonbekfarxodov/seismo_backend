@@ -476,69 +476,6 @@ def generate_well_colors(well_names):
     return well_color_map
 
 
-# Custom DTW va normalizatsiya (oldin bor bo'lsa, qo'shmang)
-def custom_dtw(x, y):
-    x = np.array(x)
-    y = np.array(y)
-    n, m = len(x), len(y)
-    dt = np.full((n+1, m+1), np.inf)
-    dt[0, 0] = 0
-    for i in range(1, n+1):
-        for j in range(1, m+1):
-            cost = abs(x[i-1] - y[j-1])
-            dt[i, j] = cost + min(dt[i-1, j], dt[i, j-1], dt[i-1, j-1])
-    return dt[-1, -1]
-
-def normalize_series(series):
-    series = np.array(series, dtype=float)
-    min_val = np.min(series)
-    max_val = np.max(series)
-    if max_val - min_val == 0:
-        return np.zeros_like(series)
-    return (series - min_val) / (max_val - min_val)
-
-def calculate_pattern_similarity(reference, candidate):
-    ref_norm = normalize_series(reference)
-    cand_norm = normalize_series(candidate)
-    results = {'dtw_score': 0, 'pearson_score': 0, 'spearman_score': 0, 'combined_score': 0}
-    try:
-        dtw_distance = custom_dtw(ref_norm, cand_norm)
-        max_possible_distance = len(ref_norm)
-        dtw_score = max(0, 100 * (1 - dtw_distance / max_possible_distance))
-        results['dtw_score'] = round(dtw_score, 2)
-    except:
-        pass
-    try:
-        pearson_corr, _ = pearsonr(ref_norm, cand_norm)
-        results['pearson_score'] = round((pearson_corr + 1) * 50, 2)
-    except:
-        pass
-    try:
-        spearman_corr, _ = spearmanr(ref_norm, cand_norm)
-        results['spearman_score'] = round((spearman_corr + 1) * 50, 2)
-    except:
-        pass
-    results['combined_score'] = round(
-        (results['dtw_score'] + results['pearson_score'] + results['spearman_score']) / 3, 2
-    )
-    return results
-
-# Yangi: Anomaliya segmentlarida o'xshashlik topish
-def find_similar_anomalies(anomaly_segments, min_similarity=70):
-    if len(anomaly_segments) < 2:
-        return []  # Hech bo'lmaganda 2 ta segment kerak
-    similar_pairs = []
-    reference = anomaly_segments[0]['values']  # Birinchi anomaliya reference
-    for seg in anomaly_segments[1:]:
-        similarity = calculate_pattern_similarity(reference, seg['values'])
-        if similarity['combined_score'] >= min_similarity:
-            similar_pairs.append({
-                'start_date': seg['start_date'],
-                'end_date': seg['end_date'],
-                'similarity': similarity
-            })
-    similar_pairs.sort(key=lambda x: x['similarity']['combined_score'], reverse=True)
-    return similar_pairs
 
 
 def plot_data_with_anomalies(
@@ -2198,7 +2135,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
                         map.eachLayer(function(layer) {{
                             if (layer instanceof L.Marker) {{
                                 var latlng = layer.getLatLng();
-                                if (Math.abs(latlng.lat - wellLat) < 0.0001 && 
+                                if (Math.abs(latlng.lat - wellLat) < 0.0001 &&
                                     Math.abs(latlng.lng - wellLon) < 0.0001) {{
 
                                     layer.on('click', function(e) {{
@@ -2326,9 +2263,9 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
         ]
 
     legend_html = f'''
-    <div style="position: fixed; 
-                bottom: 50px; left: 50px; width: 160px; height: 180px; 
-                background-color: white; border:2px solid grey; z-index:9999; 
+    <div style="position: fixed;
+                bottom: 50px; left: 50px; width: 160px; height: 180px;
+                background-color: white; border:2px solid grey; z-index:9999;
                 font-size:12px; padding: 10px; overflow-y: auto;">
     {''.join(legend_items)}
     </div>
@@ -2531,7 +2468,7 @@ def create_earthquake_map_with_wells(df_earthquakes, all_wells, selected_wells, 
                     map.eachLayer(function(layer) {{
                         if (layer instanceof L.Marker) {{
                             var latlng = layer.getLatLng();
-                            if (Math.abs(latlng.lat - wellLat) < 0.0001 && 
+                            if (Math.abs(latlng.lat - wellLat) < 0.0001 &&
                                 Math.abs(latlng.lng - wellLon) < 0.0001) {{
 
                                 layer.on('click', function(e) {{
@@ -2569,7 +2506,7 @@ def create_earthquake_map_with_wells(df_earthquakes, all_wells, selected_wells, 
             try:
                 date_val = pd.to_datetime(date_val).strftime("%d.%m.%Y")
             except Exception:
-                date_val = "Nomalum"
+                date_val = "Noma'lum"
             if isinstance(date_val, (pd.Timestamp, datetime.datetime)):
                 date_val = date_val.strftime("%d.%m.%Y")
             distance_val = row.get("R(km)", "Noma'lum")
@@ -2658,9 +2595,9 @@ def create_earthquake_map_with_wells(df_earthquakes, all_wells, selected_wells, 
         ]
 
     legend_html = f'''
-    <div style="position: fixed; 
-                bottom: 50px; left: 50px; width: 160px; height: 180px; 
-                background-color: white; border:2px solid grey; z-index:9999; 
+    <div style="position: fixed;
+                bottom: 50px; left: 50px; width: 160px; height: 180px;
+                background-color: white; border:2px solid grey; z-index:9999;
                 font-size:12px; padding: 10px; overflow-y: auto;">
     {''.join(legend_items)}
     </div>
@@ -2938,14 +2875,14 @@ def initialize_context(request) -> Dict:
         'btn_value':btn_value,
         'min_mlgr':min_mlgr,
         'filter_start_date': filter_start_date,
-        'filter_end_date': filter_end_date,
+        'filter_end_date':filter_end_date,
         'median_window': median_window,
         'filter_mode': filter_mode,
         'hide_map': hide_map,
         'hide_graphs': hide_graphs,
         'params':all_params,
         'median_values':[3,5,7,15,31,91,183,365,731],
-        #Forma uchun joriy qiymalar
+        #Forma uchun joriy qiymatlar
         'current_min_mag':min_mag,
         'current_sigma':btn_value,
         'current_min_mlgr':min_mlgr,
@@ -3391,7 +3328,7 @@ def create_single_graph(
                     min_mag=min_mag, well_lat=lat, well_lon=lon, min_mlgr=min_mlgr, filter_mode=filter_mode
                 )
             except Exception as e:
-                logger.warning(f"⚠️ Could not add earthquakes: {e}")
+                logger.warning(f" Could not add earthquakes: {e}")
                 # Grafikni baribir qaytarish (zilzilalarsiz)
 
         # X o'qi sozlamalari
@@ -3476,3 +3413,4 @@ def _cleanup_db_engine():
 atexit.register(_cleanup_db_engine)
 
 logger.info("✅ DB engine cleanup registered")
+
