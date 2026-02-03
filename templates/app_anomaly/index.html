@@ -1,0 +1,735 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block content %}
+<div class="container-fluid bg-light" style="min-height: 100vh; padding: 20px 0;">
+    <!-- HEADER -->
+    <div class="text-center mb-5">
+        <h1 style="color: #2c3e50; font-weight: 500; margin-bottom: 10px;">
+            ANOMALIYA TAHLILI
+        </h1>
+    </div>
+
+    <!-- ERROR MESSAGE -->
+    {% if error %}
+        <div class="alert alert-danger mx-auto" style="max-width: 1200px; border-radius: 10px; border: none; box-shadow: 0 2px 10px rgba(220, 53, 69, 0.1);">
+            <i class="fas fa-exclamation-circle"></i> {{ error }}
+        </div>
+    {% endif %}
+
+    <!-- SUCCESS MESSAGE -->
+    {% if messages %}
+        {% for message in messages %}
+            <div class="alert alert-success mx-auto" style="max-width: 1200px; border-radius: 10px; border: none; box-shadow: 0 2px 10px rgba(40, 167, 69, 0.1);">
+                <i class="fas fa-check-circle"></i> {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    <!-- FORMA QISMI -->
+    <div class="mx-auto" style="max-width: 1200px;">
+        <form method="post" action="{% url 'app_anomaly:analysis' %}" class="modern-form">
+            {% csrf_token %}
+
+            <!-- FORM CARD -->
+            <div class="form-card">
+                <div class="form-header">
+                    <h3>Parametrlarni Tanlang</h3>
+                </div>
+
+                <!-- GRID LAYOUT -->
+                <div class="form-grid">
+
+                    <!-- ROW 1: SKVAJINALAR VA PARAMETRLAR -->
+                    <div class="form-row">
+                        <!-- SKVAJINALAR -->
+                        <div class="form-column">
+                            <details class="custom-details">
+                                <summary class="custom-summary">
+                                    <span class="summary-icon">▼</span>
+                                    <span class="summary-text">Skvajinalar</span>
+                                    <span class="badge bg-primary ms-2">{{ selected_wells|length }}</span>
+                                </summary>
+                                <div class="details-content">
+                                    <div class="checkbox-group">
+                                        {% for choice in form.wells %}
+                                            <label class="checkbox-label">
+                                                {{ choice.tag }}
+                                                <span class="checkbox-text">{{ choice.choice_label }}</span>
+                                            </label>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            </details>
+                            {% if form.wells.errors %}
+                                <div class="form-error">{{ form.wells.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+
+                        <!-- PARAMETRLAR -->
+                        <div class="form-column">
+                            <details class="custom-details">
+                                <summary class="custom-summary">
+                                    <span class="summary-icon">▼</span>
+                                    <span class="summary-text">Parametrlar</span>
+                                    <span class="badge bg-primary ms-2">{{ selected_params|length }}</span>
+                                </summary>
+                                <div class="details-content">
+                                    <div class="checkbox-group">
+                                        {% for choice in form.parameters %}
+                                            <label class="checkbox-label">
+                                                {{ choice.tag }}
+                                                <span class="checkbox-text">{{ choice.choice_label }}</span>
+                                            </label>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            </details>
+                            {% if form.parameters.errors %}
+                                <div class="form-error">{{ form.parameters.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- ROW 2: VAQT VA ANOMALIYA DAVOMIYLIGI -->
+                    <div class="form-row">
+                        <!-- VAQT ORALIG'I -->
+                        <div class="form-column">
+                            <details class="custom-details">
+                                <summary class="custom-summary">
+                                    <span class="summary-icon">▼</span>
+                                    <span class="summary-text">Vaqt Oralig'i</span>
+                                </summary>
+                                <div class="details-content">
+                                    <div class="radio-group">
+                                        {% for choice in form.time_period %}
+                                            <label class="radio-label">
+                                                {{ choice.tag }}
+                                                <span class="radio-text">{{ choice.choice_label }}</span>
+                                            </label>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            </details>
+                        </div>
+
+                        <!-- ANOMALIYA DAVOMIYLIGI -->
+                        <div class="form-column">
+                            <details class="custom-details">
+                                <summary class="custom-summary">
+                                    <span class="summary-icon">▼</span>
+                                    <span class="summary-text">Anomaliya Davomiyligi</span>
+                                </summary>
+                                <div class="details-content">
+                                    <div class="radio-group">
+                                        {% for choice in form.anomaly_duration %}
+                                            <label class="radio-label">
+                                                {{ choice.tag }}
+                                                <span class="radio-text">{{ choice.choice_label }}</span>
+                                            </label>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+
+                    <!-- ROW 3: MAGNITUD VA SIGMA -->
+                    <div class="form-row">
+                        <!-- MAGNITUD -->
+                        <div class="form-column">
+                            <label class="form-label">
+                                <i class="fas fa-wave-square"></i> Magnituda
+                            </label>
+                            <div class="input-wrapper">
+                                {{ form.magnitude }}
+                            </div>
+                            {% if form.magnitude.errors %}
+                                <div class="form-error">{{ form.magnitude.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+
+                        <!-- SIGMA -->
+                        <div class="form-column">
+                            <label class="form-label">
+                                <i class="fas fa-sigma"></i> Sigma (σ)
+                            </label>
+                            <div class="input-wrapper">
+                                {{ form.sigma }}
+                            </div>
+                            {% if form.sigma.errors %}
+                                <div class="form-error">{{ form.sigma.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SUBMIT BUTTON -->
+                <div class="form-footer">
+                    <button type="submit" class="btn-submit" id="submitButton">
+                        <i class="fas fa-search"></i>
+                        <span>TAHLIL QILISH</span>
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <!-- NATIJALAR QISMI -->
+    {% if show_results %}
+        <div class="mx-auto" style="max-width: 1200px; margin-top: 40px;">
+
+            <!-- INFO ALERT -->
+            <div class="info-card">
+                <div class="info-header">
+                    <i class="fas fa-chart-bar"></i>
+                    <span>Tahlil Natijalari</span>
+                </div>
+                <div class="info-content">
+                    <div class="info-item">
+                        <span class="info-label">Anomaliya topilgan skvajinalar:</span>
+                        <span class="info-value badge bg-success">{{ anomalous_wells_count }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Aniqlangan anomaliyalar:</span>
+                        <span class="info-value badge bg-info">{{ graphs_list|length }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- GRAFIKLAR -->
+            {% if graphs_list %}
+                <div class="results-section" style="margin-top: 30px;">
+                    <div class="section-header">
+                        <i class="fas fa-chart-line"></i>
+                        <h3>Anomaliya Grafiklari</h3>
+                    </div>
+                    <div class="graphs-container">
+                        {% for graph in graphs_list %}
+                            <div class="graph-card">
+                                <div class="graph-header">
+                                    <h6>{{ graph.well }} <em style="color: #7f8c8d;">{{ graph.param }}</em></h6>
+                                </div>
+                                <div class="graph-body">
+                                    {{ graph.html | safe }}
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            {% else %}
+                <div class="alert-warning-card">
+                    <i class="fas fa-info-circle"></i>
+                    <span>Tanlangan parametrlar uchun anomaliya topilmadi.
+                        <br><small style="color: #666;">💡 Maslahat: "Minimal ketma-ket anomal qiymatlar soni" ni kamaytiring (masalan, 1 ta)</small>
+                    </span>
+                </div>
+            {% endif %}
+
+            <!-- XARITA -->
+            {% if map_html %}
+                <div class="results-section" style="margin-top: 30px;">
+                    <div class="section-header">
+                        <i class="fas fa-map"></i>
+                        <h3>Anomaliya Skvajinalari Xaritasi</h3>
+                    </div>
+                    <div class="map-card">
+                        <div id="folium-map-container" style="height: 600px; border-radius: 8px; overflow: hidden;">
+                            {{ map_html | safe }}
+                        </div>
+                    </div>
+                </div>
+            {% endif %}
+
+        </div>
+    {% else %}
+        <!-- EMPTY STATE -->
+        <div class="empty-state">
+
+            <p>Yuqoridagi formada skvajina va parametrlarni tanlang, keyin <strong>"TAHLIL QILISH"</strong> tugmasini bosing</p>
+        </div>
+    {% endif %}
+</div>
+
+<!-- CSS -->
+<style>
+    * {
+        box-sizing: border-box;
+    }
+
+    /* FORM CARD STYLES */
+    .form-card {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        overflow: hidden;
+        border: 1px solid #e8eef7;
+    }
+
+    .form-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 25px;
+        text-align: center;
+    }
+
+    .form-header h3 {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 700;
+    }
+
+    .form-header p {
+        margin: 8px 0 0 0;
+        opacity: 0.9;
+        font-size: 14px;
+    }
+
+    /* FORM GRID */
+    .form-grid {
+        padding: 30px;
+    }
+
+    .form-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 25px;
+        margin-bottom: 25px;
+    }
+
+    .form-column {
+        flex: 1;
+    }
+
+    /* CUSTOM DETAILS */
+    .custom-details {
+        background: white;
+        border: 1px solid #e8eef7;
+        border-radius: 8px;
+        padding: 15px;
+        cursor: pointer;
+        margin-bottom: 15px;
+        transition: all 0.3s ease;
+    }
+
+    .custom-details:hover {
+        border-color: #667eea;
+        box-shadow: 0 2px 8px rgba(102, 126, 234, 0.1);
+    }
+
+    .custom-details[open] {
+        border-color: #667eea;
+        background: #f8f9ff;
+    }
+
+    .custom-summary {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        list-style: none;
+        cursor: pointer;
+        padding: 5px;
+        font-weight: 600;
+        color: #2c3e50;
+        user-select: none;
+    }
+
+    .custom-summary::-webkit-details-marker {
+        display: none;
+    }
+
+    .summary-icon {
+        font-size: 12px;
+        color: #667eea;
+        transition: transform 0.3s ease;
+    }
+
+    .custom-details[open] .summary-icon {
+        transform: rotate(180deg);
+    }
+
+    .summary-text {
+        flex: 1;
+    }
+
+    .details-content {
+        padding: 15px 0 0 0;
+        margin-top: 15px;
+        border-top: 1px solid #e8eef7;
+    }
+
+    /* CHECKBOX GROUP */
+    .checkbox-group {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 12px;
+    }
+
+    .checkbox-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px;
+        background: #f8f9fa;
+        border: 1.5px solid #e8eef7;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        font-size: 14px;
+    }
+
+    .checkbox-label:hover {
+        background: #f0f2f7;
+        border-color: #667eea;
+    }
+
+    .checkbox-label input[type="checkbox"] {
+        cursor: pointer;
+        accent-color: #667eea;
+        width: 16px;
+        height: 16px;
+    }
+
+    .checkbox-label input[type="checkbox"]:checked + .checkbox-text {
+        color: #667eea;
+        font-weight: 600;
+    }
+
+    /* RADIO GROUP */
+    .radio-group {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .radio-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px;
+        background: #f8f9fa;
+        border: 1.5px solid #e8eef7;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        font-size: 14px;
+    }
+
+    .radio-label:hover {
+        background: #f0f2f7;
+        border-color: #667eea;
+    }
+
+    .radio-label input[type="radio"] {
+        cursor: pointer;
+        accent-color: #667eea;
+        width: 16px;
+        height: 16px;
+    }
+
+    .radio-label input[type="radio"]:checked + .radio-text {
+        color: #667eea;
+        font-weight: 600;
+    }
+
+    /* FORM LABELS & INPUTS */
+    .form-label {
+        display: block;
+        font-weight: 600;
+        color: #2c3e50;
+        margin-bottom: 10px;
+        font-size: 14px;
+    }
+
+    .input-wrapper {
+        position: relative;
+    }
+
+    .form-control, input[type="number"] {
+        width: 100%;
+        padding: 12px;
+        border: 1.5px solid #e8eef7;
+        border-radius: 6px;
+        font-size: 14px;
+        background: white;
+        transition: all 0.2s ease;
+    }
+
+    .form-control:focus, input[type="number"]:focus {
+        border-color: #667eea;
+        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        outline: none;
+    }
+
+    .form-helper {
+        display: block;
+        color: #7f8c8d;
+        font-size: 12px;
+        margin-top: 5px;
+    }
+
+    .form-error {
+        color: #e74c3c;
+        font-size: 12px;
+        margin-top: 5px;
+    }
+
+    /* FORM FOOTER */
+    .form-footer {
+        padding: 25px;
+        background: #f8f9ff;
+        border-top: 1px solid #e8eef7;
+        display: flex;
+        gap: 15px;
+    }
+
+    .btn-submit {
+        flex: 1;
+        padding: 14px 28px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 16px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+    }
+
+    .btn-submit:hover {
+        box-shadow: 0 8px 20px rgba(102, 126, 234, 0.3);
+        transform: translateY(-2px);
+    }
+
+    .btn-submit:active {
+        transform: translateY(0);
+    }
+
+    .btn-submit:disabled {
+        opacity: 0.7;
+        cursor: not-allowed;
+    }
+
+    /* RESULTS STYLES */
+    .info-card {
+        background: white;
+        border-left: 5px solid #3498db;
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 2px 10px rgba(52, 152, 219, 0.1);
+    }
+
+    .info-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 18px;
+        font-weight: 700;
+        color: #2c3e50;
+        margin-bottom: 15px;
+    }
+
+    .info-content {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 15px;
+    }
+
+    .info-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px;
+        background: #f8f9fa;
+        border-radius: 6px;
+    }
+
+    .info-label {
+        font-weight: 600;
+        color: #2c3e50;
+    }
+
+    .info-value {
+        font-size: 18px;
+        font-weight: 700;
+    }
+
+    .results-section {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        overflow: hidden;
+    }
+
+    .section-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 20px;
+        font-size: 18px;
+        font-weight: 700;
+    }
+
+    .section-header h3 {
+        margin: 0;
+        font-size: 20px;
+    }
+
+    .section-header i {
+        font-size: 24px;
+    }
+
+    /* GRAPHS */
+    .graphs-container {
+        padding: 25px;
+        display: flex;
+        flex-direction: column;
+        gap: 25px;
+    }
+
+    .graph-card {
+        background: white;
+        border: 1px solid #e8eef7;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+
+    .graph-header {
+        background: #f8f9ff;
+        padding: 15px;
+        border-bottom: 1px solid #e8eef7;
+    }
+
+    .graph-header h6 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+        color: #2c3e50;
+    }
+
+    .graph-body {
+        padding: 20px;
+    }
+
+    /* MAP */
+    .map-card {
+        padding: 20px;
+        background: white;
+    }
+
+    /* ALERTS */
+    .alert-warning-card {
+        background: #fff3cd;
+        border: 1px solid #ffc107;
+        border-radius: 8px;
+        padding: 15px 20px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #856404;
+        margin-top: 20px;
+    }
+
+    /* EMPTY STATE */
+    .empty-state {
+        text-align: center;
+        padding: 60px 20px;
+    }
+
+    .empty-icon {
+        font-size: 100px;
+        margin-bottom: 20px;
+    }
+
+    .empty-state h4 {
+        font-size: 24px;
+        color: #2c3e50;
+        margin: 0 0 10px 0;
+    }
+
+    .empty-state p {
+        color: #7f8c8d;
+        font-size: 16px;
+        margin: 0;
+    }
+
+    /* BADGES */
+    .badge {
+        padding: 4px 12px;
+        font-size: 12px;
+        font-weight: 700;
+    }
+
+    /* RESPONSIVE */
+    @media (max-width: 768px) {
+        .form-row {
+            grid-template-columns: 1fr;
+        }
+
+        .form-grid {
+            padding: 20px;
+        }
+
+        .checkbox-group {
+            grid-template-columns: 1fr;
+        }
+
+        .info-content {
+            grid-template-columns: 1fr;
+        }
+
+        .form-header {
+            padding: 15px;
+        }
+
+        .form-footer {
+            flex-direction: column;
+        }
+    }
+</style>
+
+<!-- JAVASCRIPT -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    function updateSelectedCounts() {
+        const wellsChecked = document.querySelectorAll('input[name="wells"]:checked').length;
+        const paramsChecked = document.querySelectorAll('input[name="parameters"]:checked').length;
+
+        const wellsBadges = document.querySelectorAll('.selected-count-wells');
+        const paramsBadges = document.querySelectorAll('.selected-count-params');
+
+        wellsBadges.forEach(badge => badge.textContent = wellsChecked);
+        paramsBadges.forEach(badge => badge.textContent = paramsChecked);
+    }
+
+    document.querySelectorAll('input[name="wells"], input[name="parameters"]').forEach(checkbox => {
+        checkbox.addEventListener('change', updateSelectedCounts);
+    });
+
+    updateSelectedCounts();
+
+    document.getElementById('submitButton')?.addEventListener('click', function(e) {
+        const wellsChecked = document.querySelectorAll('input[name="wells"]:checked').length;
+        const paramsChecked = document.querySelectorAll('input[name="parameters"]:checked').length;
+
+        if (wellsChecked === 0) {
+            e.preventDefault();
+            alert('Kamita bitta skvajina tanlang!');
+            return false;
+        }
+
+        if (paramsChecked === 0) {
+            e.preventDefault();
+            alert('Kamita bitta parametr tanlang!');
+            return false;
+        }
+    });
+});
+</script>
+{% endblock %}

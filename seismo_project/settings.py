@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     'app_users',
     'upload_catalog_app',
     'app_informativlik',
+    'app_anomaly',
 ]
 
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv())

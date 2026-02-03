@@ -13,7 +13,7 @@ urlpatterns = [
     path('catalog-list/', include('upload_catalog_app.urls', namespace="catalog")),
     path('informativlik/', include('app_informativlik.urls', namespace="informativlik")),
     path('api/', include('app_users.urls')),
-
+    path('anomaly/', include('app_anomaly.urls', namespace="app_anomaly")),
     path('login/', TemplateView.as_view(template_name='app_users/login.html'), name='login'),
     path('', TemplateView.as_view(template_name='app_users/login.html'), name='login'),
     path('index/', TemplateView.as_view(template_name='index.html'), name='index'),
