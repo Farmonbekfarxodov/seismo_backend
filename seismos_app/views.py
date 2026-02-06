@@ -682,37 +682,37 @@ def plot_data_with_anomalies(
     return y_all_values
 
 
-@csrf_exempt  # AJAX uchun vaqtincha, keyin token bilan xavfsiz qilish mumkin
-def set_reference_segment(request):
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body)
-            segment = data.get('segment')
-
-            if not segment:
-                return JsonResponse({'status': 'error', 'message': 'Segment ma\'lumotlari yo\'q'}, status=400)
-
-            # Sessionda saqlash
-            request.session['selected_reference_segment'] = {
-                'index': segment.get('index'),
-                'start': segment.get('start'),
-                'end': segment.get('end'),
-                # Agar values ham yuborilgan bo'lsa qo'shish mumkin
-            }
-            request.session.modified = True
-
-            return JsonResponse({
-                'status': 'success',
-                'message': 'Reference segment tanlandi',
-                'selected': segment
-            })
-
-        except json.JSONDecodeError:
-            return JsonResponse({'status': 'error', 'message': 'JSON format xatosi'}, status=400)
-        except Exception as e:
-            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
-
-    return JsonResponse({'status': 'error', 'message': 'Faqat POST so\'rov qabul qilinadi'}, status=405)
+# @csrf_exempt  # AJAX uchun vaqtincha, keyin token bilan xavfsiz qilish mumkin
+# def set_reference_segment(request):
+#     if request.method == 'POST':
+#         try:
+#             data = json.loads(request.body)
+#             segment = data.get('segment')
+#
+#             if not segment:
+#                 return JsonResponse({'status': 'error', 'message': 'Segment ma\'lumotlari yo\'q'}, status=400)
+#
+#             # Sessionda saqlash
+#             request.session['selected_reference_segment'] = {
+#                 'index': segment.get('index'),
+#                 'start': segment.get('start'),
+#                 'end': segment.get('end'),
+#                 # Agar values ham yuborilgan bo'lsa qo'shish mumkin
+#             }
+#             request.session.modified = True
+#
+#             return JsonResponse({
+#                 'status': 'success',
+#                 'message': 'Reference segment tanlandi',
+#                 'selected': segment
+#             })
+#
+#         except json.JSONDecodeError:
+#             return JsonResponse({'status': 'error', 'message': 'JSON format xatosi'}, status=400)
+#         except Exception as e:
+#             return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+#
+#     return JsonResponse({'status': 'error', 'message': 'Faqat POST so\'rov qabul qilinadi'}, status=405)
 
 
 def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4,
@@ -2921,9 +2921,6 @@ def validate_and_parse_dates(
 
     return user_start_date, user_end_date, x_axis_start, x_axis_end
 
-
-# seismos_app/views.py
-
 def fetch_and_filter_earthquakes(
         min_mag: float,
         start_date: Optional[pd.Timestamp] = None,
@@ -2992,8 +2989,6 @@ def fetch_and_filter_earthquakes(
         logger.error(f"Error: {e}", exc_info=True)
         return pd.DataFrame()
 
-
-# seismos_app/views.py
 
 def generate_all_graphs(
         selected_keys: List[str],

@@ -24,6 +24,7 @@ from seismos_app.views import (
     add_seismogenic_zones_to_map,
     fetch_and_filter_earthquakes,
     destenc_vectorized,
+    get_well_detailed_info,
 )
 from .models import AnomalyRecord
 from .forms import AnomalyAnalysisForm
@@ -228,193 +229,6 @@ def detect_anomalies_in_data(df, sigma=2.0, min_duration_days=5):
         import traceback
         traceback.print_exc()
         return []
-
-
-def anomaly_analysis_view(request):
-    context = {}
-
-    try:
-        lst_stansiya, well_coords = fetch_data()
-        all_wells_list = list(lst_stansiya.keys())
-        all_params = get_all_parameters()
-
-        context['all_wells'] = all_wells_list
-        context['all_params'] = all_params
-
-        if request.method == 'GET':
-            form = AnomalyAnalysisForm(
-                wells_choices=[(w, w) for w in all_wells_list],
-                params_choices=[(p, p) for p in all_params]
-            )
-            context['form'] = form
-            return render(request, 'app_anomaly/index.html', context)
-
-        elif request.method == 'POST':
-            form = AnomalyAnalysisForm(
-                request.POST,
-                wells_choices=[(w, w) for w in all_wells_list],
-                params_choices=[(p, p) for p in all_params]
-            )
-
-            if not form.is_valid():
-                context['form'] = form
-                context['error'] = 'Formada xatolar mavjud'
-                return render(request, 'app_anomaly/index.html', context)
-
-            selected_wells = form.cleaned_data['wells']
-            selected_params = form.cleaned_data['parameters']
-            time_period = int(form.cleaned_data['time_period'])
-            anomaly_duration = int(form.cleaned_data['anomaly_duration'])
-            magnitude = form.cleaned_data.get('magnitude')  # ✅ None bo'lishi mumkin
-            recent_days = int(form.cleaned_data['recent_days'])
-            sigma = float(form.cleaned_data.get('sigma', 2.0))
-
-            today = datetime.now().date()
-            filter_start_date = pd.Timestamp(today - relativedelta(days=recent_days))
-
-            # ✅ ZILZILALAR - FAQAT MAGNITUDE KIRITILGAN BO'LSA
-            earthquakes_df = None
-            if magnitude is not None:
-                try:
-                    # ✅ Magnitude qiymatini float ga o'tkazamiz
-                    mag_value = float(magnitude)
-                    today = datetime.now().date()
-                    start_date = today - relativedelta(months=time_period)
-
-                    earthquakes_df = fetch_and_filter_earthquakes(
-                        min_mag=mag_value,  # ✅ Foydalanuvchi kiritgan qiymat
-                        start_date=pd.Timestamp(start_date),
-                        end_date=pd.Timestamp(today)
-                    )
-                    logger.info(f"✅ {len(earthquakes_df)} ta zilzila yuklandi (min_mag={mag_value})")
-                except Exception as e:
-                    logger.warning(f"Zilzila error: {e}")
-                    earthquakes_df = None
-            else:
-                logger.info("⚠️ Magnitude kiritilmadi - zilzilalar ko'rsatilmaydi")
-
-            # GRAFIKLAR
-            graphs_list = []
-            anomalous_wells = set()
-
-            for well in selected_wells:
-                for param in selected_params:
-                    try:
-                        key = f"{well.split(' | ')[0]} | {well.split(' | ')[1]}" if ' | ' in well else well
-                        ssdi_id = lst_stansiya.get(key, {}).get(param)
-
-                        if not ssdi_id:
-                            logger.warning(f"⚠️ {well} - {param}: ssdi_id topilmadi")
-                            continue
-
-                        df = get_parameter_data_for_period(ssdi_id, time_period)
-
-                        if df.empty:
-                            logger.warning(f"⚠️ {well} - {param}: Ma'lumot yo'q")
-                            continue
-
-                        logger.info(f"🔍 {well} - {param}: {len(df)} ta ma'lumot topildi")
-
-                        all_anomalies = detect_anomalies_in_data(df, sigma=sigma, min_duration_days=anomaly_duration)
-                        recent_anomalies = []
-
-                        if all_anomalies:
-                            for anomaly in all_anomalies:
-                                if anomaly['end_date'] >= filter_start_date:
-                                    recent_anomalies.append(anomaly)
-
-                        #filtrdan o'tgan anomaliya bo'lsa
-                        if recent_anomalies:
-                            logger.info(f"✅ {well} - {param}: {len(recent_anomalies)} ta anomaliya topildi!")
-                            anomalous_wells.add(well.split(' | ')[1] if ' | ' in well else well)
-
-                            well_name = well.split(' | ')[1] if ' | ' in well else well
-                            well_lat, well_lon = well_coords.get(well_name, (None, None))
-
-                            graph_html = create_anomaly_chart(
-                                df,
-                                recent_anomalies,
-                                well,
-                                param,
-                                sigma=sigma,
-                                earthquakes_df=earthquakes_df,  # ✅ None bo'lishi mumkin
-                                well_lat=well_lat,
-                                well_lon=well_lon
-                            )
-
-                            if graph_html:
-                                graphs_list.append({
-                                    'well': well,
-                                    'param': param,
-                                    'html': graph_html,
-                                    'anomaly_count': len(recent_anomalies)
-                                })
-                        else:
-                            logger.info(f"ℹ️ {well} - {param}: Anomaliya topilmadi (min_duration={anomaly_duration})")
-
-                    except Exception as e:
-                        logger.error(f"Grafik xato ({well} - {param}): {e}")
-                        continue
-
-            # ✅ XARITA - HAMMASI UCHUN
-            map_html = None
-            try:
-                map_html = create_anomaly_map(
-                    all_wells=list(lst_stansiya.keys()),
-                    well_coords=well_coords,
-                    anomalous_wells=anomalous_wells
-                )
-                logger.info("✅ Xarita yaratildi")
-            except Exception as e:
-                logger.error(f"Xarita xato: {e}")
-
-            # DATABASE
-            try:
-                for well in selected_wells:
-                    for param in selected_params:
-                        anomaly_count = len([g for g in graphs_list if g['well'] == well and g['param'] == param])
-
-                        if anomaly_count > 0:
-                            well_name = well.split(' | ')[1] if ' | ' in well else well
-                            AnomalyRecord.objects.create(
-                                skvajina=well_name,
-                                parameter=param,
-                                time_period_months=time_period,
-                                anomaly_duration_days=anomaly_duration,
-                                magnitude=magnitude,
-                                detected_anomalies_count=anomaly_count,
-                                is_active=True,
-                                session_id=request.session.session_key
-                            )
-            except Exception as e:
-                logger.error(f"Database xato: {e}")
-
-            context.update({
-                'form': form,
-                'graphs_list': graphs_list,
-                'map_html': map_html,  # ✅ XARITA
-                'selected_wells': selected_wells,
-                'selected_params': selected_params,
-                'time_period': time_period,
-                'anomaly_duration': anomaly_duration,
-                'recent_days': recent_days,
-                'magnitude': magnitude or 'Kiritilmagan',
-                'anomalous_wells_count': len(anomalous_wells),
-                'show_results': True,
-            })
-
-            messages.success(request, f'{len(anomalous_wells)} ta skvajinada anomaliya topildi!')
-            return render(request, 'app_anomaly/index.html', context)
-
-    except Exception as e:
-        logger.error(f"View xato: {e}", exc_info=True)
-        context['error'] = f'Xatolik: {str(e)}'
-        context['form'] = AnomalyAnalysisForm(
-            wells_choices=[(w, w) for w in []],
-            params_choices=[(p, p) for p in []]
-        )
-        return render(request, 'app_anomaly/index.html', context)
-
 
 def create_anomaly_chart(df, anomalies, well_name, param_name, sigma=2.0,
                          earthquakes_df=None, well_lat=None, well_lon=None, recent_days=7):
@@ -656,14 +470,14 @@ def create_anomaly_chart(df, anomalies, well_name, param_name, sigma=2.0,
         logger.error(f"Grafik xato: {e}")
         return None
 
-
-def create_anomaly_map(all_wells, well_coords, anomalous_wells):
+def create_anomaly_map_detailed(all_wells_list, well_coords, anomalous_wells_dict):
     """
-    ✅ YANGI: Yer yoriqlarining rangi avvalgidek (CONF va RATE bo'yicha)
+    BOYITILGAN XARITA (Popup + Tooltip + Ranglar)
     """
     try:
-        if anomalous_wells:
-            selected_coords = [well_coords[w] for w in anomalous_wells if w in well_coords]
+        # Xarita markazi
+        if anomalous_wells_dict:
+            selected_coords = [well_coords[w] for w in anomalous_wells_dict.keys() if w in well_coords]
             if selected_coords:
                 center_lat = np.mean([c[0] for c in selected_coords])
                 center_lon = np.mean([c[1] for c in selected_coords])
@@ -672,180 +486,307 @@ def create_anomaly_map(all_wells, well_coords, anomalous_wells):
         else:
             center_lat, center_lon = 41.2995, 69.2401
 
-        # ✅ ASOSIY XARITA
-        m = folium.Map(
-            location=[center_lat, center_lon],
-            zoom_start=7,
-            tiles="OpenStreetMap",
-            attr="© OpenStreetMap contributors"
-        )
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="OpenStreetMap")
 
-        # ✅ FULLSCREEN BUTTON
         from folium.plugins import Fullscreen
-        Fullscreen(
-            position='topleft',
-            title='To\'liq ekran',
-            title_cancel='Chiqish',
-            force_separate_button=True
-        ).add_to(m)
-
-        # ✅ XARITA REJIMLAR
+        Fullscreen(position='topleft').add_to(m)
 
         folium.TileLayer(
-            tiles='https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png',
-            attr='Map tiles by <a href="http://stamen.com">Stamen Design</a>',
-            name='Terrain',
-            overlay=False,
-            control=True
-        ).add_to(m)
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Tiles © Esri', name='Satellite').add_to(m)
 
-        folium.TileLayer(
-            tiles='https://cartodb-basemaps-{s}.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png',
-            attr='© OpenStreetMap contributors © CARTO',
-            name='Light Map',
-            overlay=False,
-            control=True
-        ).add_to(m)
-
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri',
-            name='Satellite',
-            overlay=False,
-            control=True
-        ).add_to(m)
-
-        # ✅ YER YORIQLARI (FEATURE GROUP - CONF va RATE bo'yicha ranglar)
-        cracks_layer = folium.FeatureGroup(name='🌍 Yer yoriqlari', show=True)
+        # Qatlamlar
         try:
-            all_cracks = load_all_cracks_shapefiles()
-            if all_cracks is not None:
-                # ✅ add_cracks_to_map() ishlatish - rangli chiqadi!
-                add_cracks_to_map(cracks_layer, all_cracks)
-                logger.info(f"✅ {len(all_cracks)} ta yer yorig'i qo'shildi")
-        except Exception as e:
-            logger.warning(f"Yer yoriqlari xato: {e}")
+            cracks = load_all_cracks_shapefiles()
+            if cracks is not None: add_cracks_to_map(m, cracks)
+            zones = load_seismogenic_zones()
+            if zones is not None: add_seismogenic_zones_to_map(m, zones)
+        except Exception:
+            pass
 
-        cracks_layer.add_to(m)
+        # SKVAJINALAR
+        for well_key in all_wells_list:
+            well_name = well_key.split(' | ')[1] if ' | ' in well_key else well_key
+            if well_name not in well_coords: continue
+            lat, lon = well_coords[well_name]
 
-        # ✅ SEYSMOGEN ZONALARI (FEATURE GROUP)
-        seismo_layer = folium.FeatureGroup(name='🔴 Seysmogen zonalari', show=True)
-        try:
-            seismogenic = load_seismogenic_zones()
-            if seismogenic is not None:
-                add_seismogenic_zones_to_map(seismo_layer, seismogenic)
-                logger.info("✅ Seysmogen zonalari qo'shildi")
-        except Exception as e:
-            logger.warning(f"Seysmogen xato: {e}")
+            # IMPORT QILINGAN FUNKSIYA
+            well_info = get_well_detailed_info(well_name)
 
-        seismo_layer.add_to(m)
-
-        # ✅ ANOMALIYA SKVAJINALAR (BLUE UCHBURCHAK)
-        anomaly_wells_layer = folium.FeatureGroup(name='🔵 Anomaliya topilgan', show=True)
-        for well in anomalous_wells:
-            if well in well_coords:
-                lat, lon = well_coords[well]
-
-                triangle_icon = folium.DivIcon(
-                    html=f'<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid blue;"></div>',
-                    icon_size=(20, 20),
-                    icon_anchor=(10, 20)
-                )
-
-                popup_html = f"""
-                <div style="font-family: Arial; font-size: 12px; width: 250px;">
-                    <h4 style="color: blue; margin-bottom: 10px;">🔴 ANOMALIYA TOPILGAN</h4>
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Skvajina:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;"><b>{well}</b></td>
-                        </tr>
-                    </table>
-                </div>
+            # Rasm
+            mineralizatsiya_html = ""
+            if well_info.get('mineralizatsiya_base64'):
+                mineralizatsiya_html = f"""
+                    <tr>
+                        <td colspan="2" style="padding: 10px; border: 1px solid #dee2e6; text-align: center;">
+                            <b>Mineralizatsiya:</b><br>
+                            <img src="{well_info['mineralizatsiya_base64']}" 
+                                 style="max-width: 300px; max-height: 200px; margin-top: 5px; border-radius: 5px;" 
+                                 alt="Rasm"/>
+                        </td>
+                    </tr>
                 """
 
-                folium.Marker(
-                    location=[lat, lon],
-                    icon=triangle_icon,
-                    popup=folium.Popup(popup_html, max_width=300),
-                    tooltip=f"<b>{well}</b> - Anomaliya"
-                ).add_to(anomaly_wells_layer)
-
-        anomaly_wells_layer.add_to(m)
-
-        # ✅ BOSHQA SKVAJINALAR (LIGHT BLUE UCHBURCHAK)
-        normal_wells_layer = folium.FeatureGroup(name='⚪ Anomaliya yo\'q', show=True)
-        for well_data in all_wells:
-            well_name = well_data.split(' | ')[1] if ' | ' in well_data else well_data
-            if well_name not in anomalous_wells and well_name in well_coords:
-                lat, lon = well_coords[well_name]
-
-                triangle_icon = folium.DivIcon(
-                    html=f'<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid lightblue;"></div>',
-                    icon_size=(20, 20),
-                    icon_anchor=(10, 20)
-                )
-
-                popup_html = f"""
-                <div style="font-family: Arial; font-size: 12px; width: 250px;">
-                    <h4 style="color: lightblue; margin-bottom: 10px;">⚪ ANOMALIYA YO'Q</h4>
+            popup_html = f"""
+                <div style="width: 300px; font-family: Arial; font-size: 12px;">
+                    <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
                     <table style="width: 100%; border-collapse: collapse;">
                         <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Skvajina:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;"><b>{well_name}</b></td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
                         </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
+                        </tr>
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        <tr style="background-color: #f8f9fa;">
+                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
+                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
+                        </tr>
+                        {mineralizatsiya_html}
                     </table>
                 </div>
+            """
+
+            is_anomalous = well_name in anomalous_wells_dict
+
+            if is_anomalous:
+                anom_params = ", ".join(anomalous_wells_dict[well_name])
+                tooltip_text = f"""
+                <div style="font-size: 13px;">
+                    <b>{well_name}</b><br>
+                    <span style="color: red;">⚠️ Anomaliya: {anom_params}</span>
+                </div>
                 """
+                icon = folium.DivIcon(
+                    html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid blue;"></div>',
+                    icon_size=(20, 20), icon_anchor=(10, 20)
+                )
+            else:
+                tooltip_text = f"<b>{well_name}</b><br><span style='color:green'>Normal</span>"
+                icon = folium.DivIcon(
+                    html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid lightblue;"></div>',
+                    icon_size=(20, 20), icon_anchor=(10, 20)
+                )
 
-                folium.Marker(
-                    location=[lat, lon],
-                    icon=triangle_icon,
-                    popup=folium.Popup(popup_html, max_width=300),
-                    tooltip=f"<b>{well_name}</b> - Normal"
-                ).add_to(normal_wells_layer)
+            folium.Marker(
+                location=[lat, lon],
+                icon=icon,
+                popup=folium.Popup(popup_html, max_width=400),
+                tooltip=tooltip_text
+            ).add_to(m)
 
-        normal_wells_layer.add_to(m)
-
-        # ✅ LAYER CONTROL (O'ng yuqorida - collapsed)
-        folium.LayerControl(
-            position='topright',
-            collapsed=True,
-            name='Rejimlar'
-        ).add_to(m)
-
-        # ✅ LEGEND
-        legend_html = '''
-        <div style="position: fixed; bottom: 100px; left: 50px; width: 280px; 
-                    background-color: white; border:2px solid grey; z-index:9999;
-                    font-size:12px; padding: 10px; border-radius: 5px;">
-            <p style="margin: 0; font-weight: bold; border-bottom: 1px solid #ccc; padding-bottom: 5px;">
-                📍 ANOMALIYA XARITASI
-            </p>
-
-            <p style="margin: 10px 0; font-weight: bold; color: #333;">SKVAJINALAR:</p>
-            <p style="margin: 5px 0;">
-                <span style="display: inline-block; width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 14px solid blue; margin-right: 8px;"></span>
-                <b>Anomaliya topilgan</b>
-            </p>
-            <p style="margin: 5px 0;">
-                <span style="display: inline-block; width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 14px solid lightblue; margin-right: 8px;"></span>
-                <b>Anomaliya yo'q</b>
-            </p>
-
-           
-        </div>
-        '''
-
-        m.get_root().html.add_child(folium.Element(legend_html))
-
-        logger.info("✅ Xarita muvaffaqiyatli yaratildi")
+        folium.LayerControl().add_to(m)
         return m._repr_html_()
 
     except Exception as e:
-        logger.error(f"Xarita xato: {e}", exc_info=True)
+        logger.error(f"Xarita xato: {e}")
         return None
 
+def anomaly_analysis_view(request):
+    context = {}
+
+    try:
+        lst_stansiya, well_coords = fetch_data()
+        all_wells_list = list(lst_stansiya.keys())
+        all_params = get_all_parameters()
+
+        context['all_wells'] = all_wells_list
+        context['all_params'] = all_params
+
+        if request.method == 'GET':
+            form = AnomalyAnalysisForm(
+                wells_choices=[(w, w) for w in all_wells_list],
+                params_choices=[(p, p) for p in all_params]
+            )
+            context['form'] = form
+            return render(request, 'app_anomaly/index.html', context)
+
+        elif request.method == 'POST':
+            form = AnomalyAnalysisForm(
+                request.POST,
+                wells_choices=[(w, w) for w in all_wells_list],
+                params_choices=[(p, p) for p in all_params]
+            )
+
+            if not form.is_valid():
+                context['form'] = form
+                context['error'] = 'Formada xatolar mavjud'
+                return render(request, 'app_anomaly/index.html', context)
+
+            selected_wells = form.cleaned_data['wells']
+            selected_params = form.cleaned_data['parameters']
+            time_period = int(form.cleaned_data['time_period'])
+            anomaly_duration = int(form.cleaned_data['anomaly_duration'])
+            magnitude = form.cleaned_data.get('magnitude')  # ✅ None bo'lishi mumkin
+            recent_days = int(form.cleaned_data['recent_days'])
+            sigma = float(form.cleaned_data.get('sigma', 2.0))
+
+            today = datetime.now().date()
+            filter_start_date = pd.Timestamp(today - relativedelta(days=recent_days))
+
+            # ✅ ZILZILALAR - FAQAT MAGNITUDE KIRITILGAN BO'LSA
+            earthquakes_df = None
+            if magnitude is not None:
+                try:
+                    # ✅ Magnitude qiymatini float ga o'tkazamiz
+                    mag_value = float(magnitude)
+                    today = datetime.now().date()
+                    start_date = today - relativedelta(months=time_period)
+
+                    earthquakes_df = fetch_and_filter_earthquakes(
+                        min_mag=mag_value,  # ✅ Foydalanuvchi kiritgan qiymat
+                        start_date=pd.Timestamp(start_date),
+                        end_date=pd.Timestamp(today)
+                    )
+                    logger.info(f"✅ {len(earthquakes_df)} ta zilzila yuklandi (min_mag={mag_value})")
+                except Exception as e:
+                    logger.warning(f"Zilzila error: {e}")
+                    earthquakes_df = None
+            else:
+                logger.info("⚠️ Magnitude kiritilmadi - zilzilalar ko'rsatilmaydi")
+
+            # GRAFIKLAR
+            graphs_list = []
+            # Keep a mapping of well_name -> list of anomalous parameters
+            # create_anomaly_map_detailed expects a dict with well -> [params]
+            anomalous_wells_dict = {}
+
+            for well in selected_wells:
+                for param in selected_params:
+                    try:
+                        key = f"{well.split(' | ')[0]} | {well.split(' | ')[1]}" if ' | ' in well else well
+                        ssdi_id = lst_stansiya.get(key, {}).get(param)
+
+                        if not ssdi_id:
+                            logger.warning(f"⚠️ {well} - {param}: ssdi_id topilmadi")
+                            continue
+
+                        df = get_parameter_data_for_period(ssdi_id, time_period)
+
+                        if df.empty:
+                            logger.warning(f"⚠️ {well} - {param}: Ma'lumot yo'q")
+                            continue
+
+                        logger.info(f"🔍 {well} - {param}: {len(df)} ta ma'lumot topildi")
+
+                        all_anomalies = detect_anomalies_in_data(df, sigma=sigma, min_duration_days=anomaly_duration)
+                        recent_anomalies = []
+
+                        if all_anomalies:
+                            for anomaly in all_anomalies:
+                                if anomaly['end_date'] >= filter_start_date:
+                                    recent_anomalies.append(anomaly)
+
+                        #filtrdan o'tgan anomaliya bo'lsa
+                        if recent_anomalies:
+                            logger.info(f"✅ {well} - {param}: {len(recent_anomalies)} ta anomaliya topildi!")
+
+                            # well_name is the display name used in well_coords and map
+                            well_name = well.split(' | ')[1] if ' | ' in well else well
+                            # Record parameter under this well for map popups/tooltips
+                            anomalous_wells_dict.setdefault(well_name, []).append(param)
+
+                            well_lat, well_lon = well_coords.get(well_name, (None, None))
+
+                            graph_html = create_anomaly_chart(
+                                df,
+                                recent_anomalies,
+                                well,
+                                param,
+                                sigma=sigma,
+                                earthquakes_df=earthquakes_df,  # ✅ None bo'lishi mumkin
+                                well_lat=well_lat,
+                                well_lon=well_lon
+                            )
+
+                            if graph_html:
+                                graphs_list.append({
+                                    'well': well,
+                                    'param': param,
+                                    'html': graph_html,
+                                    'anomaly_count': len(recent_anomalies)
+                                })
+                        else:
+                            logger.info(f"ℹ️ {well} - {param}: Anomaliya topilmadi (min_duration={anomaly_duration})")
+
+                    except Exception as e:
+                        logger.error(f"Grafik xato ({well} - {param}): {e}")
+                        continue
+
+            # ✅ XARITA - HAMMASI UCHUN
+            map_html = None
+            try:
+                map_html = create_anomaly_map_detailed(
+                    all_wells_list=list(lst_stansiya.keys()),
+                    well_coords=well_coords,
+                    anomalous_wells_dict=anomalous_wells_dict
+                )
+                logger.info("✅ Xarita yaratildi")
+            except Exception as e:
+                logger.error(f"Xarita xato: {e}")
+
+            # DATABASE
+            try:
+                for well in selected_wells:
+                    for param in selected_params:
+                        anomaly_count = len([g for g in graphs_list if g['well'] == well and g['param'] == param])
+
+                        if anomaly_count > 0:
+                            well_name = well.split(' | ')[1] if ' | ' in well else well
+                            AnomalyRecord.objects.create(
+                                skvajina=well_name,
+                                parameter=param,
+                                time_period_months=time_period,
+                                anomaly_duration_days=anomaly_duration,
+                                magnitude=magnitude,
+                                detected_anomalies_count=anomaly_count,
+                                is_active=True,
+                                session_id=request.session.session_key
+                            )
+            except Exception as e:
+                logger.error(f"Database xato: {e}")
+
+            # derive set for counts/messages from the dict keys
+            anomalous_wells = set(anomalous_wells_dict.keys())
+
+            context.update({
+                'form': form,
+                'graphs_list': graphs_list,
+                'map_html': map_html,  # ✅ XARITA
+                'selected_wells': selected_wells,
+                'selected_params': selected_params,
+                'time_period': time_period,
+                'anomaly_duration': anomaly_duration,
+                'recent_days': recent_days,
+                'magnitude': magnitude or 'Kiritilmagan',
+                'anomalous_wells_count': len(anomalous_wells),
+                'show_results': True,
+            })
+
+            messages.success(request, f'{len(anomalous_wells)} ta skvajinada anomaliya topildi!')
+            return render(request, 'app_anomaly/index.html', context)
+
+    except Exception as e:
+        logger.error(f"View xato: {e}", exc_info=True)
+        context['error'] = f'Xatolik: {str(e)}'
+        context['form'] = AnomalyAnalysisForm(
+            wells_choices=[(w, w) for w in []],
+            params_choices=[(p, p) for p in []]
+        )
+        return render(request, 'app_anomaly/index.html', context)
 
 @require_http_methods(["GET"])
 def anomaly_history_view(request):
