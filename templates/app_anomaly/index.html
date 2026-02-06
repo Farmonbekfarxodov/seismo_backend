@@ -98,7 +98,7 @@
                             <details class="custom-details">
                                 <summary class="custom-summary">
                                     <span class="summary-icon">▼</span>
-                                    <span class="summary-text">Vaqt Oralig'i</span>
+                                    <span class="summary-text">Statistika Davri (Norma)</span>
                                 </summary>
                                 <div class="details-content">
                                     <div class="radio-group">
@@ -118,7 +118,7 @@
                             <details class="custom-details">
                                 <summary class="custom-summary">
                                     <span class="summary-icon">▼</span>
-                                    <span class="summary-text">Anomaliya Davomiyligi</span>
+                                    <span class="summary-text">Minimal og'ish davomiyligi</span>
                                 </summary>
                                 <div class="details-content">
                                     <div class="radio-group">
@@ -133,6 +133,20 @@
                             </details>
                         </div>
                     </div>
+                    <div class="form-row">
+
+                        <!-- RECENT DAYS INPUT -->
+                        <div class="form-column">
+                            <label class="form-label">
+                                <i class="fas fa-calendar-day"></i> Oxirgi necha kun ko'rsatilsin?
+                            </label>
+                            <div class="input-wrapper">
+                                {{ form.recent_days }}
+                            </div>
+                            {% if form.recent_days.errors %}
+                                <div class="form-error">{{ form.recent_days.errors.0 }}</div>
+                            {% endif %}
+                        </div>
 
                     <!-- ROW 3: MAGNITUD VA SIGMA -->
                     <div class="form-row">

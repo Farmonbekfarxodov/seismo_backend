@@ -679,33 +679,6 @@ def plot_data_with_anomalies(
             row=row_idx, col=col_idx, secondary_y=False
         )
 
-    # ==================== ANOMALIYA SEGMENTLARI ICHIDA O'XSHASHLIKNI TOPISH ====================
-    if highlight_similar and len(anomaly_segments) >= 2:
-        try:
-            # Birinchi anomaliya - reference sifatida olinadi
-            reference_values = anomaly_segments[0]['values']
-
-            for seg in anomaly_segments[1:]:
-                similarity = calculate_pattern_similarity(reference_values, seg['values'])
-                if similarity['combined_score'] >= min_similarity:
-                    # O'xshash anomaliyani yashil shaffof to'rtburchak bilan belgilash
-                    fig.add_vrect(
-                        x0=seg['start_date'],
-                        x1=seg['end_date'],
-                        fillcolor="green",
-                        opacity=0.25,
-                        line_width=0,
-                        annotation_text=f"{similarity['combined_score']}%",
-                        annotation_position="top left",
-                        annotation=dict(font_size=9, font_color="darkgreen", bgcolor="rgba(255,255,255,0.7)"),
-                        row=row_idx,
-                        col=col_idx,
-                        yref=yref,
-                        xref="x"
-                    )
-        except Exception as e:
-            logging.warning(f"Anomaliya o'xshashlik hisobida xato: {e}")
-
     return y_all_values
 
 

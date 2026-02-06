@@ -4,7 +4,7 @@ import logging
 import pandas as pd
 import numpy as np
 import folium
-from datetime import datetime
+from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from django.shortcuts import render
 from django.contrib import messages
@@ -266,7 +266,11 @@ def anomaly_analysis_view(request):
             time_period = int(form.cleaned_data['time_period'])
             anomaly_duration = int(form.cleaned_data['anomaly_duration'])
             magnitude = form.cleaned_data.get('magnitude')  # ✅ None bo'lishi mumkin
+            recent_days = int(form.cleaned_data['recent_days'])
             sigma = float(form.cleaned_data.get('sigma', 2.0))
+
+            today = datetime.now().date()
+            filter_start_date = pd.Timestamp(today - relativedelta(days=recent_days))
 
             # ✅ ZILZILALAR - FAQAT MAGNITUDE KIRITILGAN BO'LSA
             earthquakes_df = None
@@ -311,10 +315,17 @@ def anomaly_analysis_view(request):
 
                         logger.info(f"🔍 {well} - {param}: {len(df)} ta ma'lumot topildi")
 
-                        anomalies = detect_anomalies_in_data(df, sigma=sigma, min_duration_days=anomaly_duration)
+                        all_anomalies = detect_anomalies_in_data(df, sigma=sigma, min_duration_days=anomaly_duration)
+                        recent_anomalies = []
 
-                        if anomalies:
-                            logger.info(f"✅ {well} - {param}: {len(anomalies)} ta anomaliya topildi!")
+                        if all_anomalies:
+                            for anomaly in all_anomalies:
+                                if anomaly['end_date'] >= filter_start_date:
+                                    recent_anomalies.append(anomaly)
+
+                        #filtrdan o'tgan anomaliya bo'lsa
+                        if recent_anomalies:
+                            logger.info(f"✅ {well} - {param}: {len(recent_anomalies)} ta anomaliya topildi!")
                             anomalous_wells.add(well.split(' | ')[1] if ' | ' in well else well)
 
                             well_name = well.split(' | ')[1] if ' | ' in well else well
@@ -322,7 +333,7 @@ def anomaly_analysis_view(request):
 
                             graph_html = create_anomaly_chart(
                                 df,
-                                anomalies,
+                                recent_anomalies,
                                 well,
                                 param,
                                 sigma=sigma,
@@ -336,7 +347,7 @@ def anomaly_analysis_view(request):
                                     'well': well,
                                     'param': param,
                                     'html': graph_html,
-                                    'anomaly_count': len(anomalies)
+                                    'anomaly_count': len(recent_anomalies)
                                 })
                         else:
                             logger.info(f"ℹ️ {well} - {param}: Anomaliya topilmadi (min_duration={anomaly_duration})")
@@ -386,6 +397,7 @@ def anomaly_analysis_view(request):
                 'selected_params': selected_params,
                 'time_period': time_period,
                 'anomaly_duration': anomaly_duration,
+                'recent_days': recent_days,
                 'magnitude': magnitude or 'Kiritilmagan',
                 'anomalous_wells_count': len(anomalous_wells),
                 'show_results': True,
@@ -405,86 +417,179 @@ def anomaly_analysis_view(request):
 
 
 def create_anomaly_chart(df, anomalies, well_name, param_name, sigma=2.0,
-                         earthquakes_df=None, well_lat=None, well_lon=None):
+                         earthquakes_df=None, well_lat=None, well_lon=None, recent_days=7):
     """
-    ✅ earthquakes_df=None bo'lsa zilzilalar ko'rsatilmaydi
+    GRAFIK CHIZISH (YANGILANGAN - Reference code asosida)
+    Matematik interpolatsiya yordamida aniq kesishish nuqtalarini topadi.
     """
     try:
+        # Sanalarni datetime formatiga o'tkazish
+        df['date'] = pd.to_datetime(df['date'])
+
+        # Ma'lumotlarni tayyorlash
+        x_val = df['date'].tolist()
+        y_val = df['value'].tolist()
+
         values = df['value'].dropna()
         mean = values.mean()
         std = values.std()
         upper_bound = mean + sigma * std
         lower_bound = mean - sigma * std
 
+        # Filtr sanasini aniqlash (Recent days uchun)
+        last_date = df['date'].max()
+        filter_start_date = last_date - pd.Timedelta(days=recent_days)
+
         fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-        # ASOSIY CHIZIQ (BLUE)
+        # 1. ASOSIY CHIZIQ (KOK)
         fig.add_trace(
             go.Scatter(
-                x=df['date'],
-                y=df['value'],
+                x=x_val,
+                y=y_val,
                 mode='lines',
                 name=f'{param_name}',
-                line=dict(color='blue', width=2),
+                line=dict(color='blue', width=1.5),
                 hovertemplate='<b>Sana:</b> %{x|%d.%m.%Y}<br><b>Qiymat:</b> %{y:.3f}<extra></extra>'
             ),
             secondary_y=False
         )
 
-        # UPPER BOUND (GREEN)
-        fig.add_trace(
-            go.Scatter(
-                x=df['date'],
-                y=[upper_bound] * len(df),
-                mode='lines',
-                name=f'UB (+{sigma}σ)',
-                line=dict(color='green', width=2, dash='dash'),
-            ),
-            secondary_y=False
-        )
+        # 2. CHEGARALAR (UB, MEAN, LB)
+        # Upper Bound (Yashil)
+        fig.add_trace(go.Scatter(
+            x=x_val, y=[upper_bound] * len(x_val), mode='lines',
+            name=f'UB (+{sigma}σ)', line=dict(color='green', width=1.5, dash='dash'),
+            hoverinfo='skip'
+        ), secondary_y=False)
 
-        # MEAN (MAGENTA)
-        fig.add_trace(
-            go.Scatter(
-                x=df['date'],
-                y=[mean] * len(df),
-                mode='lines',
-                name='Mean',
-                line=dict(color='magenta', width=2, dash='dash'),
-            ),
-            secondary_y=False
-        )
+        # Mean (Magenta)
+        fig.add_trace(go.Scatter(
+            x=x_val, y=[mean] * len(x_val), mode='lines',
+            name='Mean', line=dict(color='magenta', width=1.5, dash='dash'),
+            hoverinfo='skip'
+        ), secondary_y=False)
 
-        # LOWER BOUND (BLUE DASHED)
-        fig.add_trace(
-            go.Scatter(
-                x=df['date'],
-                y=[lower_bound] * len(df),
-                mode='lines',
-                name=f'LB (-{sigma}σ)',
-                line=dict(color='blue', width=2, dash='dash'),
-            ),
-            secondary_y=False
-        )
+        # Lower Bound (Ko'k)
+        fig.add_trace(go.Scatter(
+            x=x_val, y=[lower_bound] * len(x_val), mode='lines',
+            name=f'LB (-{sigma}σ)', line=dict(color='blue', width=1.5, dash='dash'),
+            hoverinfo='skip'
+        ), secondary_y=False)
 
-        # ✅ ANOMALIYALAR (QIZIL BO'YALGAN QISMLAR)
-        for anomaly in anomalies:
-            duration = (anomaly['end_date'] - anomaly['start_date']).days
-            fig.add_vrect(
-                x0=anomaly['start_date'],
-                x1=anomaly['end_date'],
-                fillcolor="red",
-                opacity=0.3,
-                layer="below",
-                line_width=0,
-                annotation_text=f"{duration} kun",
-                annotation_position="top left",
-                annotation_font_size=9,
-                annotation_font_color="darkred",
-            )
+        # =========================================================================
+        # 3. ANOMALIYA CHIZIQLARINI HISOBLASH (Reference fayldagi mantiq)
+        # =========================================================================
 
-        # ✅ ZILZILALAR - FAQAT earthquakes_df bo'lsa
-        if earthquakes_df is not None and not earthquakes_df.empty and well_lat is not None and well_lon is not None:
+        current_segment_x = []
+        current_segment_y = []
+        is_anomalous_prev = False
+
+        # Bitta sikl ichida hamma nuqtalarni tekshiramiz
+        for i in range(len(x_val)):
+            x_curr, y_curr = x_val[i], y_val[i]
+
+            # NaN tekshiruvi
+            if pd.isna(y_curr):
+                is_anomalous_prev = False
+                current_segment_x = []
+                current_segment_y = []
+                continue
+
+            is_anomalous_curr = (y_curr > upper_bound) or (y_curr < lower_bound)
+
+            # Birinchi nuqta
+            if i == 0:
+                if is_anomalous_curr:
+                    current_segment_x.append(x_curr)
+                    current_segment_y.append(y_curr)
+                is_anomalous_prev = is_anomalous_curr
+                continue
+
+            x_prev, y_prev = x_val[i - 1], y_val[i - 1]
+            intersect_x = None
+            intersect_y = None
+
+            # --- INTERPOLATSIYA (KESISHISH NUQTASINI TOPISH) ---
+
+            # Upper bound bilan kesishish
+            if (y_prev < upper_bound <= y_curr) or (y_curr < upper_bound <= y_prev):
+                if abs(y_curr - y_prev) > 1e-9:
+                    ratio = (upper_bound - y_prev) / (y_curr - y_prev)
+                    if 0 <= ratio <= 1:
+                        # Time delta orqali x ni hisoblash
+                        time_diff = (x_curr - x_prev).total_seconds()
+                        intersect_time = x_prev + timedelta(seconds=time_diff * ratio)
+                        intersect_x = intersect_time
+                        intersect_y = upper_bound
+
+            # Lower bound bilan kesishish
+            if (y_prev > lower_bound >= y_curr) or (y_curr > lower_bound >= y_prev):
+                if abs(y_curr - y_prev) > 1e-9:
+                    ratio = (lower_bound - y_prev) / (y_curr - y_prev)
+                    if 0 <= ratio <= 1:
+                        # Agar upper bilan ham kesishgan bo'lsa (juda kam hollarda), yaqinrog'ini olamiz
+                        # Bu yerda soddalik uchun lower boundni olamiz
+                        time_diff = (x_curr - x_prev).total_seconds()
+                        intersect_time = x_prev + timedelta(seconds=time_diff * ratio)
+                        intersect_x = intersect_time
+                        intersect_y = lower_bound
+
+            # --- SEGMENTNI SHAKLLANTIRISH ---
+
+            if is_anomalous_curr != is_anomalous_prev:
+                # Holat o'zgardi (Anomaliya -> Normal YOKI Normal -> Anomaliya)
+
+                if is_anomalous_prev and len(current_segment_x) > 0:
+                    # Anomaliya tugadi. Kesishish nuqtasini qo'shib, segmentni yopamiz.
+                    if intersect_x is not None:
+                        current_segment_x.append(intersect_x)
+                        current_segment_y.append(intersect_y)
+
+                    # FILTR: Segment oxiri 'recent_days' ichidami?
+                    if current_segment_x[-1] >= filter_start_date:
+                        fig.add_trace(go.Scatter(
+                            x=current_segment_x, y=current_segment_y,
+                            mode='lines',
+                            line=dict(color='red', width=3),  # QIZIL QALIN CHIZIQ
+                            showlegend=False,
+                            hoverinfo='skip'
+                        ), secondary_y=False)
+
+                    # Segmentni tozalaymiz
+                    current_segment_x = []
+                    current_segment_y = []
+
+                if is_anomalous_curr:
+                    # Anomaliya boshlandi. Kesishish nuqtasidan boshlaymiz.
+                    if intersect_x is not None:
+                        current_segment_x.append(intersect_x)
+                        current_segment_y.append(intersect_y)
+
+                    current_segment_x.append(x_curr)
+                    current_segment_y.append(y_curr)
+
+            elif is_anomalous_curr:
+                # Anomaliya davom etmoqda
+                current_segment_x.append(x_curr)
+                current_segment_y.append(y_curr)
+
+            is_anomalous_prev = is_anomalous_curr
+
+        # Sikl tugagandan keyin ochiq qolgan segmentni tekshirish
+        if is_anomalous_prev and len(current_segment_x) > 0:
+            # FILTR: Segment oxiri 'recent_days' ichidami?
+            if current_segment_x[-1] >= filter_start_date:
+                fig.add_trace(go.Scatter(
+                    x=current_segment_x, y=current_segment_y,
+                    mode='lines',
+                    line=dict(color='red', width=3),
+                    showlegend=False,
+                    hoverinfo='skip'
+                ), secondary_y=False)
+
+        # 4. ZILZILALAR (O'zgarishsiz)
+        if earthquakes_df is not None and not earthquakes_df.empty and well_lat and well_lon:
             try:
                 earthquakes_df_copy = earthquakes_df.copy()
                 earthquakes_df_copy['distance'] = destenc_vectorized(
@@ -493,7 +598,6 @@ def create_anomaly_chart(df, anomalies, well_name, param_name, sigma=2.0,
                     earthquakes_df_copy['Longitude']
                 )
 
-                # Create combined datetime without passing an invalid `format` parameter
                 earthquakes_df_copy['combined_datetime'] = pd.to_datetime(
                     earthquakes_df_copy['Event_date'].astype(str) + " " +
                     earthquakes_df_copy['Event_time'].astype(str),
@@ -507,7 +611,6 @@ def create_anomaly_chart(df, anomalies, well_name, param_name, sigma=2.0,
 
                 if not earthquakes_df_copy.empty:
                     max_mag = earthquakes_df_copy['Mb'].max() * 1.1
-
                     fig.update_yaxes(
                         range=[0, max_mag],
                         secondary_y=True,
@@ -521,14 +624,7 @@ def create_anomaly_chart(df, anomalies, well_name, param_name, sigma=2.0,
                     for _, row in earthquakes_df_copy.iterrows():
                         mag_val = row['Mb']
                         date_val = row['combined_datetime']
-
-                        hover_text = f"""
-                        <b>Zilzila</b><br>
-                        <b>Sana:</b> {date_val.strftime('%d.%m.%Y %H:%M')}<br>
-                        <b>Magnituda:</b> {mag_val:.2f}<br>
-                        <b>Chuqurlik:</b> {row['Depth']} km<br>
-                        <b>Masofa:</b> {row['distance']:.1f} km
-                        """
+                        hover_text = f"M: {mag_val:.2f}, D: {row['distance']:.1f} km"
 
                         stem_x.extend([date_val, date_val, None])
                         stem_y.extend([0, mag_val, None])
@@ -536,34 +632,24 @@ def create_anomaly_chart(df, anomalies, well_name, param_name, sigma=2.0,
 
                     fig.add_trace(
                         go.Scatter(
-                            x=stem_x,
-                            y=stem_y,
-                            mode='lines',
+                            x=stem_x, y=stem_y, mode='lines',
                             line=dict(color='darkred', width=2),
-                            name='Zilzilalar (Mb)',
-                            hoverinfo='text',
-                            text=hover_texts,
-                            yaxis='y2'
-                        ),
-                        secondary_y=True
+                            name='Zilzilalar', hoverinfo='text',
+                            text=hover_texts, yaxis='y2'
+                        ), secondary_y=True
                     )
-
-            except Exception as e:
-                logger.warning(f"Zilzila qo'shish xato: {e}")
+            except Exception:
+                pass
 
         fig.update_layout(
-            title=f"<b>{well_name} - {param_name}</b><br><sub>({df['date'].min().strftime('%d.%m.%Y')} - {df['date'].max().strftime('%d.%m.%Y')})</sub>",
+            title=f"<b>{well_name} - {param_name}</b>",
             xaxis_title="Sana",
             hovermode='x unified',
             height=500,
             template='plotly_white',
         )
 
-        fig.update_yaxes(title_text=f"{param_name}", secondary_y=False)
-
-        # Sanitize div id to keep only safe characters
-        div_id_raw = f"graph_{well_name}_{param_name}"
-        div_id_safe = re.sub(r'[^A-Za-z0-9_\-]', '_', div_id_raw)
+        div_id_safe = re.sub(r'[^A-Za-z0-9_\-]', '_', f"graph_{well_name}_{param_name}")
         return fig.to_html(include_plotlyjs='cdn', div_id=div_id_safe)
 
     except Exception as e:

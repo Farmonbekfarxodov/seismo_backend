@@ -70,6 +70,18 @@ class AnomalyAnalysisForm(forms.Form):
         })
     )
 
+    recent_days = forms.IntegerField(
+        required=True,
+        min_value=1,
+        max_value=30,
+        initial=7,
+        label="Oxirgi necha kunlik anomaliyalar ko'rsatilsin?",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control',
+            'placeholder':'Masalan: 7 kun',
+        }),
+        help_text="Faqat shu kunlar oralig'iga to'g'ri kelgan anomaliyalar ko'rsatiladi"
+    )
     sigma = forms.FloatField(
         required=False,
         min_value=0.5,
@@ -83,7 +95,7 @@ class AnomalyAnalysisForm(forms.Form):
     )
 
     class Meta:
-        fields = ['wells', 'parameters', 'time_period', 'anomaly_duration', 'magnitude', 'sigma']
+        fields = ['wells', 'parameters', 'time_period', 'anomaly_duration', 'magnitude','recent_days', 'sigma']
 
     def __init__(self, *args, wells_choices=None, params_choices=None, **kwargs):
         """

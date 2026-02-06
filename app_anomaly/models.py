@@ -54,6 +54,11 @@ class AnomalyRecord(models.Model):
         verbose_name='Magnitude (optional)'
     )
 
+    recent_days_filter = models.IntegerField(
+        default=7,
+        verbose_name="Oxirgi necha kunlik anomaliyalar filtrlanadi"
+    )
+
     # Natijalar
     detected_anomalies_count = models.IntegerField(
         default=0,
