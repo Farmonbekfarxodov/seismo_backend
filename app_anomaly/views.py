@@ -10,6 +10,7 @@ from django.shortcuts import render
 from django.contrib import messages
 from django.views.decorators.http import require_http_methods
 from django.core.cache import cache
+from folium.plugins import Fullscreen
 from sqlalchemy import create_engine, text
 from decouple import config as env_config
 from plotly.subplots import make_subplots
@@ -88,6 +89,7 @@ def get_parameter_data_for_period(ssdi_id, time_period_months):
             SELECT date, `{ssdi_id_str}` 
             FROM alldata 
             WHERE `{ssdi_id_str}` IS NOT NULL 
+            AND `{ssdi_id_str}` != 0
             AND date >= '{start_date}'
             AND date <= '{today}'
             ORDER BY date ASC
@@ -120,7 +122,7 @@ def get_parameter_data_for_period(ssdi_id, time_period_months):
         return pd.DataFrame()
 
 
-def detect_anomalies_in_data(df, sigma=2.0, min_duration_days=5):
+def detect_anomalies_in_data(df, sigma=2.0, min_duration_days=1):
     """
     ✅ KETMA-KET ANOMAL QIYMATLARNI ANIQLASH
 
@@ -243,6 +245,13 @@ def create_anomaly_chart(df, anomalies, well_name, param_name, sigma=2.0,
         # Ma'lumotlarni tayyorlash
         x_val = df['date'].tolist()
         y_val = df['value'].tolist()
+
+        min_date = df['date'].min()
+        max_date = df['date'].max()
+
+        padding = pd.Timedelta(days=10)
+        range_start = min_date - padding
+        range_end = max_date + padding
 
         values = df['value'].dropna()
         mean = values.mean()
@@ -462,6 +471,9 @@ def create_anomaly_chart(df, anomalies, well_name, param_name, sigma=2.0,
             height=500,
             template='plotly_white',
         )
+        fig.update_xaxes(
+            range=[range_start, range_end],
+        )
 
         div_id_safe = re.sub(r'[^A-Za-z0-9_\-]', '_', f"graph_{well_name}_{param_name}")
         return fig.to_html(include_plotlyjs='cdn', div_id=div_id_safe)
@@ -470,9 +482,10 @@ def create_anomaly_chart(df, anomalies, well_name, param_name, sigma=2.0,
         logger.error(f"Grafik xato: {e}")
         return None
 
+
 def create_anomaly_map_detailed(all_wells_list, well_coords, anomalous_wells_dict):
     """
-    BOYITILGAN XARITA (Popup + Tooltip + Ranglar)
+    BOYITILGAN XARITA (Ko'p qatlamli va boshqariladigan)
     """
     try:
         # Xarita markazi
@@ -486,34 +499,48 @@ def create_anomaly_map_detailed(all_wells_list, well_coords, anomalous_wells_dic
         else:
             center_lat, center_lon = 41.2995, 69.2401
 
+        # 1. ASOSIY XARITA (OpenStreetMap)
         m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="OpenStreetMap")
 
+        # 2. QO'SHIMCHA XARITA QATLAMLARI (Tiles)
+        # Satellite (Yo'ldosh)
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Tiles © Esri',
+            name='Satellite',
+            overlay=False
+        ).add_to(m)
+
+        # Fullscreen tugmasi
         from folium.plugins import Fullscreen
         Fullscreen(position='topleft').add_to(m)
 
-        folium.TileLayer(
-            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri', name='Satellite').add_to(m)
+        # 3. GEOLOGIK QATLAMLAR (FeatureGroups)
+        # Bu qatlamlarni alohida guruhlarga olamiz
+        cracks_layer = folium.FeatureGroup(name="🌍 Yer yoriqlari", show=True)
+        zones_layer = folium.FeatureGroup(name="🔴 Seysmogen zonalar", show=True)
+        anomalous_layer = folium.FeatureGroup(name="⚠️ Anomal Skvajinalar", show=True)
+        normal_layer = folium.FeatureGroup(name="✅ Normal Skvajinalar", show=True)
 
-        # Qatlamlar
         try:
             cracks = load_all_cracks_shapefiles()
-            if cracks is not None: add_cracks_to_map(m, cracks)
+            if cracks is not None: add_cracks_to_map(cracks_layer, cracks)  # m o'rniga layer
+
             zones = load_seismogenic_zones()
-            if zones is not None: add_seismogenic_zones_to_map(m, zones)
+            if zones is not None: add_seismogenic_zones_to_map(zones_layer, zones)  # m o'rniga layer
         except Exception:
             pass
 
-        # SKVAJINALAR
+        # 4. SKVAJINALARNI AJRATISH VA CHIZISH
         for well_key in all_wells_list:
             well_name = well_key.split(' | ')[1] if ' | ' in well_key else well_key
             if well_name not in well_coords: continue
             lat, lon = well_coords[well_name]
 
-            # IMPORT QILINGAN FUNKSIYA
+            # Import qilingan ma'lumot funksiyasi
             well_info = get_well_detailed_info(well_name)
 
-            # Rasm
+            # Rasm qismi
             mineralizatsiya_html = ""
             if well_info.get('mineralizatsiya_base64'):
                 mineralizatsiya_html = f"""
@@ -528,41 +555,42 @@ def create_anomaly_map_detailed(all_wells_list, well_coords, anomalous_wells_dic
                 """
 
             popup_html = f"""
-                <div style="width: 300px; font-family: Arial; font-size: 12px;">
-                    <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        <tr style="background-color: #f8f9fa;">
-                            <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
-                            <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
-                        </tr>
-                        {mineralizatsiya_html}
-                    </table>
-                </div>
-            """
+                            <div style="width: 300px; font-family: Arial; font-size: 12px;">
+                                <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Nomi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('nomi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Quduq turi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('quduq_turi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Chuqurlik:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('chuqurlik', 'Ma\'lumot yo\'q')} m</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Seysmotektonik holat:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('seysmotektonik_holat', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Strategrafik taqsimoti:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('strategrafik_taqsimoti', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <td style="padding: 5px; border: 1px solid #dee2e6; font-weight: bold;">Litologik tarkibi:</td>
+                                        <td style="padding: 5px; border: 1px solid #dee2e6;">{well_info.get('litologik_tarkibi', 'Ma\'lumot yo\'q')}</td>
+                                    </tr>
+                                    {mineralizatsiya_html}
+                                </table>
+                            </div>
+                        """
 
             is_anomalous = well_name in anomalous_wells_dict
 
             if is_anomalous:
+                # --- ANOMAL SKVAJINA ---
                 anom_params = ", ".join(anomalous_wells_dict[well_name])
                 tooltip_text = f"""
                 <div style="font-size: 13px;">
@@ -570,25 +598,94 @@ def create_anomaly_map_detailed(all_wells_list, well_coords, anomalous_wells_dic
                     <span style="color: red;">⚠️ Anomaliya: {anom_params}</span>
                 </div>
                 """
+                # Qizil pulsatsiyalanuvchi doira yoki shunchaki qizil marker
                 icon = folium.DivIcon(
-                    html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid blue;"></div>',
-                    icon_size=(20, 20), icon_anchor=(10, 20)
+                    html=f"""
+                    <div style="position: relative;">
+                        <div style="
+                            width: 20px; height: 20px; 
+                            background-color: rgba(255, 0, 0, 0.6); 
+                            border-radius: 50%; 
+                            animation: pulse 1.5s infinite;">
+                        </div>
+                        <div style="
+                            position: absolute; top: 50%; left: 50%; 
+                            transform: translate(-50%, -50%);
+                            width: 0; height: 0; 
+                            border-left: 8px solid transparent; 
+                            border-right: 8px solid transparent; 
+                            border-bottom: 16px solid red;">
+                        </div>
+                    </div>
+                    <style>
+                        @keyframes pulse {{
+                            0% {{ transform: scale(0.8); opacity: 1; }}
+                            100% {{ transform: scale(2.5); opacity: 0; }}
+                        }}
+                    </style>
+                    """,
+                    icon_size=(24, 24), icon_anchor=(12, 12)
                 )
+
+                folium.Marker(
+                    location=[lat, lon],
+                    icon=icon,
+                    popup=folium.Popup(popup_html, max_width=400),
+                    tooltip=tooltip_text
+                ).add_to(anomalous_layer)
+
             else:
+                # --- NORMAL SKVAJINA ---
                 tooltip_text = f"<b>{well_name}</b><br><span style='color:green'>Normal</span>"
                 icon = folium.DivIcon(
-                    html='<div style="width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 20px solid lightblue;"></div>',
-                    icon_size=(20, 20), icon_anchor=(10, 20)
+                    html='<div style="width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 12px solid #3388ff;"></div>',
+                    icon_size=(12, 12), icon_anchor=(6, 6)
                 )
 
-            folium.Marker(
-                location=[lat, lon],
-                icon=icon,
-                popup=folium.Popup(popup_html, max_width=400),
-                tooltip=tooltip_text
-            ).add_to(m)
+                folium.Marker(
+                    location=[lat, lon],
+                    icon=icon,
+                    popup=folium.Popup(popup_html, max_width=400),
+                    tooltip=tooltip_text
+                ).add_to(normal_layer)
 
-        folium.LayerControl().add_to(m)
+        # 5. BARCHA QATLAMNI XARITAGA QO'SHISH
+        cracks_layer.add_to(m)
+        zones_layer.add_to(m)
+        normal_layer.add_to(m)  # Normal birinchi
+        anomalous_layer.add_to(m)  # Anomal ustida tursin
+
+        # 6. LAYER CONTROL (Boshqaruv paneli)
+        folium.LayerControl(position='topright', collapsed=True).add_to(m)
+
+        # 7. LEGEND (Afsona)
+        legend_html = '''
+        <div style="position: fixed; bottom: 100px; left: 30px; width: 200px; 
+                    background-color: white; border:2px solid grey; z-index:9999;
+                    font-size:12px; padding: 10px; border-radius: 5px; opacity: 0.9;">
+            <p style="margin: 0; font-weight: bold; border-bottom: 1px solid #ccc; padding-bottom: 5px;">
+                SHARTLI BELGILAR
+            </p>
+            <div style="margin-top: 5px;">
+                <i style="background:red; width:10px; height:10px; display:inline-block; border-radius:50%;"></i> 
+                <b>Anomal Skvajina</b>
+            </div>
+            <div style="margin-top: 5px;">
+                <i style="background:#3388ff; width:10px; height:10px; display:inline-block; border-radius:50%;"></i> 
+                <b>Normal Skvajina</b>
+            </div>
+            <div style="margin-top: 5px;">
+                <i style="border-bottom: 2px solid orange; width:15px; display:inline-block;"></i> 
+                Yer Yorig'i
+            </div>
+            <div style="margin-top: 5px;">
+                <i style="background:pink; width:10px; height:10px; display:inline-block; opacity:0.5;"></i> 
+                Seysmogen Zona
+            </div>
+        </div>
+        '''
+        m.get_root().html.add_child(folium.Element(legend_html))
+
         return m._repr_html_()
 
     except Exception as e:
@@ -709,7 +806,8 @@ def anomaly_analysis_view(request):
                                 sigma=sigma,
                                 earthquakes_df=earthquakes_df,  # ✅ None bo'lishi mumkin
                                 well_lat=well_lat,
-                                well_lon=well_lon
+                                well_lon=well_lon,
+                                recent_days=recent_days,
                             )
 
                             if graph_html:

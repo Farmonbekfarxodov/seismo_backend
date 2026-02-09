@@ -40,7 +40,7 @@
                 <!-- GRID LAYOUT -->
                 <div class="form-grid">
 
-                    <!-- ROW 1: SKVAJINALAR VA PARAMETRLAR -->
+                     <!-- ROW 1: SKVAJINALAR VA PARAMETRLAR -->
                     <div class="form-row">
                         <!-- SKVAJINALAR -->
                         <div class="form-column">
@@ -48,9 +48,17 @@
                                 <summary class="custom-summary">
                                     <span class="summary-icon">▼</span>
                                     <span class="summary-text">Skvajinalar</span>
-                                    <span class="badge bg-primary ms-2">{{ selected_wells|length }}</span>
+                                    <span class="badge bg-primary ms-2 selected-count-wells">0</span>
                                 </summary>
                                 <div class="details-content">
+                                    <!-- YANGI: BARCHASINI BELGILASH -->
+                                    <div class="select-all-wrapper mb-2">
+                                        <label class="checkbox-label" style="background: #e3f2fd; border-color: #bbdefb;">
+                                            <input type="checkbox" id="selectAllWells">
+                                            <span class="checkbox-text fw-bold">Barchasini belgilash</span>
+                                        </label>
+                                    </div>
+
                                     <div class="checkbox-group">
                                         {% for choice in form.wells %}
                                             <label class="checkbox-label">
@@ -72,9 +80,17 @@
                                 <summary class="custom-summary">
                                     <span class="summary-icon">▼</span>
                                     <span class="summary-text">Parametrlar</span>
-                                    <span class="badge bg-primary ms-2">{{ selected_params|length }}</span>
+                                    <span class="badge bg-primary ms-2 selected-count-params">0</span>
                                 </summary>
                                 <div class="details-content">
+                                    <!-- YANGI: BARCHASINI BELGILASH -->
+                                    <div class="select-all-wrapper mb-2">
+                                        <label class="checkbox-label" style="background: #e3f2fd; border-color: #bbdefb;">
+                                            <input type="checkbox" id="selectAllParams">
+                                            <span class="checkbox-text fw-bold">Barchasini belgilash</span>
+                                        </label>
+                                    </div>
+
                                     <div class="checkbox-group">
                                         {% for choice in form.parameters %}
                                             <label class="checkbox-label">
@@ -90,7 +106,6 @@
                             {% endif %}
                         </div>
                     </div>
-
                     <!-- ROW 2: VAQT VA ANOMALIYA DAVOMIYLIGI -->
                     <div class="form-row">
                         <!-- VAQT ORALIG'I -->
@@ -98,7 +113,7 @@
                             <details class="custom-details">
                                 <summary class="custom-summary">
                                     <span class="summary-icon">▼</span>
-                                    <span class="summary-text">Statistika Davri (Norma)</span>
+                                    <span class="summary-text">Kuzatuv Davri</span>
                                 </summary>
                                 <div class="details-content">
                                     <div class="radio-group">
@@ -118,7 +133,7 @@
                             <details class="custom-details">
                                 <summary class="custom-summary">
                                     <span class="summary-icon">▼</span>
-                                    <span class="summary-text">Minimal og'ish davomiyligi</span>
+                                    <span class="summary-text">Anomaliya davomiyligi</span>
                                 </summary>
                                 <div class="details-content">
                                     <div class="radio-group">
@@ -189,7 +204,7 @@
         </form>
     </div>
 
-    <!-- NATIJALAR QISMI -->
+        <!-- NATIJALAR QISMI -->
     {% if show_results %}
         <div class="mx-auto" style="max-width: 1200px; margin-top: 40px;">
 
@@ -211,7 +226,22 @@
                 </div>
             </div>
 
-            <!-- GRAFIKLAR -->
+            <!-- 1. XARITA (Endi birinchi chiqadi) -->
+            {% if map_html %}
+                <div class="results-section" style="margin-top: 30px;">
+                    <div class="section-header">
+                        <i class="fas fa-map"></i>
+                        <h3>Anomaliya Skvajinalari Xaritasi</h3>
+                    </div>
+                    <div class="map-card">
+                        <div id="folium-map-container" style="height: 600px; border-radius: 8px; overflow: hidden;">
+                            {{ map_html | safe }}
+                        </div>
+                    </div>
+                </div>
+            {% endif %}
+
+            <!-- 2. GRAFIKLAR (Endi xaritaning pastida chiqadi) -->
             {% if graphs_list %}
                 <div class="results-section" style="margin-top: 30px;">
                     <div class="section-header">
@@ -240,26 +270,10 @@
                 </div>
             {% endif %}
 
-            <!-- XARITA -->
-            {% if map_html %}
-                <div class="results-section" style="margin-top: 30px;">
-                    <div class="section-header">
-                        <i class="fas fa-map"></i>
-                        <h3>Anomaliya Skvajinalari Xaritasi</h3>
-                    </div>
-                    <div class="map-card">
-                        <div id="folium-map-container" style="height: 600px; border-radius: 8px; overflow: hidden;">
-                            {{ map_html | safe }}
-                        </div>
-                    </div>
-                </div>
-            {% endif %}
-
         </div>
     {% else %}
         <!-- EMPTY STATE -->
         <div class="empty-state">
-
             <p>Yuqoridagi formada skvajina va parametrlarni tanlang, keyin <strong>"TAHLIL QILISH"</strong> tugmasini bosing</p>
         </div>
     {% endif %}
@@ -741,6 +755,76 @@ document.addEventListener('DOMContentLoaded', function() {
         if (paramsChecked === 0) {
             e.preventDefault();
             alert('Kamita bitta parametr tanlang!');
+            return false;
+        }
+    });
+});
+    document.addEventListener('DOMContentLoaded', function() {
+
+    // Hisoblagichlarni yangilash funksiyasi
+    function updateSelectedCounts() {
+        const wellsChecked = document.querySelectorAll('input[name="wells"]:checked').length;
+        const paramsChecked = document.querySelectorAll('input[name="parameters"]:checked').length;
+        const wellsTotal = document.querySelectorAll('input[name="wells"]').length;
+        const paramsTotal = document.querySelectorAll('input[name="parameters"]').length;
+
+        const wellsBadges = document.querySelectorAll('.selected-count-wells');
+        const paramsBadges = document.querySelectorAll('.selected-count-params');
+
+        wellsBadges.forEach(badge => badge.textContent = wellsChecked);
+        paramsBadges.forEach(badge => badge.textContent = paramsChecked);
+
+        // "Barchasini belgilash" checkbox holatini yangilash (agar qo'lda hammasini belgilasa)
+        const selectAllWells = document.getElementById('selectAllWells');
+        const selectAllParams = document.getElementById('selectAllParams');
+
+        if (selectAllWells) selectAllWells.checked = (wellsChecked === wellsTotal && wellsTotal > 0);
+        if (selectAllParams) selectAllParams.checked = (paramsChecked === paramsTotal && paramsTotal > 0);
+    }
+
+    // Barchasini belgilash funksiyasi
+    function toggleAll(selectAllId, itemsName) {
+        const selectAllCheckbox = document.getElementById(selectAllId);
+        if (!selectAllCheckbox) return;
+
+        selectAllCheckbox.addEventListener('change', function() {
+            const isChecked = this.checked;
+            const items = document.querySelectorAll(`input[name="${itemsName}"]`);
+
+            items.forEach(item => {
+                item.checked = isChecked;
+            });
+
+            updateSelectedCounts();
+        });
+    }
+
+    // Event listenerlarni ulash
+    document.querySelectorAll('input[name="wells"], input[name="parameters"]').forEach(checkbox => {
+        checkbox.addEventListener('change', updateSelectedCounts);
+    });
+
+    // "Select All" mantiqini ishga tushirish
+    toggleAll('selectAllWells', 'wells');
+    toggleAll('selectAllParams', 'parameters');
+
+    // Sahifa yuklanganda hisobni yangilash
+    updateSelectedCounts();
+
+    // Formani yuborishda validatsiya
+    document.getElementById('submitButton')?.addEventListener('click', function(e) {
+        const wellsChecked = document.querySelectorAll('input[name="wells"]:checked').length;
+        const paramsChecked = document.querySelectorAll('input[name="parameters"]:checked').length;
+
+        if (wellsChecked === 0) {
+            e.preventDefault();
+            alert('Kamida bitta skvajina tanlang!');
+            return false;
+        }
+
+        if (paramsChecked === 0) {
+            e.preventDefault();
+            alert('Kamida bitta parametr tanlang!');
             return false;
         }
     });
