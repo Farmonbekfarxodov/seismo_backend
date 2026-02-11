@@ -45,11 +45,7 @@ class Malumot(models.Model):
     seysmotektonik_holat = models.CharField(max_length=100, blank=True, null=True)
     strategrafik_taqsimoti = models.CharField(max_length=100, blank=True, null=True)
     litologik_tarkibi = models.CharField(max_length=100, blank=True, null=True)
-    mineralizatsiya = models.ImageField(
-        upload_to='mineralizatsiya/',
-        blank=True,
-        null=True
-    )
+    mineralizatsiya = models.BinaryField(blank=True,null=True)
 
     class Meta:
         db_table = 'malumot1'

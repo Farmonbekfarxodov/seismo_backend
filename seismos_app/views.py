@@ -1473,24 +1473,38 @@ def get_well_detailed_info(well_name):
 
 
 def _get_single_well_info(well_name: str) -> Dict:
-    """Bitta skvajina uchun ma'lumot"""
-    cache_key = f'well_info_{well_name.strip()}'
-    cached = cache.get(cache_key)
-
+    base_key = f'well_info_{well_name.strip()}'
+    cached = cache.get(base_key)
     if cached:
         return cached
 
     try:
         from .models import Malumot
-
         malumot = Malumot.objects.filter(nomi=well_name.strip()).first()
 
         if not malumot:
             result = _get_default_well_info(well_name)
-            cache.set(cache_key, result, 3600)
+            cache.set(base_key, result, 3600)
             return result
 
+        # ✅ BLOB length bilan "version" qilish
+        blob = getattr(malumot, "mineralizatsiya", None)
+        blob_len = 0
+        if blob:
+            if isinstance(blob, memoryview):
+                blob_len = len(blob.tobytes())
+            elif isinstance(blob, (bytes, bytearray)):
+                blob_len = len(blob)
+
+        cache_key = f"{base_key}_imglen_{blob_len}"
+
+        cached2 = cache.get(cache_key)
+        if cached2:
+            return cached2
+
         result = _build_well_info_dict(malumot)
+
+        # eski base_key ni ham saqlamaymiz, faqat version key
         cache.set(cache_key, result, 3600)
         return result
 
@@ -1539,8 +1553,9 @@ def _get_multiple_wells_info(well_names: List[str]) -> Dict[str, Dict]:
         return {name: _get_default_well_info(name) for name in well_names}
 
 
+import base64
+
 def _build_well_info_dict(malumot) -> Dict:
-    """Ma'lumot obyektidan dictionary yaratish"""
     result = {
         "nomi": malumot.nomi or "Ma'lumot yo'q",
         "quduq_turi": malumot.quduq_turi or "Ma'lumot yo'q",
@@ -1552,18 +1567,32 @@ def _build_well_info_dict(malumot) -> Dict:
         "mineralizatsiya_base64": None,
     }
 
-    # Rasm processing
-    if malumot.mineralizatsiya:
+    # ✅ DB'da MEDIUMBLOB: malumot.mineralizatsiya -> bytes
+    blob = getattr(malumot, "mineralizatsiya", None)
+    if blob:
         try:
-            if hasattr(malumot.mineralizatsiya, 'path') and os.path.exists(malumot.mineralizatsiya.path):
-                with open(malumot.mineralizatsiya.path, 'rb') as img_file:
-                    encoded = base64.b64encode(img_file.read()).decode('utf-8')
-                    ext = os.path.splitext(malumot.mineralizatsiya.path)[1].lower()
-                    mime_type = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-                                 '.png': 'image/png', '.gif': 'image/gif'}.get(ext, 'image/png')
-                    result["mineralizatsiya_base64"] = f"data:{mime_type};base64,{encoded}"
+            if isinstance(blob, memoryview):
+                blob = blob.tobytes()
+
+            if isinstance(blob, (bytes, bytearray)) and len(blob) > 0:
+                encoded = base64.b64encode(blob).decode("utf-8")
+
+                # Sizda ko'p hollarda PNG ekan (skrinshot)
+                # Agar JPEG ham bo'lishi mumkin bo'lsa, pastdagi "mime aniqlash"ni yoqing.
+                mime_type = "image/png"
+
+                # (ixtiyoriy) Header orqali mime aniqlash:
+                # if blob.startswith(b"\xff\xd8\xff"):
+                #     mime_type = "image/jpeg"
+                # elif blob.startswith(b"\x89PNG\r\n\x1a\n"):
+                #     mime_type = "image/png"
+                # elif blob[:3] == b"GIF":
+                #     mime_type = "image/gif"
+
+                result["mineralizatsiya_base64"] = f"data:{mime_type};base64,{encoded}"
+
         except Exception as e:
-            logger.error(f"Image error: {e}")
+            logger.error(f"Image blob encode error ({malumot.nomi}): {e}", exc_info=True)
 
     return result
 
