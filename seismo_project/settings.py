@@ -100,9 +100,6 @@ DATABASES = {
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-LOG_LEVEL_CONSOLE = "DEBUG" if DEBUG else "WARNING"
-LOG_LEVEL_FILE = "INFO" if DEBUG else "INFO"   # prod'da ham INFO qoldirish mumkin, xohlasangiz WARNING qiling
-
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -111,42 +108,37 @@ LOGGING = {
         "verbose": {
             "format": "%(asctime)s %(levelname)s [%(name)s:%(lineno)d] %(message)s",
         },
-        "simple": {
-            "format": "%(levelname)s %(message)s",
-        },
     },
 
     "handlers": {
-        "console": {
-            "class": "logging.StreamHandler",
-            "formatter": "simple",
-            "level": "WARNING",
-        },
-        "file": {
+        "warnings_file": {
             "class": "logging.handlers.RotatingFileHandler",
-            "filename": str(LOG_DIR / "seismo.log"),
+            "filename": str(LOG_DIR / "warnings.log"),
             "maxBytes": 20 * 1024 * 1024,  # 20MB
-            "backupCount": 10,             # 10 ta eski fayl saqlanadi
+            "backupCount": 10,
             "formatter": "verbose",
-            "level": LOG_LEVEL_FILE,
+            "level": "WARNING",  # ✅ faqat WARNING+ (WARNING, ERROR, CRITICAL)
         },
+        # ✅ hech qanday console handler yo'q
     },
 
+    # Root logger: faqat faylga, WARNING dan boshlab
     "root": {
-        "handlers": ["console", "file"],
-        "level": "INFO",
+        "handlers": ["warnings_file"],
+        "level": "WARNING",
     },
 
-    # Django loglarini juda ko'p bo'lib ketmasligi uchun:
     "loggers": {
+        # Django server (request) loglari ham faqat faylga
         "django.server": {
-            "handlers": ["console", "file"],
-            "level": "WARNING" if not DEBUG else "INFO",
+            "handlers": ["warnings_file"],
+            "level": "WARNING",
             "propagate": False,
         },
+        # SQL loglari umuman chiqmasin (faqat ERROR bo'lsa ham root ushlaydi)
         "django.db.backends": {
-            "handlers": ["file"],
-            "level": "WARNING",  # SQL logni INFO/DEBUG qilmang
+            "handlers": ["warnings_file"],
+            "level": "ERROR",
             "propagate": False,
         },
     },
