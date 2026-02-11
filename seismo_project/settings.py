@@ -97,10 +97,60 @@ DATABASES = {
     }
 }
 
-# settings.py
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
 
-# ✅ Multi-level cache (Memory + Redis)
-# seismo_project/settings.py
+LOG_LEVEL_CONSOLE = "DEBUG" if DEBUG else "WARNING"
+LOG_LEVEL_FILE = "INFO" if DEBUG else "INFO"   # prod'da ham INFO qoldirish mumkin, xohlasangiz WARNING qiling
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+
+    "formatters": {
+        "verbose": {
+            "format": "%(asctime)s %(levelname)s [%(name)s:%(lineno)d] %(message)s",
+        },
+        "simple": {
+            "format": "%(levelname)s %(message)s",
+        },
+    },
+
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+            "level": "WARNING",
+        },
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": str(LOG_DIR / "seismo.log"),
+            "maxBytes": 20 * 1024 * 1024,  # 20MB
+            "backupCount": 10,             # 10 ta eski fayl saqlanadi
+            "formatter": "verbose",
+            "level": LOG_LEVEL_FILE,
+        },
+    },
+
+    "root": {
+        "handlers": ["console", "file"],
+        "level": "INFO",
+    },
+
+    # Django loglarini juda ko'p bo'lib ketmasligi uchun:
+    "loggers": {
+        "django.server": {
+            "handlers": ["console", "file"],
+            "level": "WARNING" if not DEBUG else "INFO",
+            "propagate": False,
+        },
+        "django.db.backends": {
+            "handlers": ["file"],
+            "level": "WARNING",  # SQL logni INFO/DEBUG qilmang
+            "propagate": False,
+        },
+    },
+}
 
 CACHES = {
     'default': {

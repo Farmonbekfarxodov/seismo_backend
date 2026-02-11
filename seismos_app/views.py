@@ -33,14 +33,6 @@ from .models import Skvajina, AllIzmereniya, Malumot
 from upload_catalog_app.models import Catalog
 
 
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    filename="seismic_app.log",
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-
 # --- Constants ---
 DATE_COLUMN = "Event_date"
 TIME_COLUMN = "Event_time"
