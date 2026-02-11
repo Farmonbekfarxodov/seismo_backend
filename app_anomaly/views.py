@@ -542,20 +542,33 @@ def create_anomaly_map_detailed(all_wells_list, well_coords, anomalous_wells_dic
 
             # Rasm qismi
             mineralizatsiya_html = ""
-            if well_info.get('mineralizatsiya_base64'):
+            mineral_src = well_info.get('mineralizatsiya_base64')
+            if mineral_src:
+                # ✅ Debug: faqat prefix va uzunlik (logda butun base64 chiqmasin)
+                try:
+                    logger.debug(
+                        "mineralizatsiya src for %s: prefix=%s, len=%s",
+                        well_name,
+                        str(mineral_src)[:30],
+                        len(str(mineral_src)),
+                    )
+                except Exception:
+                    pass
+
                 mineralizatsiya_html = f"""
                     <tr>
                         <td colspan="2" style="padding: 10px; border: 1px solid #dee2e6; text-align: center;">
                             <b>Mineralizatsiya:</b><br>
-                            <img src="{well_info['mineralizatsiya_base64']}" 
-                                 style="max-width: 300px; max-height: 200px; margin-top: 5px; border-radius: 5px;" 
-                                 alt="Rasm"/>
+                            <img src="{mineral_src}"
+                                 loading="lazy"
+                                 style="display:block; max-width: 300px; max-height: 200px; width:100%; height:auto; margin-top: 5px; border-radius: 5px;" 
+                                 alt="Mineralizatsiya"/>
                         </td>
                     </tr>
                 """
 
             popup_html = f"""
-                            <div style="width: 300px; font-family: Arial; font-size: 12px;">
+                            <div style="width: 300px; font-family: Arial; font-size: 10px;">
                                 <h4 style="color: #2c3e50; margin-bottom: 10px;">Skvajina ma'lumotlari</h4>
                                 <table style="width: 100%; border-collapse: collapse;">
                                     <tr style="background-color: #f8f9fa;">
@@ -586,6 +599,10 @@ def create_anomaly_map_detailed(all_wells_list, well_coords, anomalous_wells_dic
                                 </table>
                             </div>
                         """
+
+            # ✅ Popup'ni IFrame bilan beramiz (rasm va katta HTML uchun barqarorroq)
+            iframe = folium.IFrame(html=popup_html, width=340, height=320)
+            popup = folium.Popup(iframe, max_width=450)
 
             is_anomalous = well_name in anomalous_wells_dict
 
@@ -630,7 +647,7 @@ def create_anomaly_map_detailed(all_wells_list, well_coords, anomalous_wells_dic
                 folium.Marker(
                     location=[lat, lon],
                     icon=icon,
-                    popup=folium.Popup(popup_html, max_width=400),
+                    popup=popup,
                     tooltip=tooltip_text
                 ).add_to(anomalous_layer)
 
@@ -645,7 +662,7 @@ def create_anomaly_map_detailed(all_wells_list, well_coords, anomalous_wells_dic
                 folium.Marker(
                     location=[lat, lon],
                     icon=icon,
-                    popup=folium.Popup(popup_html, max_width=400),
+                    popup=popup,
                     tooltip=tooltip_text
                 ).add_to(normal_layer)
 
@@ -791,7 +808,7 @@ def anomaly_analysis_view(request):
                         if recent_anomalies:
                             logger.info(f"✅ {well} - {param}: {len(recent_anomalies)} ta anomaliya topildi!")
 
-                            # well_name is the display name used in well_coords and map
+                            # well_name is the display name used in well_coords and map popups/tooltips
                             well_name = well.split(' | ')[1] if ' | ' in well else well
                             # Record parameter under this well for map popups/tooltips
                             anomalous_wells_dict.setdefault(well_name, []).append(param)
