@@ -8,13 +8,6 @@ from scipy.stats import norm
 import logging
 from seismos_app.views import *
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    filename="seismic_app.log",
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-
 # --- Constants ---
 DATE_COLUMN = "Event_date"
 TIME_COLUMN = "Event_time"
