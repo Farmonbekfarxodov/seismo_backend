@@ -608,7 +608,7 @@ def create_informativity_graph(graph_data, std_factor, min_mag, min_mlgr):
                             <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">T (kun)</th>
                             <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">t (anom.)</th>
                             <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">n (zilz.)</th>
-                            <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">m (tut.)</th>
+                            <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">m</th>
                             <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">O'rtacha</th>
                             <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">Std</th>
                         </tr>
