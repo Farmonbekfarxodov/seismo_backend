@@ -54,7 +54,9 @@ STATIONS_AND_WELLS = {
             {"api_well": "Sabzavotchilik instituti", "db_well": "Sabzavotchilik instituti"},
             {"api_well": "Tekstil", "db_well": "Tekstil"},
             {"api_well": "Zam-zam", "db_well": "Zam-zam"},
-            {"api_well": "Yangi yo'l", "db_well": "Yangi yo'l"}
+            {"api_well": "Yangi yo'l", "db_well": "Yangi yo'l"},
+            {"api_well": "Chinobod", "db_well": "Chinobod"},
+            {"api_well": "Semurg'", "db_well": "Semurg'"}
         ]
     },
     "CHRT": {
@@ -114,6 +116,9 @@ STATIONS_AND_WELLS = {
             {"api_well": "Sho'rchi 5", "db_well": "Sho'rchi 5"},
             {"api_well": "Sho'rchi 7", "db_well": "Sho'rchi 7"},
             {"api_well": "Sho'rchi 8", "db_well": "Sho'rchi 8"},
+            {"api_well": "Sho'rchi 295", "db_well": "Sho'rchi 295"},
+            {"api_well": "Sho'rchi 293", "db_well": "Sho'rchi 293"},
+            {"api_well": "Sho'rchi 292", "db_well": "Sho'rchi 292"}
         ]
     },
     "XRB": {
@@ -137,6 +142,13 @@ STATIONS_AND_WELLS = {
         "name": "Guliston",
         "wells": [
             {"api_well": "Guliston", "db_well": "Guliston"}
+        ]
+    },
+    "Jizzax KPS":{
+        "name": "Jizzax KPS",
+        "wells": [
+            {"api_well": "Xavotog' 8", "db_well": "Xavotogʻ 8"},
+            {"api_well": "Xavotog' 7", "db_well": "Xavotogʻ 7"}
         ]
     },
 }
