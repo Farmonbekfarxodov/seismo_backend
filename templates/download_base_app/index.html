@@ -3,172 +3,263 @@
 
 {% block content %}
 <div class="container d-flex justify-content-center align-items-center" style="min-height: 80vh;">
-    <div class="bg-white p-4 rounded shadow" style="width: 400px;">
-        <h2 class="text-center mb-4">Ma'lumotlarni bazaga yuklash</h2>
-        <form id="dataForm" method="POST">
-            {% csrf_token %}
-            <label for="stationSelect">Stansiyani tanlang:</label>
-            <select id="stationSelect" name="station" class="form-select mb-3">
-                <option value="all">Hammasi</option>
-            </select>
+  <div class="bg-white p-4 rounded shadow" style="width: 520px;">
 
-            <label for="wellSelect">Quduqni tanlang:</label>
-            <select id="wellSelect" name="well" class="form-select mb-3" disabled></select>
+    <h2 class="text-center mb-4">Ma'lumotlarni bazaga yuklash</h2>
 
-            <label for="start_date">Boshlang‘ich sana:</label>
-            <input type="date" id="start_date" name="start_date" required min="1960-01-01" max="2100-12-31" class="form-control mb-3">
+    <!-- ===================== 1) API DAN YUKLASH ===================== -->
+    <div class="border rounded p-3 mb-4">
+      <h5 class="mb-3">1) Saytdan (API) avtomatik yuklab bazaga yozish</h5>
 
-            <label for="end_date">Yakuniy sana:</label>
-            <input type="date" id="end_date" name="end_date" required min="1960-01-01" max="2100-12-31" class="form-control mb-3">
+      <form id="apiForm" method="POST">
+        {% csrf_token %}
 
-            <button type="submit" class="btn btn-success w-100">Yuklash</button>
-        </form>
-        <div id="message" class="mt-3 text-center fw-bold"></div>
+        <label for="stationSelect">Stansiyani tanlang:</label>
+        <select id="stationSelect" name="station" class="form-select mb-3">
+          <option value="all">Hammasi</option>
+        </select>
+
+        <label for="wellSelect">Quduqni tanlang:</label>
+        <select id="wellSelect" name="well" class="form-select mb-3" disabled></select>
+
+        <label for="start_date">Boshlang‘ich sana:</label>
+        <input type="date" id="start_date" name="start_date" required min="1960-01-01" max="2100-12-31"
+               class="form-control mb-3">
+
+        <label for="end_date">Yakuniy sana:</label>
+        <input type="date" id="end_date" name="end_date" required min="1960-01-01" max="2100-12-31"
+               class="form-control mb-3">
+
+        <button type="submit" class="btn btn-success w-100">API dan Yuklash</button>
+      </form>
+
+      <div id="apiMessage" class="mt-3 text-center fw-bold"></div>
     </div>
+
+    <!-- ===================== 2) EXCEL DAN YUKLASH ===================== -->
+    <div class="border rounded p-3">
+      <h5 class="mb-2">2) Excel faylni o‘qib bazaga yozish</h5>
+      <div class="small text-muted mb-3">
+        Talab: fayl nomi <b>Gidrogeoseysmologiya</b> so‘zi bilan boshlanishi shart (masalan: <i>Gidrogeoseysmologiya-SKV_2026.xlsx</i>)
+      </div>
+
+      <form id="excelForm" method="POST" enctype="multipart/form-data">
+        {% csrf_token %}
+
+        <label for="excelFile">Excel fayl (.xlsx):</label>
+        <input type="file" id="excelFile" name="file" accept=".xlsx" required class="form-control mb-3">
+
+        <button type="submit" class="btn btn-primary w-100">Excel dan Yuklash</button>
+      </form>
+
+      <div id="excelMessage" class="mt-3 text-center fw-bold"></div>
+    </div>
+
+  </div>
 </div>
 
 {{ stations|json_script:"stations_data" }}
 
 <script>
-    const stationSelect = document.getElementById('stationSelect');
-    const wellSelect = document.getElementById('wellSelect');
-    const dataForm = document.getElementById('dataForm');
-    const messageDiv = document.getElementById('message');
+  // ----------- Shared helpers -----------
+  function setMsg(el, text, cls) {
+    el.textContent = text;
+    el.className = `mt-3 text-center fw-bold ${cls || ''}`;
+  }
 
-    const stationsDataElem = document.getElementById('stations_data');
-    let stations = {};
-    if (stationsDataElem) {
-        try {
-            stations = JSON.parse(stationsDataElem.textContent);
-        } catch (e) {
-            console.error('JSON parse error:', e, stationsDataElem.textContent);
-            stations = {};
-        }
-    } else {
-        console.error('stations_data elementi topilmadi!');
-        stations = {};
+  function formatDateToDDMMYYYY(dateStr) {
+    // input[type=date] => YYYY-MM-DD
+    const d = new Date(dateStr);
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    return `${dd}.${mm}.${yyyy}`; // backend _parse_to_datetime: '%d.%m.%Y'
+  }
+
+  // ----------- Stations data -----------
+  const stationSelect = document.getElementById('stationSelect');
+  const wellSelect = document.getElementById('wellSelect');
+
+  const stationsDataElem = document.getElementById('stations_data');
+  let stations = {};
+  if (stationsDataElem) {
+    try {
+      stations = JSON.parse(stationsDataElem.textContent);
+    } catch (e) {
+      console.error('JSON parse error:', e, stationsDataElem.textContent);
+      stations = {};
     }
+  }
 
-    function populateStations() {
-        stationSelect.innerHTML = '';
-        const defaultOption = document.createElement('option');
-        defaultOption.value = 'all';
-        defaultOption.textContent = 'Hammasi';
-        stationSelect.appendChild(defaultOption);
+  function populateStations() {
+    stationSelect.innerHTML = '';
 
-        Object.keys(stations).forEach(stationCode => {
-            const option = document.createElement('option');
-            option.value = stationCode;
-            option.textContent = stations[stationCode]?.name || stationCode;
-            stationSelect.appendChild(option);
-        });
-    }
+    const defaultOption = document.createElement('option');
+    defaultOption.value = 'all';
+    defaultOption.textContent = 'Hammasi';
+    stationSelect.appendChild(defaultOption);
 
-    function updateWellSelect() {
-        const selectedStationCode = stationSelect.value;
-        wellSelect.innerHTML = '';
-        wellSelect.disabled = false;
-
-        if (selectedStationCode === 'all') {
-            const allWellsOption = document.createElement('option');
-            allWellsOption.value = 'all_wells';
-            allWellsOption.textContent = 'Hammasi';
-            wellSelect.appendChild(allWellsOption);
-        } else {
-            const stationInfo = stations[selectedStationCode];
-            if (stationInfo && stationInfo.wells) {
-                const allWellsOption = document.createElement('option');
-                allWellsOption.value = 'all_wells';
-                allWellsOption.textContent = 'Hammasi';
-                wellSelect.appendChild(allWellsOption);
-
-                stationInfo.wells.forEach(well => {
-                    const option = document.createElement('option');
-                    option.value = well.api_well;
-                    option.textContent = well.db_well;
-                    wellSelect.appendChild(option);
-                });
-            } else {
-                wellSelect.disabled = true;
-            }
-        }
-    }
-
-    if (Object.keys(stations).length === 0) {
-        messageDiv.textContent = "Stansiyalar ma'lumoti mavjud emas!";
-        messageDiv.className = 'error text-danger';
-        dataForm.querySelector('button[type="submit"]').disabled = true;
-    } else {
-        populateStations();
-        updateWellSelect();
-    }
-
-    stationSelect.addEventListener('change', updateWellSelect);
-
-    dataForm.addEventListener('submit', async function(event) {
-        event.preventDefault();
-
-        const startDateInput = document.getElementById('start_date').value;
-        const endDateInput = document.getElementById('end_date').value;
-
-        if (!startDateInput || !endDateInput) {
-            messageDiv.textContent = 'Iltimos, boshlang‘ich va yakuniy sanalarni kiriting!';
-            messageDiv.className = 'text-danger';
-            return;
-        }
-
-        const startDate = new Date(startDateInput);
-        const endDate = new Date(endDateInput);
-
-        if (endDate < startDate) {
-            messageDiv.textContent = 'Yakuniy sana boshlang‘ich sanadan keyin bo‘lishi kerak!';
-            messageDiv.className = 'text-danger';
-            return;
-        }
-
-        messageDiv.textContent = 'Yuklanmoqda...';
-        messageDiv.className = 'text-muted';
-
-        const formData = new FormData(dataForm);
-        const csrfToken = formData.get('csrfmiddlewaretoken');
-
-        const startDateFormatted = `${String(startDate.getDate()).padStart(2, '0')}-${String(startDate.getMonth() + 1).padStart(2, '0')}-${startDate.getFullYear()}`;
-        const endDateFormatted = `${String(endDate.getDate()).padStart(2, '0')}-${String(endDate.getMonth() + 1).padStart(2, '0')}-${endDate.getFullYear()}`;
-
-        const requestData = {
-            station: formData.get('station'),
-            well: formData.get('well'),
-            start_date: startDateFormatted,
-            end_date: endDateFormatted,
-        };
-
-        try {
-            const response = await fetch('/upload/upload/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': csrfToken,
-                },
-                body: JSON.stringify(requestData)
-            });
-
-            if (!response.ok) {
-                const responseText = await response.text();
-                throw new Error(`HTTP xatosi! Status: ${response.status}, Server javobi: ${responseText}`);
-            }
-
-            const result = await response.json();
-            if (result.success) {
-                messageDiv.textContent = result.message;
-                messageDiv.className = 'text-success';
-            } else {
-                messageDiv.textContent = result.message;
-                messageDiv.className = 'text-danger';
-            }
-        } catch (error) {
-            messageDiv.textContent = 'Xatolik yuz berdi: ' + error.message;
-            messageDiv.className = 'text-danger';
-        }
+    Object.keys(stations).forEach(stationCode => {
+      const option = document.createElement('option');
+      option.value = stationCode;
+      option.textContent = stations[stationCode]?.name || stationCode;
+      stationSelect.appendChild(option);
     });
+  }
+
+  function updateWellSelect() {
+    const selectedStationCode = stationSelect.value;
+    wellSelect.innerHTML = '';
+    wellSelect.disabled = false;
+
+    if (selectedStationCode === 'all') {
+      const allWellsOption = document.createElement('option');
+      allWellsOption.value = 'all_wells';
+      allWellsOption.textContent = 'Hammasi';
+      wellSelect.appendChild(allWellsOption);
+      return;
+    }
+
+    const stationInfo = stations[selectedStationCode];
+    if (!stationInfo || !stationInfo.wells) {
+      wellSelect.disabled = true;
+      return;
+    }
+
+    const allWellsOption = document.createElement('option');
+    allWellsOption.value = 'all_wells';
+    allWellsOption.textContent = 'Hammasi';
+    wellSelect.appendChild(allWellsOption);
+
+    stationInfo.wells.forEach(well => {
+      const option = document.createElement('option');
+      option.value = well.api_well;
+      option.textContent = well.db_well;
+      wellSelect.appendChild(option);
+    });
+  }
+
+  if (Object.keys(stations).length > 0) {
+    populateStations();
+    updateWellSelect();
+  }
+  stationSelect.addEventListener('change', updateWellSelect);
+
+  // ===================== 1) API form submit =====================
+  const apiForm = document.getElementById('apiForm');
+  const apiMessageDiv = document.getElementById('apiMessage');
+
+  apiForm.addEventListener('submit', async function (event) {
+    event.preventDefault();
+
+    const formData = new FormData(apiForm);
+    const csrfToken = formData.get('csrfmiddlewaretoken');
+
+    const startDateInput = formData.get('start_date');
+    const endDateInput = formData.get('end_date');
+
+    if (!startDateInput || !endDateInput) {
+      setMsg(apiMessageDiv, 'Iltimos, sanalarni kiriting!', 'text-danger');
+      return;
+    }
+
+    // validate
+    const startDate = new Date(startDateInput);
+    const endDate = new Date(endDateInput);
+    if (endDate < startDate) {
+      setMsg(apiMessageDiv, 'Yakuniy sana boshlang‘ich sanadan keyin bo‘lishi kerak!', 'text-danger');
+      return;
+    }
+
+    setMsg(apiMessageDiv, 'API dan yuklanmoqda...', 'text-muted');
+
+    const requestData = {
+      station: formData.get('station'),
+      well: formData.get('well'),
+      start_date: formatDateToDDMMYYYY(startDateInput),
+      end_date: formatDateToDDMMYYYY(endDateInput),
+    };
+
+    try {
+      // ✅ yangi endpoint: /upload/api/
+      const response = await fetch('/upload/api/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': csrfToken,
+        },
+        body: JSON.stringify(requestData),
+      });
+
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${text}`);
+      }
+
+      const result = JSON.parse(text);
+      if (result.success) {
+        setMsg(apiMessageDiv, result.message, 'text-success');
+      } else {
+        setMsg(apiMessageDiv, result.message, 'text-danger');
+      }
+    } catch (error) {
+      setMsg(apiMessageDiv, 'Xatolik: ' + error.message, 'text-danger');
+    }
+  });
+
+  // ===================== 2) Excel form submit =====================
+  const excelForm = document.getElementById('excelForm');
+  const excelFileInput = document.getElementById('excelFile');
+  const excelMessageDiv = document.getElementById('excelMessage');
+
+  excelForm.addEventListener('submit', async function (event) {
+    event.preventDefault();
+
+    const f = excelFileInput.files && excelFileInput.files[0];
+    if (!f) {
+      setMsg(excelMessageDiv, 'Iltimos Excel fayl tanlang!', 'text-danger');
+      return;
+    }
+
+    // ✅ Siz aytgansiz: "Gidrogeoseysmologiya" majburiy
+    if (!f.name.startsWith('Gidrogeoseysmologiya')) {
+      setMsg(excelMessageDiv, "Fayl nomi 'Gidrogeoseysmologiya' bilan boshlanishi shart!", 'text-danger');
+      return;
+    }
+
+    setMsg(excelMessageDiv, 'Excel yuklanmoqda...', 'text-muted');
+
+    const formData = new FormData();
+    // CSRF tokenni shu sahifadagi csrf_token dan olamiz
+    const csrfToken = document.querySelector('#excelForm input[name="csrfmiddlewaretoken"]').value;
+
+    formData.append('file', f); // backend: request.FILES['file']
+
+    try {
+      // ✅ yangi endpoint: /upload/excel/
+      const response = await fetch('/upload/excel/', {
+        method: 'POST',
+        headers: {
+          'X-CSRFToken': csrfToken,
+        },
+        body: formData,
+      });
+
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${text}`);
+      }
+
+      const result = JSON.parse(text);
+      if (result.success) {
+        setMsg(excelMessageDiv, result.message, 'text-success');
+        excelForm.reset();
+      } else {
+        setMsg(excelMessageDiv, result.message, 'text-danger');
+      }
+    } catch (error) {
+      setMsg(excelMessageDiv, 'Xatolik: ' + error.message, 'text-danger');
+    }
+  });
 </script>
 {% endblock %}

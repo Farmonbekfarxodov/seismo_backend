@@ -1,10 +1,12 @@
-import mysql.connector
-import requests
 import json
-import datetime as dt
 import time
 import logging
+import datetime as dt
 from collections import defaultdict
+
+import pandas as pd
+import mysql.connector
+import requests
 
 from django.shortcuts import render
 from django.http import JsonResponse
@@ -12,7 +14,7 @@ from django.views.decorators.csrf import csrf_exempt
 from decouple import config
 
 
-# ✅ Logging sozlamalari
+# ✅ Logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -153,38 +155,62 @@ STATIONS_AND_WELLS = {
     },
 }
 
+# ✅ API credentials
 LOGIN_URL = config("LOGIN")
-DATA_URL = config('DATA')
-USERNAME = config('USER_NAME')
-PASSWORD = config('PASS_WORD')
+DATA_URL = config("DATA")
+USERNAME = config("USER_NAME")
+PASSWORD = config("PASS_WORD")
+
+# ✅ DB credentials (tavsiya: .env dan oling)
+DB_HOST = config("DB_HOST", default="localhost")
+DB_USER = config("DB_USER", default="root")
+DB_PASSWORD = config("DB_PASSWORD", default="1111")
+DB_NAME = config("DB_NAME", default="seismik")
+
+
+# -------------------- Helpers --------------------
+
+def get_db_connection():
+    return mysql.connector.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+    )
+
+
+def _parse_to_datetime(value):
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, dt.date):
+        return dt.datetime.combine(value, dt.time())
+    try:
+        # API/Excel dan kelishi mumkin bo'lgan format
+        return dt.datetime.strptime(value, '%d.%m.%Y')
+    except Exception:
+        return None
+
+
+def normalize_string(s):
+    if not s:
+        return ""
+    s = s.replace('ʻ', "'").replace('’', "'").replace('‘', "'")
+    return s.strip().lower()
+
+
+# -------------------- API flow --------------------
 
 def get_auth_token():
+    payload = {"username": USERNAME, "password": PASSWORD}
     try:
-        payload = {"username": USERNAME, "password": PASSWORD}
-
-        logger.info(f"Login urinishi: {LOGIN_URL}")
-        logger.info(f"Username: {USERNAME}")
-
         response = requests.post(LOGIN_URL, json=payload, timeout=10)
-        logger.info(f"Status code: {response.status_code}")
-        logger.info(f"Response: {response.text[:500]}")
-
         response.raise_for_status()
-
         token = response.json().get("result", {}).get("token")
-        if token:
-            logger.info("✅ Token muvaffaqiyatli olindi")
-            return token
-        else:
-            logger.error("Responseda token topilmadi")
-            logger.error(f"Response structure: {response.json()}")
-
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"❌ HTTP xatosi: {e}")
-        logger.error(f"Response: {e.response.text if e.response else 'No response'}")
-        return None
-    except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-        logger.error(f"❌ Login xatosi: {e}")
+        return token
+    except Exception as e:
+        logger.error(f"❌ Token olishda xato: {e}", exc_info=True)
         return None
 
 
@@ -199,277 +225,316 @@ def fetch_data_from_api(params, token):
             response.raise_for_status()
             response_data = response.json()
 
-            if response_data and response_data.get('result'):
-                data = response_data['result'].get('data', [])
+            if response_data and response_data.get("result"):
+                data = response_data["result"].get("data", [])
                 all_data.extend(data)
-                logger.info(f"📥 {len(data)} ta yozuv olindi. Jami: {len(all_data)}")
-                url = response_data['result'].get('next_page_url')
-                params = {}
+                url = response_data["result"].get("next_page_url")
+                params = {}  # next_page_url bo'lsa paramsni tozalaymiz
             else:
                 break
 
-        logger.info(f"✅ API dan jami {len(all_data)} ta yozuv olindi")
         return all_data
-    except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-        logger.error(f"❌ API dan ma'lumot olishda xato: {e}")
+    except Exception as e:
+        logger.error(f"❌ API dan olishda xato: {e}", exc_info=True)
         return None
 
 
-def _parse_to_datetime(value):
-    if value is None:
-        return None
-    if isinstance(value, dt.datetime):
-        return value
-    if isinstance(value, dt.date):
-        return dt.datetime.combine(value, dt.time())
-    try:
-        return dt.datetime.strptime(value, '%d.%m.%Y')
-    except Exception:
-        return None
-
-
-def normalize_string(s):
-    """Stringni normalizatsiya qilish - bo'sh joylar, kichik/katta harflar"""
-    if not s:
-        return ""
-    s = s.replace('ʻ', "'").replace('’', "'").replace('‘', "'")
-    return s.strip().lower()
-
-
-def save_data_to_db(connection, data_list, db):
+def save_api_data_to_db(connection, data_list):
     """
-    Diagnostika bilan yaxshilangan versiya
+    Siz yuborgan views.py dagi save_data_to_db logikasi (qisqartirib joyladim),
+    maqsad: API dan kelgan data_list ni alldata ga INSERT qilish.
     """
     if not data_list:
-        logger.warning("⚠️ Ma'lumotlar ro'yxati bo'sh.")
         return 0
 
     cursor = connection.cursor()
 
-    # Diagnostika uchun hisoblagichlar
-    stats = {
-        'total_items': len(data_list),
-        'skipped_old_dates': 0,
-        'skipped_no_station': 0,
-        'skipped_no_well_mapping': 0,
-        'skipped_no_ssdi': 0,
-        'skipped_empty_values': 0,
-        'inserted': 0,
-        'errors': 0
-    }
-
-    unmapped_wells = defaultdict(list)  # Moslik topilmagan quduqlar
-    missing_ssdi = defaultdict(set)  # ssdi_id topilmagan kombinatsiyalar
-
-    # Bazadagi eng so'nggi sanani olish
+    # last date
     cursor.execute("SELECT MAX(date) FROM alldata")
     last_date_row = cursor.fetchone()
-    raw_last_date = last_date_row[0] if last_date_row and last_date_row[0] else None
-    last_date = _parse_to_datetime(raw_last_date)
+    last_date = _parse_to_datetime(last_date_row[0]) if last_date_row else None
 
-    if last_date:
-        logger.info(f"🕓 Bazadagi eng so'nggi sana: {last_date.strftime('%d.%m.%Y')}")
-    else:
-        logger.info("⚠️ Bazada sana topilmadi, barcha ma'lumotlar qo'shiladi.")
-
-    # all_izmereniya jadvalidagi barcha ssdi_id larni oldindan keshga olish
+    # ssdi cache
     cursor.execute("SELECT skvajina, izmereniya, ssdi_id FROM all_izmereniya")
     ssdi_cache = {}
     for row in cursor.fetchall():
-        key = (normalize_string(row[0]), normalize_string(row[1]))
-        ssdi_cache[key] = str(row[2])
+        ssdi_cache[(normalize_string(row[0]), normalize_string(row[1]))] = str(row[2])
 
-    logger.info(f"📊 Keshda {len(ssdi_cache)} ta ssdi_id mavjud")
-
-    # Ma'lumotlarni sanaga qarab saralash
+    # sort by date
     parsed_items = []
     for item in data_list:
-        parsed_date = _parse_to_datetime(item.get('date'))
+        parsed_date = _parse_to_datetime(item.get("date"))
         if parsed_date:
             parsed_items.append((parsed_date, item))
     parsed_items.sort(key=lambda x: x[0])
 
+    inserted = 0
+
     for parsed_date, item in parsed_items:
-        # Eski sanalarni o'tkazib yuborish
         if last_date and parsed_date <= last_date:
-            stats['skipped_old_dates'] += 1
             continue
 
-        station_code = item.get('station_code')
-        well_api = item.get('well_code')
-
+        station_code = item.get("station_code")
+        well_api = item.get("well_code")
         if not station_code or not well_api:
-            stats['skipped_no_station'] += 1
-            logger.warning(f"⚠️ Stansiya yoki quduq kodi yo'q: {item}")
             continue
 
-        # API well nomini DB well nomiga o'tkazish
         db_well = None
         station_info = STATIONS_AND_WELLS.get(station_code)
         if station_info:
-            for well in station_info["wells"]:
-                # Normalizatsiya qilingan taqqoslash
-                if normalize_string(well["api_well"]) == normalize_string(well_api):
-                    db_well = well["db_well"]
+            for w in station_info["wells"]:
+                if normalize_string(w["api_well"]) == normalize_string(well_api):
+                    db_well = w["db_well"]
                     break
-
         if not db_well:
-            stats['skipped_no_well_mapping'] += 1
-            unmapped_wells[station_code].append(well_api)
-            logger.warning(f"⚠️ {station_code}/{well_api} uchun db_well topilmadi")
             continue
 
-        values_dict = {'date': parsed_date}
-        found_any_value = False
+        values_dict = {"date": parsed_date}
+        found_any = False
 
         for key, value in item.items():
-            if key in ['date', 'station_code', 'well_code', 'id', 'created_at', 'updated_at', 'station', 'well']:
+            if key in ["date", "station_code", "well_code", "id", "created_at", "updated_at", "station", "well"]:
                 continue
-            # ⚠️ Faqat None va bo'sh stringlarni o'tkazib yuborish, 0 ni yozish
-            if value is None or value == '':
+            if value is None or value == "":
                 continue
 
-            # ✅ API maydon nomini bazaga mapping qilish
             db_field_name = API_TO_DB_FIELD_MAPPING.get(key.lower(), key)
-
-            # Keshdan qidirish
-            cache_key = (normalize_string(db_well), normalize_string(db_field_name))
-            ssdi_id = ssdi_cache.get(cache_key)
-
+            ssdi_id = ssdi_cache.get((normalize_string(db_well), normalize_string(db_field_name)))
             if not ssdi_id:
-                missing_ssdi[db_well].add(f"{key} → {db_field_name}")
                 continue
 
             values_dict[ssdi_id] = value
-            found_any_value = True
+            found_any = True
 
-        if not found_any_value:
-            stats['skipped_empty_values'] += 1
+        if not found_any:
             continue
 
-        columns = ", ".join(f"`{col}`" for col in values_dict.keys())
+        columns = ", ".join(f"`{c}`" for c in values_dict.keys())
         placeholders = ", ".join(["%s"] * len(values_dict))
         sql = f"INSERT INTO alldata ({columns}) VALUES ({placeholders})"
 
         try:
             cursor.execute(sql, tuple(values_dict.values()))
-            stats['inserted'] += 1
+            inserted += 1
         except Exception as e:
-            stats['errors'] += 1
-            logger.error(f"❌ INSERT xato ({parsed_date}, {db_well}): {e}")
+            logger.error(f"❌ API INSERT xato ({parsed_date}, {db_well}): {e}")
 
     connection.commit()
     cursor.close()
+    return inserted
 
-    # ✅ Batafsil hisobot
-    logger.info("=" * 60)
-    logger.info("📊 NATIJALAR HISOBOTI:")
-    logger.info(f"  Jami yozuvlar: {stats['total_items']}")
-    logger.info(f"  ✅ Qo'shildi: {stats['inserted']}")
-    logger.info(f"  ⏭️  Eski sanalar: {stats['skipped_old_dates']}")
-    logger.info(f"  ⚠️  Stansiya/quduq yo'q: {stats['skipped_no_station']}")
-    logger.info(f"  ⚠️  Well mapping yo'q: {stats['skipped_no_well_mapping']}")
-    logger.info(f"  ⚠️  SSDI topilmadi: {stats['skipped_no_ssdi']}")
-    logger.info(f"  ⚠️  Bo'sh qiymatlar: {stats['skipped_empty_values']}")
-    logger.info(f"  ❌ Xatolar: {stats['errors']}")
 
-    if unmapped_wells:
-        logger.warning("\n⚠️ MOSLIK TOPILMAGAN QUDUQLAR:")
-        for station, wells in unmapped_wells.items():
-            logger.warning(f"  {station}: {', '.join(set(wells))}")
+# -------------------- Excel flow --------------------
 
-    if missing_ssdi:
-        logger.warning("\n⚠️ SSDI_ID TOPILMAGAN KOMBINATSIYALAR:")
-        for well, measurements in missing_ssdi.items():
-            logger.warning(f"  {well}: {', '.join(measurements)}")
+def _extract_skvajina_name_from_filename(filename: str) -> str:
+    # Gidrogeoseysmologiya-XXXX_...xlsx formatidan XXXX ni olish
+    name = filename.replace("Gidrogeoseysmologiya-", "").split("_")[0]
+    return name.replace("'", "ʻ")
 
-    logger.info("=" * 60)
 
-    return stats['inserted']
+def save_excel_files_to_db(connection, uploaded_files):
+    """
+    Django orqali yuklangan excel fayllarni o'qib DBga UPDATE/INSERT qilish.
+    Sizning eski (excel->db) skriptingizdagi g'oya:
+    - Excelni o'qish
+    - all_izmereniya dan ssdi_id topish
+    - alldata da ustun bo'lmasa ALTER TABLE bilan qo'shish
+    - date bo'yicha UPDATE qilish
+    """
+    cursor = connection.cursor()
 
+    # alldata dagi oxirgi sanadan keyingi sanalarni to'ldirish (sizdagi logika)
+    cursor.execute("SELECT MAX(date) FROM alldata")
+    last_date_row = cursor.fetchone()
+    last_date = last_date_row[0] if last_date_row and last_date_row[0] else None
+
+    # Agar alldata bo'sh bo'lsa, bu qismni sizning talabingizga qarab o'zgartirish mumkin
+    # Hozircha alldata bo'sh bo'lsa "days insert"ni o'tkazib yuboramiz.
+    if last_date:
+        curr = _parse_to_datetime(last_date) + dt.timedelta(days=1)
+        while curr.date() <= dt.datetime.now().date():
+            cursor.execute("INSERT INTO alldata (date) VALUES (%s)", (curr,))
+            curr += dt.timedelta(days=1)
+        connection.commit()
+
+    updated_cells = 0
+
+    for f in uploaded_files:
+        filename = getattr(f, "name", "uploaded.xlsx")
+        skvajina_name = _extract_skvajina_name_from_filename(filename)
+
+        # pandas ExcelFile: file-like obyektni o'qiy oladi
+        df = pd.read_excel(f)
+        df = df.fillna(0)
+
+        # Sarlavha qayta tiklash (sizdagi kabi: 1-qator header)
+        name = df.iloc[0].to_list()[2:]
+        name.insert(0, "T/r")
+        name.insert(1, "Sana")
+        df.columns = name
+        df.drop(0, inplace=True)
+
+        df = df.set_index("T/r")
+        df["Sana"] = pd.to_datetime(df["Sana"], format="%d.%m.%Y", errors="coerce")
+
+        # 0 bo'lgan ustunlarni o'chirish (butun ustun 0 bo'lsa)
+        drop_cols = []
+        for col in df.columns:
+            if col == "Sana":
+                continue
+            if df[col].eq(0).all():
+                drop_cols.append(col)
+        df = df.drop(columns=drop_cols)
+
+        for col in df.columns:
+            if col == "Sana":
+                continue
+
+            # all_izmereniya dan ssdi_id olish
+            cursor.execute(
+                "SELECT ssdi_id FROM all_izmereniya WHERE skvajina=%s AND izmereniya=%s",
+                (skvajina_name, col),
+            )
+            row = cursor.fetchone()
+            if not row:
+                logger.warning(f"⚠️ all_izmereniya da topilmadi: {skvajina_name} / {col}")
+                continue
+
+            ssdi_id = str(row[0])
+            col_name_sql = f"`{ssdi_id}`"
+
+            # ustun bor-yo'qligi
+            cursor.execute(
+                "SELECT COUNT(*) FROM information_schema.columns "
+                "WHERE table_schema=%s AND table_name='alldata' AND column_name=%s",
+                (DB_NAME, ssdi_id),
+            )
+            exists = cursor.fetchone()[0] > 0
+            if not exists:
+                cursor.execute(f"ALTER TABLE alldata ADD COLUMN {col_name_sql} FLOAT;")
+                connection.commit()
+
+            # bazada oxirgi to'ldirilgan sanani topish
+            cursor.execute(
+                f"SELECT date FROM alldata WHERE {col_name_sql} IS NOT NULL ORDER BY date DESC LIMIT 1"
+            )
+            last_filled = cursor.fetchone()
+            last_filled_date = last_filled[0] if last_filled else None
+            if last_filled_date:
+                df1 = df.loc[:, ["Sana", col]]
+                df1 = df1[df1["Sana"] >= last_filled_date]
+            else:
+                df1 = df.loc[:, ["Sana", col]]
+
+            df1 = df1[df1[col] != 0].sort_values(by="Sana", ascending=True)
+
+            for _, r in df1.iterrows():
+                d = r["Sana"]
+                v = r[col]
+                if pd.isna(d) or v == 0:
+                    continue
+                cursor.execute(
+                    f"UPDATE alldata SET {col_name_sql}=%s WHERE date=%s",
+                    (float(v), d.to_pydatetime()),
+                )
+                updated_cells += 1
+
+            connection.commit()
+
+    cursor.close()
+    return updated_cells
+
+
+# -------------------- Views (1 page, 2 actions) --------------------
 
 def index(request):
-    return render(request, 'download_base_app/index.html', {'stations': STATIONS_AND_WELLS})
+    # Bitta sahifada 2 bo'lim chiqishi uchun context qaytaramiz
+    return render(request, "download_base_app/index.html", {"stations": STATIONS_AND_WELLS})
 
 
 @csrf_exempt
-def upload(request):
-    if request.method == 'GET':
-        return render(request, 'download_base_app/index.html', {'stations': STATIONS_AND_WELLS})
+def upload_api(request):
+    """
+    1) Saytdan/API dan yuklab olib DBga yozish endpoint
+    """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "POST kerak."}, status=405)
 
-    elif request.method == 'POST':
-        try:
-            data = json.loads(request.body)
-            station_code = data.get('station')
-            well_code = data.get('well')
-            start_date = data.get('start_date')
-            end_date = data.get('end_date')
+    try:
+        data = json.loads(request.body)
+        station_code = data.get("station")
+        well_code = data.get("well")
+        start_date = data.get("start_date")
+        end_date = data.get("end_date")
 
-            logger.info(f"📤 Yuklash so'rovi: {station_code}/{well_code} ({start_date} - {end_date})")
+        if not all([station_code, well_code, start_date, end_date]):
+            return JsonResponse({"success": False, "message": "Ma'lumotlar to'liq emas."}, status=400)
 
-            if not all([station_code, well_code, start_date, end_date]):
-                return JsonResponse({"success": False, "message": "Ma'lumotlar to'liq emas."}, status=400)
+        token = get_auth_token()
+        if not token:
+            return JsonResponse({"success": False, "message": "Token olinmadi."}, status=401)
 
-            auth_token = get_auth_token()
-            if not auth_token:
-                return JsonResponse({"success": False, "message": "Login xato yoki token olinmadi."}, status=401)
+        api_targets = []
+        if station_code == "all":
+            for st_code, st_info in STATIONS_AND_WELLS.items():
+                for w in st_info["wells"]:
+                    api_targets.append({"station_code": st_code, "well_code": w["api_well"]})
+        else:
+            st_info = STATIONS_AND_WELLS.get(station_code)
+            if not st_info:
+                return JsonResponse({"success": False, "message": "Noto'g'ri stansiya."}, status=400)
 
-            all_data = []
-            api_stations_to_fetch = []
-
-            if station_code == "all":
-                for st_code, station_info in STATIONS_AND_WELLS.items():
-                    for well in station_info["wells"]:
-                        api_stations_to_fetch.append({"station_code": st_code, "well_code": well["api_well"]})
+            if well_code == "all_wells":
+                for w in st_info["wells"]:
+                    api_targets.append({"station_code": station_code, "well_code": w["api_well"]})
             else:
-                station_info = STATIONS_AND_WELLS.get(station_code)
-                if not station_info:
-                    return JsonResponse({"success": False, "message": f"Noto'g'ri stansiya kodi: {station_code}"},
-                                        status=400)
+                api_targets.append({"station_code": station_code, "well_code": well_code})
 
-                if well_code == "all_wells":
-                    for well in station_info["wells"]:
-                        api_stations_to_fetch.append({"station_code": station_code, "well_code": well["api_well"]})
-                else:
-                    api_stations_to_fetch.append({"station_code": station_code, "well_code": well_code})
+        all_data = []
+        for t in api_targets:
+            params = {
+                "station_code": t["station_code"],
+                "well_code": t["well_code"],
+                "date_start": start_date,
+                "date_end": end_date,
+            }
+            chunk = fetch_data_from_api(params, token)
+            if chunk is None:
+                return JsonResponse({"success": False, "message": "API'dan olishda xato."}, status=500)
+            all_data.extend(chunk)
+            time.sleep(1)
 
-            logger.info(f"🔄 Jami {len(api_stations_to_fetch)} ta quduqdan ma'lumot olinadi")
+        conn = get_db_connection()
+        inserted = save_api_data_to_db(conn, all_data)
+        conn.close()
 
-            for fetch_item in api_stations_to_fetch:
-                params = {
-                    'station_code': fetch_item["station_code"],
-                    'well_code': fetch_item["well_code"],
-                    'date_start': start_date,
-                    'date_end': end_date
-                }
+        return JsonResponse({"success": True, "message": f"API orqali {inserted} ta yozuv qo'shildi."})
 
-                fetched_data = fetch_data_from_api(params, auth_token)
+    except Exception as e:
+        logger.error(f"❌ upload_api xato: {e}", exc_info=True)
+        return JsonResponse({"success": False, "message": str(e)}, status=500)
 
-                if fetched_data is None:
-                    return JsonResponse({"success": False, "message": "API'dan ma'lumot olishda xato."}, status=500)
 
-                all_data.extend(fetched_data)
-                time.sleep(1)
+@csrf_exempt
+def upload_excel(request):
+    """
+    2) Excel fayl yuklab DBga yozish endpoint
+    Form-data (multipart) orqali keladi: files[]
+    """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "POST kerak."}, status=405)
 
-            connection = mysql.connector.connect(
-                host='localhost',
-                user='root',
-                password='1111',
-                database='seismik'
-            )
+    try:
+        files = request.FILES.getlist("files")
+        if not files:
+            return JsonResponse({"success": False, "message": "Excel fayl yuborilmadi."}, status=400)
 
-            rows_inserted = save_data_to_db(connection, all_data, 'seismik')
-            connection.close()
+        conn = get_db_connection()
+        updated_cells = save_excel_files_to_db(conn, files)
+        conn.close()
 
-            return JsonResponse(
-                {"success": True, "message": f"{rows_inserted} ta yozuv bazaga saqlandi. Batafsil ma'lumot logda."})
+        return JsonResponse({"success": True, "message": f"Excel orqali {updated_cells} ta qiymat yangilandi."})
 
-        except json.JSONDecodeError:
-            logger.error("❌ Noto'g'ri JSON format")
-            return JsonResponse({"success": False, "message": "Noto'g'ri JSON format."}, status=400)
-        except Exception as e:
-            logger.error(f"❌ Kutilmagan xatolik: {type(e).__name__}: {str(e)}", exc_info=True)
-            return JsonResponse({"success": False, "message": f"Kutilmagan xatolik: {type(e).__name__}: {str(e)}"},
-                                status=500)
-
-    return JsonResponse({"success": False, "message": "Noto'g'ri so'rov usuli."}, status=405)
+    except Exception as e:
+        logger.error(f"❌ upload_excel xato: {e}", exc_info=True)
+        return JsonResponse({"success": False, "message": str(e)}, status=500)
