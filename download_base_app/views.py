@@ -421,6 +421,7 @@ def save_excel_files_to_db(connection, uploaded_files):
             last_filled = cursor.fetchone()
             last_filled_date = last_filled[0] if last_filled else None
             if last_filled_date:
+                last_filled_date = pd.to_datetime(last_filled_date)
                 df1 = df.loc[:, ["Sana", col]]
                 df1 = df1[df1["Sana"] >= last_filled_date]
             else:
@@ -525,12 +526,12 @@ def upload_excel(request):
         return JsonResponse({"success": False, "message": "POST kerak."}, status=405)
 
     try:
-        files = request.FILES.getlist("files")
-        if not files:
+        file = request.FILES.getlist("file")
+        if not file:
             return JsonResponse({"success": False, "message": "Excel fayl yuborilmadi."}, status=400)
 
         conn = get_db_connection()
-        updated_cells = save_excel_files_to_db(conn, files)
+        updated_cells = save_excel_files_to_db(conn, file)
         conn.close()
 
         return JsonResponse({"success": True, "message": f"Excel orqali {updated_cells} ta qiymat yangilandi."})
