@@ -468,8 +468,6 @@ def generate_well_colors(well_names):
     return well_color_map
 
 
-
-
 def plot_data_with_anomalies(
         fig,
         x_val,
@@ -482,6 +480,7 @@ def plot_data_with_anomalies(
         trace_color,
         element_name,
         key_name,
+        segment_years=None,
         min_similarity=70,  # Yangi parametr: minimal o'xshashlik foizi
         min_anomaly_length=5,  # Minimal anomaliya segment uzunligi (nuqta soni)
         highlight_similar=True,  # O'xshash anomaliyalarni belgilashni yoqish/o'chirish
@@ -489,11 +488,6 @@ def plot_data_with_anomalies(
     """
     Ma'lumotlarning butun chizig'ini chizadi va anomaliya qismlarini qizil rangda belgilaydi.
     Qo'shimcha: Anomaliya segmentlari ichidan o'xshashlarini topib, yashil rangda belgilaydi.
-
-    Yangi parametrlar:
-        min_similarity: O'xshash deb hisoblash uchun minimal foiz (default 70%)
-        min_anomaly_length: Minimal anomaliya segment uzunligi (nuqta soni)
-        highlight_similar: O'xshash anomaliyalarni grafikda ko'rsatish (True/False)
     """
     if isinstance(x_val, pd.Series):
         x_val = x_val.tolist()
@@ -518,17 +512,47 @@ def plot_data_with_anomalies(
     x_val = [x_val[i] for i in sorted_indices]
     y_val = [y_val[i] for i in sorted_indices]
 
-    # Chegaralarni hisoblash
+    df = pd.DataFrame({'date': pd.to_datetime(x_val), 'value': y_val})
+
+    # Global Chegaralarni hisoblash
     upper_bound = mean + btn_value * sigma
     lower_bound = mean - btn_value * sigma
+    df['global_anomaly'] = (df['value'] > upper_bound) | (df['value'] < lower_bound)
 
     y_all_values = [y for y in y_val if not np.isnan(y)]
     y_all_values.extend([upper_bound, lower_bound, mean])
 
+    has_segments = isinstance(segment_years, int) and segment_years > 0
+    if has_segments:
+        # 2. Segmental (Yillik) chegaralar
+        df['year'] = df['date'].dt.year
+        df['group'] = (df['year'] // segment_years) * segment_years
+
+        seg_stats = df.groupby('group')['value'].agg(['mean', 'std']).reset_index()
+        seg_stats.rename(columns={'mean': 'seg_mean', 'std': 'seg_std'}, inplace=True)
+        seg_stats['seg_std'] = seg_stats['seg_std'].fillna(0)
+
+        df = df.merge(seg_stats, on='group', how='left')
+
+        df['seg_upper'] = df['seg_mean'] + btn_value * df['seg_std']
+        df['seg_lower'] = df['seg_mean'] - btn_value * df['seg_std']
+
+        df['segment_anomaly'] = (df['value'] > df['seg_upper']) | (df['value'] < df['seg_lower'])
+
+        # 3. KUCHLI ANOMALIYA (Ikkalasi ham ishlaganda)
+        df['is_anomalous'] = df['global_anomaly'] & df['segment_anomaly']
+
+        y_all_values.extend(df['seg_upper'].dropna().tolist())
+        y_all_values.extend(df['seg_lower'].dropna().tolist())
+    else:
+        df['is_anomalous'] = df['global_anomaly']
+
+    is_anom_list = df['is_anomalous'].tolist()
+
     yaxis_index = (row_idx - 1) * 1 + col_idx
     yref = "y" if yaxis_index == 1 else f"y{2 * row_idx - 1}"
 
-    # UB, MEAN va LB chiziqlarini chizish
+    # UB, MEAN va LB chiziqlarini chizish (Global)
     fig.add_shape(type="line", x0=min(x_val), x1=max(x_val), y0=upper_bound, y1=upper_bound,
                   line=dict(color="green", width=1.5), row=row_idx, col=col_idx, yref=yref, xref="x")
     fig.add_annotation(x=max(x_val), y=upper_bound, text=f"UB ({btn_value}σ)", showarrow=False,
@@ -547,7 +571,49 @@ def plot_data_with_anomalies(
                        font=dict(color="blue", size=10), xanchor="right", yanchor="top",
                        row=row_idx, col=col_idx)
 
-    # Asosiy grafik
+    # === YILLIK (SEGMENTAL) CHEGARALARNI CHIZISH (YOTIQ/GORIZONTAL) ===
+    if has_segments:
+        unique_groups = df['group'].dropna().unique()
+        show_leg = True
+
+        for g in unique_groups:
+            group_mask = df['group'] == g
+            if not group_mask.any():
+                continue
+
+            start_date = df.loc[group_mask, 'date'].min()
+            end_date = df.loc[group_mask, 'date'].max()
+
+            seg_u = df.loc[group_mask, 'seg_upper'].iloc[0]
+            seg_l = df.loc[group_mask, 'seg_lower'].iloc[0]
+
+            if not pd.isna(seg_u):
+                fig.add_trace(go.Scatter(
+                    x=[start_date, end_date],
+                    y=[seg_u, seg_u],
+                    mode='lines',
+                    line=dict(color='rgba(0,180,0,0.7)', width=2, dash='dash'),
+                    name=f"Yillik UB ({segment_years}y)",
+                    legendgroup="seg_ub",
+                    showlegend=show_leg,
+                    hoverinfo='skip'
+                ), row=row_idx, col=col_idx)
+
+            if not pd.isna(seg_l):
+                fig.add_trace(go.Scatter(
+                    x=[start_date, end_date],
+                    y=[seg_l, seg_l],
+                    mode='lines',
+                    line=dict(color='rgba(0,0,180,0.7)', width=2, dash='dash'),
+                    name=f"Yillik LB ({segment_years}y)",
+                    legendgroup="seg_lb",
+                    showlegend=show_leg,
+                    hoverinfo='skip'
+                ), row=row_idx, col=col_idx)
+
+            show_leg = False
+
+    # Asosiy ma'lumotlar grafigi
     fig.add_trace(
         go.Scatter(
             x=x_val, y=y_val, mode="lines",
@@ -561,15 +627,29 @@ def plot_data_with_anomalies(
         row=row_idx, col=col_idx, secondary_y=False
     )
 
-    # ==================== ANOMALIYA SEGMENTLARINI YIG'ISH ====================
-    anomaly_segments = []  # Yangi: barcha anomaliya segmentlarini saqlash
+    # ==================== ANOMALIYA SEGMENTLARINI YIG'ISH VA CHIZISH ====================
+    # Xatoni oldini olish: has_segments yo'q bo'lsa global chegara bilan ishlash
+    if has_segments and 'seg_upper' in df.columns:
+        seg_upper_list = df['seg_upper'].tolist()
+        seg_lower_list = df['seg_lower'].tolist()
+    else:
+        seg_upper_list = [upper_bound] * len(x_val)
+        seg_lower_list = [lower_bound] * len(x_val)
+
+    anomaly_segments = []
     current_anomalous_segment_x = []
     current_anomalous_segment_y = []
     is_anomalous_prev = False
 
     for i in range(len(x_val)):
         x_curr, y_curr = x_val[i], y_val[i]
-        is_anomalous_curr = (y_curr > upper_bound) or (y_curr < lower_bound)
+        is_anomalous_curr = is_anom_list[i]
+
+        # Joriy nuqta uchun eng qat'iy chegarani aniqlash (Dinamik kesishish uchun)
+        su_curr = seg_upper_list[i]
+        sl_curr = seg_lower_list[i]
+        eff_upper_curr = max(upper_bound, su_curr) if not np.isnan(su_curr) else upper_bound
+        eff_lower_curr = min(lower_bound, sl_curr) if not np.isnan(sl_curr) else lower_bound
 
         if i == 0:
             if is_anomalous_curr:
@@ -580,39 +660,45 @@ def plot_data_with_anomalies(
 
         x_prev, y_prev = x_val[i - 1], y_val[i - 1]
 
+        # Oldingi nuqta uchun eng qat'iy chegara
+        su_prev = seg_upper_list[i - 1]
+        sl_prev = seg_lower_list[i - 1]
+        eff_upper_prev = max(upper_bound, su_prev) if not np.isnan(su_prev) else upper_bound
+        eff_lower_prev = min(lower_bound, sl_prev) if not np.isnan(sl_prev) else lower_bound
+
         intersect_x = None
         intersect_y = None
 
-        # Upper bound bilan kesishish
-        if (y_prev < upper_bound <= y_curr) or (y_curr < upper_bound <= y_prev):
-            if abs(y_curr - y_prev) > 1e-9:
-                ratio = (upper_bound - y_prev) / (y_curr - y_prev)
-                if 0 <= ratio <= 1:
-                    intersect_x = x_prev + (x_curr - x_prev) * ratio
-                    intersect_y = upper_bound
-
-        # Lower bound bilan kesishish
-        if (y_prev > lower_bound >= y_curr) or (y_curr > lower_bound >= y_prev):
-            if abs(y_curr - y_prev) > 1e-9:
-                ratio = (lower_bound - y_prev) / (y_curr - y_prev)
-                new_intersect_x = x_prev + (x_curr - x_prev) * ratio
-                new_intersect_y = lower_bound
-                if intersect_x is None and 0 <= ratio <= 1:
-                    intersect_x = new_intersect_x
-                    intersect_y = new_intersect_y
-                elif intersect_x and abs((new_intersect_x - x_prev).total_seconds()) < abs(
-                        (intersect_x - x_prev).total_seconds()) and 0 <= ratio <= 1:
-                    intersect_x = new_intersect_x
-                    intersect_y = new_intersect_y
-
-        # Anomaliya o'tishini tekshirish
         if is_anomalous_curr != is_anomalous_prev:
-            if is_anomalous_prev and len(current_anomalous_segment_x) > 1:
+            # Yuqori chegara bilan kesishish
+            if (y_prev <= eff_upper_prev and y_curr > eff_upper_curr) or \
+                    (y_curr <= eff_upper_curr and y_prev > eff_upper_prev):
+
+                avg_bound = (eff_upper_curr + eff_upper_prev) / 2
+                if abs(y_curr - y_prev) > 1e-9:
+                    ratio = (avg_bound - y_prev) / (y_curr - y_prev)
+                    if 0 <= ratio <= 1:
+                        intersect_x = x_prev + (x_curr - x_prev) * ratio
+                        intersect_y = avg_bound
+
+            # Pastki chegara bilan kesishish
+            if (y_prev >= eff_lower_prev and y_curr < eff_lower_curr) or \
+                    (y_curr >= eff_lower_curr and y_prev < eff_lower_prev):
+
+                avg_bound = (eff_lower_curr + eff_lower_prev) / 2
+                if abs(y_curr - y_prev) > 1e-9:
+                    ratio = (avg_bound - y_prev) / (y_curr - y_prev)
+                    if intersect_x is None and 0 <= ratio <= 1:
+                        intersect_x = x_prev + (x_curr - x_prev) * ratio
+                        intersect_y = avg_bound
+
+        # Qizil qismlarni yig'ish va grafikka chizish
+        if is_anomalous_curr != is_anomalous_prev:
+            if is_anomalous_prev and len(current_anomalous_segment_x) > 0:
                 if intersect_x is not None:
                     current_anomalous_segment_x.append(intersect_x)
                     current_anomalous_segment_y.append(intersect_y)
 
-                # Anomaliya segmentini saqlash (faqat yetarli uzunlikdagi)
                 if len(current_anomalous_segment_x) >= min_anomaly_length:
                     anomaly_segments.append({
                         'start_date': current_anomalous_segment_x[0],
@@ -649,7 +735,7 @@ def plot_data_with_anomalies(
 
         is_anomalous_prev = is_anomalous_curr
 
-    # Oxirgi segmentni yopish va saqlash
+    # Oxirgi qolib ketgan anomaliya segmentini yopish va chizish
     if is_anomalous_prev and len(current_anomalous_segment_x) > 1:
         if len(current_anomalous_segment_x) >= min_anomaly_length:
             anomaly_segments.append({
@@ -672,39 +758,6 @@ def plot_data_with_anomalies(
         )
 
     return y_all_values
-
-
-# @csrf_exempt  # AJAX uchun vaqtincha, keyin token bilan xavfsiz qilish mumkin
-# def set_reference_segment(request):
-#     if request.method == 'POST':
-#         try:
-#             data = json.loads(request.body)
-#             segment = data.get('segment')
-#
-#             if not segment:
-#                 return JsonResponse({'status': 'error', 'message': 'Segment ma\'lumotlari yo\'q'}, status=400)
-#
-#             # Sessionda saqlash
-#             request.session['selected_reference_segment'] = {
-#                 'index': segment.get('index'),
-#                 'start': segment.get('start'),
-#                 'end': segment.get('end'),
-#                 # Agar values ham yuborilgan bo'lsa qo'shish mumkin
-#             }
-#             request.session.modified = True
-#
-#             return JsonResponse({
-#                 'status': 'success',
-#                 'message': 'Reference segment tanlandi',
-#                 'selected': segment
-#             })
-#
-#         except json.JSONDecodeError:
-#             return JsonResponse({'status': 'error', 'message': 'JSON format xatosi'}, status=400)
-#         except Exception as e:
-#             return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
-#
-#     return JsonResponse({'status': 'error', 'message': 'Faqat POST so\'rov qabul qilinadi'}, status=405)
 
 
 def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4,
@@ -877,17 +930,20 @@ def draw_magnitude_values(fig, original_df, row_index, col_index=1, min_mag=4,
     fig.update_yaxes(
         showgrid=True,
         gridwidth=0.15,
-        gridcolor="black",
-        griddash="dot",
+        gridcolor="#eaeded",
+        #griddash="dot",
         row=row_index,
         col=col_index,
         secondary_y=False,
     )
     fig.update_yaxes(
-        showgrid=True,
-        gridwidth=0.15,
-        gridcolor="gray",
-        griddash="dot",
+        showgrid=False,
+        showline=True,
+        linewidth=1,
+        linecolor='black',
+        # gridwidth=0.15,
+        # gridcolor="gray",
+        # griddash="dot",
         row=row_index,
         col=col_index,
         secondary_y=True,
@@ -1210,12 +1266,6 @@ def add_seismogenic_zones_to_map(folium_map, zones_gdf):
     except Exception as e:
         logging.error(f"Seysmogen zonalarni xaritaga qo'shishda xato: {e}")
         return {}
-
-
-
-
-
-
 
 
 
@@ -1569,17 +1619,8 @@ def _build_well_info_dict(malumot) -> Dict:
             if isinstance(blob, (bytes, bytearray)) and len(blob) > 0:
                 encoded = base64.b64encode(blob).decode("utf-8")
 
-                # Sizda ko'p hollarda PNG ekan (skrinshot)
-                # Agar JPEG ham bo'lishi mumkin bo'lsa, pastdagi "mime aniqlash"ni yoqing.
                 mime_type = "image/png"
 
-                # (ixtiyoriy) Header orqali mime aniqlash:
-                # if blob.startswith(b"\xff\xd8\xff"):
-                #     mime_type = "image/jpeg"
-                # elif blob.startswith(b"\x89PNG\r\n\x1a\n"):
-                #     mime_type = "image/png"
-                # elif blob[:3] == b"GIF":
-                #     mime_type = "image/gif"
 
                 result["mineralizatsiya_base64"] = f"data:{mime_type};base64,{encoded}"
 
@@ -2735,7 +2776,8 @@ def results_view(request):
                 min_mag = context['min_mag'],
                 btn_value = context['btn_value'],
                 min_mlgr = context['min_mlgr'],
-                filter_mode = context['filter_mode']
+                filter_mode = context['filter_mode'],
+                segment_years = context['segment_years']
             )
 
             if not graphs_list:
@@ -2821,6 +2863,13 @@ def initialize_context(request) -> Dict:
         except ValueError:
             median_window = None
 
+        #yillik sigma kiritish uchun
+        segment_years_raw = request.POST.get("segment_years", "").strip()
+        try:
+            segment_years = int(segment_years_raw) if segment_years_raw else None
+        except ValueError:
+            segment_years = None
+
         #Sessionga saqlash
         request.session.update({
             'selected_keys':selected_keys,
@@ -2831,6 +2880,7 @@ def initialize_context(request) -> Dict:
             'filter_start_date':filter_start_date,
             'filter_end_date':filter_end_date,
             'median_window':median_window,
+            'segment_years': segment_years,
             'use_catalog':True,
             'filter_mode':filter_mode,
             'hide_map':hide_map,
@@ -2846,6 +2896,7 @@ def initialize_context(request) -> Dict:
         min_mlgr = request.session.get("min_mlgr",2.5)
         filter_start_date = request.session.get("filter_start_date", "")
         filter_end_date = request.session.get("filter_end_date", "")
+        segment_years = request.session.get("segment_years", None)
         use_catalog = request.session.get("use_catalog", False)
         median_window = request.session.get("median_window", None)
         filter_mode = request.session.get("filter_mode", "mlgr")
@@ -2871,6 +2922,7 @@ def initialize_context(request) -> Dict:
         'filter_start_date': filter_start_date,
         'filter_end_date':filter_end_date,
         'median_window': median_window,
+        'segment_years': segment_years,
         'filter_mode': filter_mode,
         'hide_map': hide_map,
         'hide_graphs': hide_graphs,
@@ -2883,6 +2935,7 @@ def initialize_context(request) -> Dict:
         'current_start_date':filter_start_date,
         'current_end_date':filter_end_date,
         'current_median_window': median_window or "",
+        'segment_years': segment_years or "",
         'current_filter_mode': filter_mode,
         'current_hide_map':hide_map,
         'current_hide_graphs':hide_graphs,
@@ -3025,7 +3078,8 @@ def generate_all_graphs(
         min_mag: float,
         btn_value: float,
         min_mlgr: float,
-        filter_mode: str
+        filter_mode: str,
+        segment_years: Optional[int] = None
 ) -> Tuple[List[Dict], List[Tuple]]:
     """
     ✅ OPTIMIZED: Faqat mavjud ma'lumotli grafiklarni yaratish
@@ -3189,7 +3243,8 @@ def generate_all_graphs(
                     min_mlgr=min_mlgr,
                     filter_mode=filter_mode,
                     user_start_date=user_start_date,
-                    user_end_date=user_end_date
+                    user_end_date=user_end_date,
+                    segment_years=segment_years
                 )
 
                 # ✅ YANGI: Grafik yaratilmasa, o'tkazib yuborish
@@ -3254,7 +3309,8 @@ def create_single_graph(
         min_mlgr: float,
         filter_mode: str,
         user_start_date: Optional[pd.Timestamp],
-        user_end_date: Optional[pd.Timestamp]
+        user_end_date: Optional[pd.Timestamp],
+            segment_years: Optional[int] = None
 ) -> Optional[go.Figure]:
     """
     ✅ SAFE: None qaytaradi agar grafik yaratish mumkin bo'lmasa
@@ -3280,7 +3336,8 @@ def create_single_graph(
         # Asosiy ma'lumotlarni chizish
         try:
             y_all = plot_data_with_anomalies(
-                fig, x, y, mean, sigma, btn_value, row, col, color, param, key
+                fig, x, y, mean, sigma, btn_value, row, col,
+                color, param, key, segment_years,
             )
         except Exception as e:
             logger.error(f"❌ Error in plot_data_with_anomalies: {e}")
@@ -3300,6 +3357,11 @@ def create_single_graph(
             fig.update_yaxes(
                 title_text=f"{param} Qiymati",
                 range=y_range,
+                showgrid=True,          # Yengil chiziq qoldirish
+                gridcolor="#f0f0f0",    # Juda ochiq kulrang (deyarli ko'rinmaydi)
+                showline=True,          # O'q chekka chizig'i
+                linewidth=1,
+                linecolor='black',
                 row=row, col=col,
                 secondary_y=False
             )
@@ -3324,7 +3386,10 @@ def create_single_graph(
         fig.update_xaxes(
             range=[x_axis_start - delta, x_axis_end + delta],
             type="date",
-            showgrid=True,
+            showgrid=False,
+            showline=True,
+            linewidth=1,
+            linecolor='black',
             griddash="dot",
             row=row, col=col
         )
@@ -3343,7 +3408,8 @@ def create_single_graph(
             height=500,
             autosize=True,
             showlegend=False,
-            plot_bgcolor="gainsboro",
+            plot_bgcolor="white",
+            paper_bgcolor="white",
             hovermode="x unified",
             hoverdistance=1,
             margin=dict(l=60, r=60, t=80, b=60),
