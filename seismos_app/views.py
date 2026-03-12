@@ -551,25 +551,34 @@ def plot_data_with_anomalies(
 
     yaxis_index = (row_idx - 1) * 1 + col_idx
     yref = "y" if yaxis_index == 1 else f"y{2 * row_idx - 1}"
-
+    fig.add_shape(
+        type="rect",
+        x0=min(x_val), x1=max(x_val),
+        y0=lower_bound, y1=upper_bound,
+        fillcolor="gray",  # Fon rangi
+        opacity=0.15,  # 15% to'qlikda (ko'zni charchatmasligi uchun juda ochiq kulrang)
+        layer="below",  # Chiziqlar va grafikning orqasiga (orqa fonga) tushirish
+        line_width=0,  # To'rtburchakning o'zini qo'shimcha ramkasi bo'lmasligi uchun
+        row=row_idx, col=col_idx, yref=yref, xref="x"
+    )
     # UB, MEAN va LB chiziqlarini chizish (Global)
-    fig.add_shape(type="line", x0=min(x_val), x1=max(x_val), y0=upper_bound, y1=upper_bound,
-                  line=dict(color="green", width=1.5), row=row_idx, col=col_idx, yref=yref, xref="x")
-    fig.add_annotation(x=max(x_val), y=upper_bound, text=f"UB ({btn_value}σ)", showarrow=False,
-                       font=dict(color="green", size=10), xanchor="right", yanchor="bottom",
-                       row=row_idx, col=col_idx)
+    # fig.add_shape(type="line", x0=min(x_val), x1=max(x_val), y0=upper_bound, y1=upper_bound,
+    #               line=dict(color="green", width=1.5), row=row_idx, col=col_idx, yref=yref, xref="x")
+    # fig.add_annotation(x=max(x_val), y=upper_bound, text=f"UB ({btn_value}σ)", showarrow=False,
+    #                    font=dict(color="green", size=10), xanchor="right", yanchor="bottom",
+    #                    row=row_idx, col=col_idx)
 
-    fig.add_shape(type="line", x0=min(x_val), x1=max(x_val), y0=mean, y1=mean,
-                  line=dict(color="magenta", width=1.5), row=row_idx, col=col_idx, yref=yref, xref="x")
-    fig.add_annotation(x=max(x_val), y=mean, text="Mean", showarrow=False,
-                       font=dict(color="magenta", size=10), xanchor="right", yanchor="bottom",
-                       row=row_idx, col=col_idx)
+    # fig.add_shape(type="line", x0=min(x_val), x1=max(x_val), y0=mean, y1=mean,
+    #               line=dict(color="magenta", width=1.5), row=row_idx, col=col_idx, yref=yref, xref="x")
+    # fig.add_annotation(x=max(x_val), y=mean, text="Mean", showarrow=False,
+    #                    font=dict(color="magenta", size=10), xanchor="right", yanchor="bottom",
+    #                    row=row_idx, col=col_idx)
 
-    fig.add_shape(type="line", x0=min(x_val), x1=max(x_val), y0=lower_bound, y1=lower_bound,
-                  line=dict(color="blue", width=1.5), row=row_idx, col=col_idx, yref=yref, xref="x")
-    fig.add_annotation(x=max(x_val), y=lower_bound, text=f"LB ({-btn_value}σ)", showarrow=False,
-                       font=dict(color="blue", size=10), xanchor="right", yanchor="top",
-                       row=row_idx, col=col_idx)
+    # fig.add_shape(type="line", x0=min(x_val), x1=max(x_val), y0=lower_bound, y1=lower_bound,
+    #               line=dict(color="blue", width=1.5), row=row_idx, col=col_idx, yref=yref, xref="x")
+    # fig.add_annotation(x=max(x_val), y=lower_bound, text=f"LB ({-btn_value}σ)", showarrow=False,
+    #                    font=dict(color="blue", size=10), xanchor="right", yanchor="top",
+    #                    row=row_idx, col=col_idx)
 
     # === YILLIK (SEGMENTAL) CHEGARALARNI CHIZISH (YOTIQ/GORIZONTAL) ===
     if has_segments:
