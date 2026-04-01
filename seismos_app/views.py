@@ -3141,6 +3141,11 @@ def generate_all_graphs(
                 df_temp = pd.DataFrame(data, columns=['date', 'value'])
                 df_temp['date'] = pd.to_datetime(df_temp['date'], errors='coerce')
                 df_temp['value'] = pd.to_numeric(df_temp['value'], errors='coerce')
+                df_temp = df_temp[
+                    (df_temp['value'] != 0) &
+                    (df_temp['value'].notna()) &
+                    (df_temp['date'].notna())
+                    ].copy()
                 df_temp.dropna(subset=['date', 'value'], inplace=True)
 
                 # ✅ YANGI: Tozalagandan keyin ham bo'sh bo'lsa
