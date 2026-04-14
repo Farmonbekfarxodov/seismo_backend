@@ -2111,11 +2111,7 @@ def add_map_data_folium(selected_keys, well_coords, earthquake_data, min_mag, mi
             # AYLANALARNI O'SHA RANGDA QO'SHISH
             # ============================================================
             try:
-                if filter_mode == "mb":
-                    mlgr_val = 2.5
-                else:
-                    mlgr_val = min_mlgr if min_mlgr > 0 else 0.5
-
+                mlgr_val = 2.5
                 # HAR BIR AYLANA UCHUN O'SHA SKVAJINANING RANGIDAN FOYDALANISH
                 radii_data = [
                     (5, colors['shades'][0]),  # Ochiq soya
