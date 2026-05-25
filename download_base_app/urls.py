@@ -11,4 +11,6 @@ urlpatterns = [
 
     # 2) Excel yuklash (POST)
     path("upload/excel/", views.upload_excel, name="upload_excel"),
+
+    path('upload/transfer/', views.transfer_to_new_db),  # ← yangi
 ]
