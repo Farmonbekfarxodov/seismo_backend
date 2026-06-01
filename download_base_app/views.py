@@ -192,6 +192,7 @@ def get_custom_db_connection(host, user, password, db_name):
         user=user,
         password=password,
         database=db_name,
+        port=int(config("NEW_DB_PORT", default="3306")),
         connect_timeout=10,
     )
 
