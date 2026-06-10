@@ -354,13 +354,10 @@ def save_api_data_to_db(connection, data_list):
 # ==================== Transfer flow ====================
 
 def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, end_date):
-    """
-    Asosiy bazadan (src_conn) yangi bazaga (dst_conn) ma'lumot ko'chiradi.
-    Qaytaradi: (newly_inserted: int, updated: int, error: str | None)
-    """
     src_cursor = src_conn.cursor(dictionary=True)
     dst_cursor = dst_conn.cursor()
 
+    # 1. Quduqlarni aniqlash
     target_wells = []
     if station_code == "all":
         for st_info in STATIONS_AND_WELLS.values():
@@ -376,37 +373,64 @@ def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, e
                 target_wells.append(w["db_well"])
         else:
             target_wells.append(well_code)
+
     if not target_wells:
         src_cursor.close(); dst_cursor.close()
         return 0, 0, "Quduq topilmadi"
 
-    placeholders = ", ".join(["%s"] * len(target_wells))
-    src_cursor.execute(
-        f"SELECT skvajina, izmereniya, ssdi_id FROM all_izmereniya WHERE skvajina IN ({placeholders})",
-        target_wells
-    )
-    ssdi_rows = src_cursor.fetchall()
-    if not ssdi_rows:
-        src_cursor.close(); dst_cursor.close()
-        return 0, 0, "all_izmereniya da mos quduqlar topilmadi"
-    ssdi_ids = [str(row["ssdi_id"]) for row in ssdi_rows]
+    # 2. ✅ save_api_data_to_db kabi — DST bazadan last_date olish
+    dst_cursor.execute("SELECT MAX(date) FROM alldata")
+    last_date_row = dst_cursor.fetchone()
+    last_date = _parse_to_datetime(last_date_row[0]) if last_date_row else None
+    logger.info(f"📅 DST last_date: {last_date}")
 
+    # 3. ✅ save_api_data_to_db kabi — ssdi_cache to'liq yuklanadi
+    src_cursor.execute("SELECT skvajina, izmereniya, ssdi_id FROM all_izmereniya")
+    ssdi_cache = {}
+    for row in src_cursor.fetchall():
+        ssdi_cache[
+            (normalize_string(row["skvajina"]), normalize_string(row["izmereniya"]))
+        ] = str(row["ssdi_id"])
+
+    # 4. src bazadan sana oralig'ini parse qilish
     start_dt = _parse_to_datetime(start_date)
     end_dt   = _parse_to_datetime(end_date)
     if not start_dt or not end_dt:
         src_cursor.close(); dst_cursor.close()
         return 0, 0, "Sana formati noto'g'ri (dd.mm.yyyy bo'lishi kerak)"
 
-    col_list = ", ".join(f"`{sid}`" for sid in ssdi_ids)
+    # 5. src bazadan tanlangan quduqlarning ssdi_id larini olish
+    placeholders = ", ".join(["%s"] * len(target_wells))
     src_cursor.execute(
-        f"SELECT date, {col_list} FROM alldata WHERE date BETWEEN %s AND %s ORDER BY date",
-        (start_dt, end_dt)
+        f"SELECT DISTINCT skvajina, ssdi_id FROM all_izmereniya "
+        f"WHERE skvajina IN ({placeholders})",
+        target_wells
     )
-    rows = src_cursor.fetchall()
-    if not rows:
-        src_cursor.close(); dst_cursor.close()
-        return 0, 0, "Tanlangan oraliqda ma'lumot topilmadi"
+    well_ssdi_map = {}  # {db_well: [ssdi_id, ...]}
+    for row in src_cursor.fetchall():
+        well = row["skvajina"]
+        sid  = str(row["ssdi_id"])
+        well_ssdi_map.setdefault(well, []).append(sid)
 
+    if not well_ssdi_map:
+        src_cursor.close(); dst_cursor.close()
+        return 0, 0, "all_izmereniya da mos quduqlar topilmadi"
+
+    all_ssdi_ids = [sid for sids in well_ssdi_map.values() for sid in sids]
+
+    # 6. src bazada mavjud ustunlarni tekshirish
+    src_cursor.execute(
+        "SELECT COLUMN_NAME FROM information_schema.columns "
+        "WHERE table_schema=DATABASE() AND table_name='alldata'"
+    )
+    src_cols     = {r["COLUMN_NAME"] for r in src_cursor.fetchall()}
+    valid_ssdi   = [sid for sid in all_ssdi_ids if sid in src_cols]
+
+    if not valid_ssdi:
+        src_cursor.close(); dst_cursor.close()
+        return 0, 0, "src bazada mos ustunlar topilmadi"
+
+    # 7. dst bazada alldata mavjudligini tekshirish
     try:
         dst_cursor.execute("SELECT 1 FROM alldata LIMIT 1")
         dst_cursor.fetchall()
@@ -414,73 +438,92 @@ def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, e
         src_cursor.close(); dst_cursor.close()
         return 0, 0, "Yangi bazada 'alldata' jadvali mavjud emas"
 
-    for sid in ssdi_ids:
+    # 8. dst bazada ustunlar yo'q bo'lsa qo'shish
+    for sid in valid_ssdi:
         dst_cursor.execute(
             "SELECT COUNT(*) FROM information_schema.columns "
             "WHERE table_schema=DATABASE() AND table_name='alldata' AND column_name=%s",
             (sid,)
         )
-        exists = dst_cursor.fetchone()[0] > 0
-        if not exists:
+        if dst_cursor.fetchone()[0] == 0:
             dst_cursor.execute(f"ALTER TABLE alldata ADD COLUMN `{sid}` FLOAT")
             dst_conn.commit()
-            logger.info(f"🆕 Yangi bazaga ustun qo'shildi: {sid}")
+            logger.info(f"🆕 DST ga ustun qo'shildi: {sid}")
 
-    newly_inserted = 0; updated = 0; skipped = 0
+    # 9. src dan ma'lumotlarni o'qish
+    col_list = ", ".join(f"`{sid}`" for sid in valid_ssdi)
+    src_cursor.execute(
+        f"SELECT date, {col_list} FROM alldata "
+        f"WHERE date BETWEEN %s AND %s ORDER BY date",
+        (start_dt, end_dt)
+    )
+    rows = src_cursor.fetchall()
+    logger.info(f"📊 src dan {len(rows)} ta qator o'qildi")
+
+    if not rows:
+        src_cursor.close(); dst_cursor.close()
+        return 0, 0, "Tanlangan oraliqda ma'lumot topilmadi"
+
+    # 10. ✅ save_api_data_to_db kabi — INSERT logikasi
+    newly_inserted = 0
+    updated        = 0
 
     for row in rows:
-        date_val = row["date"]
-        # --- BAZADAN har safar tekshir:
-        dst_cursor.execute("SELECT COUNT(*) FROM alldata WHERE date=%s", (date_val,))
-        exists = dst_cursor.fetchone()[0] > 0
+        parsed_date = _parse_to_datetime(row["date"])
+        if not parsed_date:
+            continue
 
-        if exists:
-            set_parts = []
-            values = []
-            for sid in ssdi_ids:
-                val = row.get(sid)
-                if val is not None and val != 0:
-                    set_parts.append(f"`{sid}`=%s")
-                    values.append(val)
+        values_dict = {}
+        for sid in valid_ssdi:
+            val = row.get(sid)
+            if val is not None and val != "":
+                values_dict[sid] = val
+
+        if not values_dict:
+            continue
+
+        # ✅ INSERT + ON DUPLICATE KEY UPDATE — ikkalasini birga hal qiladi
+        cols = ["date"] + list(values_dict.keys())
+        vals = [parsed_date] + list(values_dict.values())
+        col_str = ", ".join(f"`{c}`" for c in cols)
+        ph_str = ", ".join(["%s"] * len(vals))
+
+        # Mavjud qiymatni o'zgartirmaydi, faqat NULL bo'lsa yozadi
+        update_parts = [
+            f"`{sid}` = COALESCE(`{sid}`, VALUES(`{sid}`))"
+            for sid in values_dict.keys()
+        ]
+
+        sql = (
+            f"INSERT INTO alldata ({col_str}) VALUES ({ph_str}) "
+            f"ON DUPLICATE KEY UPDATE {', '.join(update_parts)}"
+        )
+
+        try:
+            dst_cursor.execute(sql, vals)
+            newly_inserted += 1
+        except Exception as e:
+            logger.error(f"❌ INSERT/UPDATE xato ({parsed_date}): {e}")
+
+        else:
+            # ✅ Mavjud sana — UPDATE (bo'sh ustunlarni to'ldirish)
+            set_parts = [f"`{sid}`=COALESCE(`{sid}`, %s)"
+                         for sid in values_dict if sid != "date"]
+            vals      = [v for k, v in values_dict.items() if k != "date"]
+            vals.append(parsed_date)
             if set_parts:
-                values.append(date_val)
                 dst_cursor.execute(
                     f"UPDATE alldata SET {', '.join(set_parts)} WHERE date=%s",
-                    values
+                    vals
                 )
                 updated += 1
-            else:
-                skipped += 1
-        else:
-            non_null_ids = [sid for sid in ssdi_ids if row.get(sid) is not None]
-            non_null_vals = [row[sid] for sid in non_null_ids]
-            if non_null_ids:
-                cols = ["date"] + non_null_ids
-                vals = [date_val] + non_null_vals
-                col_str = ", ".join(f"`{c}`" for c in cols)
-                ph_str = ", ".join(["%s"] * len(vals))
-                try:
-                    dst_cursor.execute(
-                        f"INSERT INTO alldata ({col_str}) VALUES ({ph_str})",
-                        vals
-                    )
-                    newly_inserted += 1
-                except Exception as e:
-                    logger.error(f"❌ INSERT xato ({date_val}): {e}")
-                    skipped += 1
-            else:
-                skipped += 1
 
     dst_conn.commit()
     src_cursor.close()
     dst_cursor.close()
 
-    logger.info(
-        f"Transfer: {newly_inserted} ta yangi, {updated} ta yangilandi, {skipped} ta o'tkazildi"
-    )
+    logger.info(f"✅ INSERT={newly_inserted}, UPDATE={updated}")
     return newly_inserted, updated, None
-# ==================== Excel flow ====================
-
 def _extract_skvajina_name_from_filename(filename: str) -> str:
     name = filename.replace("Gidrogeoseysmologiya-", "").split("_")[0]
     return name.replace("'", "ʻ")
