@@ -84,6 +84,36 @@
       <div id="transferMessage" class="mt-3 text-center fw-bold"></div>
     </div>
 
+    <!-- ===================== 4) MAGNITKA (measurements) BAZASIGA YUKLASH ===================== -->
+    <div class="border rounded p-3 mt-4 border-info">
+      <h5 class="mb-3">4) Magnitka ma'lumotlarini bazaga yuklash</h5>
+
+      <form id="magnitkaForm" method="POST">
+        {% csrf_token %}
+
+        <label for="magnitkaStationSelect">Stansiyani tanlang:</label>
+        <select id="magnitkaStationSelect" name="station_code" class="form-select mb-3">
+          <option value="">Hammasi</option>
+          <!-- ✅ JavaScript bilan dinamik to'ldiriladi DB'dan -->
+        </select>
+
+        <label for="magnitka_start_date">Boshlang'ich sana:</label>
+        <input type="date" id="magnitka_start_date" name="start_date" required
+               min="1960-01-01" max="2100-12-31" class="form-control mb-3">
+
+        <label for="magnitka_end_date">Yakuniy sana:</label>
+        <input type="date" id="magnitka_end_date" name="end_date" required
+               min="1960-01-01" max="2100-12-31" class="form-control mb-3">
+
+        <button type="submit" class="btn btn-info w-100 fw-bold">
+          Magnitka ma'lumotlarini yuklash
+        </button>
+      </form>
+
+      <div id="magnitkaMessage" class="mt-3 text-center fw-bold"></div>
+    </div>
+
+
   </div>
 </div>
 
@@ -300,5 +330,123 @@
       setMsg(transferMessageDiv, 'Xatolik: ' + error.message, 'text-danger');
     }
   });
+
+// ===================== MAGNITKA STANSIYALARINI LOAD QILISH =====================
+async function loadMagnitkaStations() {
+  try {
+    console.log('📥 Magnitka stansiyalari yuklanmoqda...');
+    const response = await fetch('/upload/get-stations/');
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+
+    if (!result.success) {
+      console.error('❌ Stansiyalarni olishda xato:', result.message);
+      return;
+    }
+
+    const selectEl = document.getElementById('magnitkaStationSelect');
+
+    // Tozalab, "Hammasi" ni qayta yaratamiz
+    selectEl.innerHTML = '';
+
+    const allOption = document.createElement('option');
+    allOption.value = '';
+    allOption.textContent = 'Hammasi';
+    selectEl.appendChild(allOption);
+
+    // DB'dan kelgan stansiyalarni qo'shish
+    result.data.forEach(station => {
+      const opt = document.createElement('option');
+      opt.value = station.code;
+      opt.textContent = station.name;
+      selectEl.appendChild(opt);
+    });
+
+    console.log(`✅ ${result.data.length} ta stansiya yuklandi`);
+  } catch (error) {
+    console.error('❌ Stansiyalarni yuklab bo\'lmadi:', error);
+  }
+}
+
+// Page load bo'lganda chaqirish
+document.addEventListener('DOMContentLoaded', () => {
+  loadMagnitkaStations();
+});
+
+// ===================== 4) Magnitka form submit =====================
+const magnitkaForm       = document.getElementById('magnitkaForm');
+const magnitkaMessageDiv = document.getElementById('magnitkaMessage');
+
+magnitkaForm.addEventListener('submit', async function (event) {
+  event.preventDefault();
+
+  const formData       = new FormData(magnitkaForm);
+  const csrfToken      = formData.get('csrfmiddlewaretoken');
+  const startDateInput = formData.get('start_date');
+  const endDateInput   = formData.get('end_date');
+  const stationCode    = formData.get('station_code');
+
+  // ✅ Validation
+  if (!startDateInput || !endDateInput) {
+    setMsg(magnitkaMessageDiv, 'Iltimos, sanalarni kiriting!', 'text-danger');
+    return;
+  }
+  if (new Date(endDateInput) < new Date(startDateInput)) {
+    setMsg(magnitkaMessageDiv, "Yakuniy sana boshlang'ich sanadan keyin bo'lishi kerak!", 'text-danger');
+    return;
+  }
+
+  // ✅ Loading message
+  setMsg(magnitkaMessageDiv, '⏳ Magnitka ma\'lumotlari yuklanmoqda... (Bu 2-3 daqiqani olishi mumkin)', 'text-muted');
+
+  try {
+    const response = await fetch('/upload/magnitka/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': csrfToken
+      },
+      body: JSON.stringify({
+        date_start:   startDateInput,
+        date_end:     endDateInput,
+        station_code: stationCode || null,
+      }),
+    });
+
+    // ✅ HTTP status tekshirish
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+
+    // ✅ Success/Error
+    if (result.success) {
+      setMsg(
+        magnitkaMessageDiv,
+        `✅ Muvaffaqiyat! ${result.processed || 0} ta yozuv bazaga yozildi.`,
+        'text-success'
+      );
+      magnitkaForm.reset();
+    } else {
+      setMsg(
+        magnitkaMessageDiv,
+        `❌ Xato: ${result.message}`,
+        'text-danger'
+      );
+    }
+  } catch (error) {
+    console.error('🔴 Magnitka form xatosi:', error);
+    setMsg(
+      magnitkaMessageDiv,
+      `❌ Xatolik: ${error.message}. Log faylini tekshiring.`,
+      'text-danger'
+    );
+  }
+});
 </script>
 {% endblock %}

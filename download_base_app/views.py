@@ -11,7 +11,7 @@ from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from decouple import config
-
+from datetime import timedelta
 
 # ✅ Logging
 logging.basicConfig(
@@ -156,21 +156,26 @@ STATIONS_AND_WELLS = {
 
 # ✅ API credentials
 LOGIN_URL = config("LOGIN")
-DATA_URL  = config("DATA")
-USERNAME  = config("USER_NAME")
-PASSWORD  = config("PASS_WORD")
+DATA_URL = config("DATA")
+USERNAME = config("USER_NAME")
+PASSWORD = config("PASS_WORD")
+
+LOGIN_URL_MAG = config("LOGIN_MAG")
+DATA_URL_MAG = config("DATA_MAG")
+USERNAME_MAG = config("USER_NAME_MAG")
+PASSWORD_MAG = config("PASS_WORD_MAG")
 
 # ✅ Asosiy DB credentials
-DB_HOST     = config("DB_HOST",     default="localhost")
-DB_USER     = config("DB_USER",     default="root")
+DB_HOST = config("DB_HOST", default="localhost")
+DB_USER = config("DB_USER", default="root")
 DB_PASSWORD = config("DB_PASSWORD", default="1111")
-DB_NAME     = config("DB_NAME",     default="seismik")
+DB_NAME = config("DB_NAME", default="seismik")
 
 # ✅ Yangi (ko'chirish uchun) DB credentials
-NEW_DB_HOST     = config("NEW_DB_HOST",     default="localhost")
-NEW_DB_USER     = config("NEW_DB_USER",     default="root")
+NEW_DB_HOST = config("NEW_DB_HOST", default="localhost")
+NEW_DB_USER = config("NEW_DB_USER", default="root")
 NEW_DB_PASSWORD = config("NEW_DB_PASSWORD", default="")
-NEW_DB_NAME     = config("NEW_DB_NAME",     default="seismik_backup")
+NEW_DB_NAME = config("NEW_DB_NAME", default="seismik_backup")
 
 
 # ==================== Helpers ====================
@@ -237,6 +242,24 @@ def get_auth_token():
         return None
 
 
+def get_auth_token_magnitka():
+    payload = {"username": USERNAME_MAG, "password": PASSWORD_MAG}
+    try:
+        response = requests.post(LOGIN_URL_MAG, json=payload, timeout=10)
+        response.raise_for_status()
+        token = response.json().get("result", {}).get("token")
+        return token
+    except requests.exceptions.ConnectionError:
+        logger.error("❌ Token: internet ulanish xatosi")
+        return None
+    except requests.exceptions.Timeout:
+        logger.error("⏱️ Token: so'rov vaqti tugadi")
+        return None
+    except Exception as e:
+        logger.error(f"❌ Token olishda xato: {e}", exc_info=True)
+        return None
+
+
 def fetch_data_from_api(params, token):
     headers = {"Authorization": f"Bearer {token}"}
     all_data = []
@@ -272,6 +295,214 @@ def fetch_data_from_api(params, token):
         return None
 
 
+# ============================================================
+# API dan magnitka ma'lumotlarini olish
+# ============================================================
+def split_date_range_by_month(start_date: str, end_date: str):
+    """
+    Sana oralig'ini oyma-oy bo'lib beradi.
+    Misol:
+    2020-01-15 -> 2020-03-10
+    [
+        ('2020-01-15', '2020-01-31'),
+        ('2020-02-01', '2020-02-29'),
+        ('2020-03-01', '2020-03-10'),
+    ]
+    """
+    start = dt.datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = dt.datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    ranges = []
+    current = start
+
+    while current <= end:
+        # current oyning oxirini topish
+        if current.month == 12:
+            next_month = current.replace(year=current.year + 1, month=1, day=1)
+        else:
+            next_month = current.replace(month=current.month + 1, day=1)
+
+        month_end = next_month - timedelta(days=1)
+        chunk_end = min(month_end, end)
+
+        ranges.append((
+            current.strftime("%Y-%m-%d"),
+            chunk_end.strftime("%Y-%m-%d")
+        ))
+
+        current = chunk_end + timedelta(days=1)
+
+    return ranges
+
+
+def fetch_magnitka_chunk(date_start, date_end, token, station_code=None, max_retries=3):
+    """
+    Bitta kichik interval uchun magnitude-values ni pagination bilan yuklab oladi.
+    """
+    base_url = config("DATA_MAG")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    params = {
+        "date_start": date_start,
+        "date_end": date_end,
+    }
+    if station_code:
+        params["station_code"] = station_code
+
+    all_data = []
+    page = 1
+
+    while True:
+        current_params = params.copy()
+        current_params["page"] = page
+
+        success = False
+        resp = None
+        body = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(
+                    f"📄 Magnitka chunk: {date_start} -> {date_end} | "
+                    f"page={page} | attempt={attempt}"
+                )
+
+                resp = requests.get(
+                    base_url,
+                    headers=headers,
+                    params=current_params,
+                    timeout=(10, 60)   # connect=10s, read=60s
+                )
+                resp.raise_for_status()
+
+                body = resp.json()
+                success = True
+                break
+
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response else None
+
+                # vaqtinchalik server xatolari -> retry
+                if status in (502, 503, 504):
+                    logger.warning(
+                        f"⚠️ HTTP {status}: {date_start} -> {date_end}, "
+                        f"page={page}, attempt={attempt}/{max_retries}"
+                    )
+                    if attempt < max_retries:
+                        time.sleep(2 * attempt)
+                        continue
+
+                logger.error(f"🌐 HTTPError: {e}", exc_info=True)
+                logger.error(f"Response text: {resp.text if resp is not None else 'No response'}")
+                return None
+
+            except requests.exceptions.Timeout as e:
+                logger.warning(
+                    f"⏱️ Timeout: {date_start} -> {date_end}, "
+                    f"page={page}, attempt={attempt}/{max_retries}"
+                )
+                if attempt < max_retries:
+                    time.sleep(2 * attempt)
+                    continue
+                logger.error(f"❌ Timeout after retries: {e}", exc_info=True)
+                return None
+
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(
+                    f"🌐 ConnectionError: {date_start} -> {date_end}, "
+                    f"page={page}, attempt={attempt}/{max_retries}"
+                )
+                if attempt < max_retries:
+                    time.sleep(2 * attempt)
+                    continue
+                logger.error(f"❌ ConnectionError after retries: {e}", exc_info=True)
+                return None
+
+            except ValueError as e:
+                logger.error(f"❌ JSON parse xatosi: {e}", exc_info=True)
+                logger.error(f"Response text: {resp.text if resp is not None else 'No response'}")
+                return None
+
+            except Exception as e:
+                logger.error(f"❌ Kutilmagan chunk xato: {e}", exc_info=True)
+                return None
+
+        if not success:
+            logger.error(f"❌ Chunk yuklanmadi: {date_start} -> {date_end}, page={page}")
+            return None
+
+        result = body.get("result", {}) if body else {}
+        data = result.get("data", [])
+
+        logger.info(
+            f"✅ Chunk {date_start} -> {date_end}, "
+            f"page={page}: {len(data)} ta yozuv"
+        )
+
+        if not data:
+            logger.info(f"📄 {date_start} -> {date_end}, page={page}: data bo'sh, stop")
+            break
+
+        all_data.extend(data)
+
+        next_page_url = result.get("next_page_url")
+        if not next_page_url:
+            logger.info(f"✅ {date_start} -> {date_end}: oxirgi sahifa")
+            break
+
+        page += 1
+
+    return all_data
+
+
+def fetch_magnitka_from_api(date_start, date_end, token, station_code=None):
+    """
+    Katta sana oralig'ini oyma-oy bo'lib, har bir oy uchun pagination bilan yuklaydi.
+    """
+    all_data = []
+
+    try:
+        ranges = split_date_range_by_month(date_start, date_end)
+        logger.info(f"📦 Sana oralig'i {len(ranges)} ta chunk ga bo'lindi")
+
+        failed_chunks = []
+
+        for chunk_start, chunk_end in ranges:
+            logger.info(f"🚀 Yuklanmoqda: {chunk_start} -> {chunk_end}")
+
+            chunk_data = fetch_magnitka_chunk(
+                date_start=chunk_start,
+                date_end=chunk_end,
+                token=token,
+                station_code=station_code,
+                max_retries=3,
+            )
+
+            if chunk_data is None:
+                logger.error(f"❌ Chunk yuklanmadi: {chunk_start} -> {chunk_end}")
+                failed_chunks.append((chunk_start, chunk_end))
+                continue
+
+            all_data.extend(chunk_data)
+            logger.info(
+                f"✅ Chunk tugadi: {chunk_start} -> {chunk_end} | "
+                f"{len(chunk_data)} ta | jami={len(all_data)}"
+            )
+
+            # API ni biroz asrash uchun
+            time.sleep(0.3)
+
+        if failed_chunks:
+            logger.warning(f"⚠️ Yuklanmagan chunklar: {failed_chunks}")
+
+        logger.info(f"🎯 Magnitka API dan jami {len(all_data)} ta yozuv olindi")
+        return all_data
+
+    except Exception as e:
+        logger.error(f"❌ fetch_magnitka_from_api umumiy xato: {e}", exc_info=True)
+        return None
+
+
 def save_api_data_to_db(connection, data_list):
     """API dan kelgan ma'lumotlarni asosiy bazaga INSERT qilish"""
     if not data_list:
@@ -302,7 +533,7 @@ def save_api_data_to_db(connection, data_list):
             continue
 
         station_code = item.get("station_code")
-        well_api     = item.get("well_code")
+        well_api = item.get("well_code")
         if not station_code or not well_api:
             continue
 
@@ -336,7 +567,7 @@ def save_api_data_to_db(connection, data_list):
         if not found_any:
             continue
 
-        columns      = ", ".join(f"`{c}`" for c in values_dict.keys())
+        columns = ", ".join(f"`{c}`" for c in values_dict.keys())
         placeholders = ", ".join(["%s"] * len(values_dict))
         sql = f"INSERT INTO alldata ({columns}) VALUES ({placeholders})"
 
@@ -366,7 +597,8 @@ def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, e
     else:
         st_info = STATIONS_AND_WELLS.get(station_code)
         if not st_info:
-            src_cursor.close(); dst_cursor.close()
+            src_cursor.close();
+            dst_cursor.close()
             return 0, 0, "Noto'g'ri stansiya kodi"
         if well_code == "all_wells":
             for w in st_info["wells"]:
@@ -375,7 +607,8 @@ def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, e
             target_wells.append(well_code)
 
     if not target_wells:
-        src_cursor.close(); dst_cursor.close()
+        src_cursor.close();
+        dst_cursor.close()
         return 0, 0, "Quduq topilmadi"
 
     # 2. ✅ save_api_data_to_db kabi — DST bazadan last_date olish
@@ -394,9 +627,10 @@ def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, e
 
     # 4. src bazadan sana oralig'ini parse qilish
     start_dt = _parse_to_datetime(start_date)
-    end_dt   = _parse_to_datetime(end_date)
+    end_dt = _parse_to_datetime(end_date)
     if not start_dt or not end_dt:
-        src_cursor.close(); dst_cursor.close()
+        src_cursor.close();
+        dst_cursor.close()
         return 0, 0, "Sana formati noto'g'ri (dd.mm.yyyy bo'lishi kerak)"
 
     # 5. src bazadan tanlangan quduqlarning ssdi_id larini olish
@@ -409,11 +643,12 @@ def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, e
     well_ssdi_map = {}  # {db_well: [ssdi_id, ...]}
     for row in src_cursor.fetchall():
         well = row["skvajina"]
-        sid  = str(row["ssdi_id"])
+        sid = str(row["ssdi_id"])
         well_ssdi_map.setdefault(well, []).append(sid)
 
     if not well_ssdi_map:
-        src_cursor.close(); dst_cursor.close()
+        src_cursor.close();
+        dst_cursor.close()
         return 0, 0, "all_izmereniya da mos quduqlar topilmadi"
 
     all_ssdi_ids = [sid for sids in well_ssdi_map.values() for sid in sids]
@@ -423,11 +658,12 @@ def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, e
         "SELECT COLUMN_NAME FROM information_schema.columns "
         "WHERE table_schema=DATABASE() AND table_name='alldata'"
     )
-    src_cols     = {r["COLUMN_NAME"] for r in src_cursor.fetchall()}
-    valid_ssdi   = [sid for sid in all_ssdi_ids if sid in src_cols]
+    src_cols = {r["COLUMN_NAME"] for r in src_cursor.fetchall()}
+    valid_ssdi = [sid for sid in all_ssdi_ids if sid in src_cols]
 
     if not valid_ssdi:
-        src_cursor.close(); dst_cursor.close()
+        src_cursor.close();
+        dst_cursor.close()
         return 0, 0, "src bazada mos ustunlar topilmadi"
 
     # 7. dst bazada alldata mavjudligini tekshirish
@@ -435,7 +671,8 @@ def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, e
         dst_cursor.execute("SELECT 1 FROM alldata LIMIT 1")
         dst_cursor.fetchall()
     except Exception:
-        src_cursor.close(); dst_cursor.close()
+        src_cursor.close();
+        dst_cursor.close()
         return 0, 0, "Yangi bazada 'alldata' jadvali mavjud emas"
 
     # 8. dst bazada ustunlar yo'q bo'lsa qo'shish
@@ -461,12 +698,13 @@ def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, e
     logger.info(f"📊 src dan {len(rows)} ta qator o'qildi")
 
     if not rows:
-        src_cursor.close(); dst_cursor.close()
+        src_cursor.close();
+        dst_cursor.close()
         return 0, 0, "Tanlangan oraliqda ma'lumot topilmadi"
 
     # 10. ✅ save_api_data_to_db kabi — INSERT logikasi
     newly_inserted = 0
-    updated        = 0
+    updated = 0
 
     for row in rows:
         parsed_date = _parse_to_datetime(row["date"])
@@ -509,7 +747,7 @@ def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, e
             # ✅ Mavjud sana — UPDATE (bo'sh ustunlarni to'ldirish)
             set_parts = [f"`{sid}`=COALESCE(`{sid}`, %s)"
                          for sid in values_dict if sid != "date"]
-            vals      = [v for k, v in values_dict.items() if k != "date"]
+            vals = [v for k, v in values_dict.items() if k != "date"]
             vals.append(parsed_date)
             if set_parts:
                 dst_cursor.execute(
@@ -524,6 +762,8 @@ def _do_transfer_data(src_conn, dst_conn, station_code, well_code, start_date, e
 
     logger.info(f"✅ INSERT={newly_inserted}, UPDATE={updated}")
     return newly_inserted, updated, None
+
+
 def _extract_skvajina_name_from_filename(filename: str) -> str:
     name = filename.replace("Gidrogeoseysmologiya-", "").split("_")[0]
     return name.replace("'", "ʻ")
@@ -547,7 +787,7 @@ def save_excel_files_to_db(connection, uploaded_files):
     updated_cells = 0
 
     for f in uploaded_files:
-        filename      = getattr(f, "name", "uploaded.xlsx")
+        filename = getattr(f, "name", "uploaded.xlsx")
         skvajina_name = _extract_skvajina_name_from_filename(filename)
 
         df = pd.read_excel(f)
@@ -581,7 +821,7 @@ def save_excel_files_to_db(connection, uploaded_files):
                 logger.warning(f"⚠️ all_izmereniya da topilmadi: {skvajina_name} / {col}")
                 continue
 
-            ssdi_id      = str(row[0])
+            ssdi_id = str(row[0])
             col_name_sql = f"`{ssdi_id}`"
 
             cursor.execute(
@@ -597,7 +837,7 @@ def save_excel_files_to_db(connection, uploaded_files):
             cursor.execute(
                 f"SELECT date FROM alldata WHERE {col_name_sql} IS NOT NULL ORDER BY date DESC LIMIT 1"
             )
-            last_filled      = cursor.fetchone()
+            last_filled = cursor.fetchone()
             last_filled_date = last_filled[0] if last_filled else None
 
             if last_filled_date:
@@ -626,11 +866,243 @@ def save_excel_files_to_db(connection, uploaded_files):
     return updated_cells
 
 
+# ============================================================
+# stations jadvalini API ma'lumotlari bilan avtomatik to'ldirish/yangilash
+# ============================================================
+def sync_stations(connection, api_data):
+    """
+    API javobidagi 'station' obyektidan stations jadvalini to'ldiradi.
+    Faqat yangi code lar uchun INSERT qiladi, mavjudlarini yangilamaydi.
+    """
+    cursor = connection.cursor()
+
+    # Mavjud kodlarni olish
+    cursor.execute("SELECT code FROM stations")
+    existing_codes = {row[0] for row in cursor.fetchall()}
+
+    seen = set()
+    for item in api_data:
+        station_info = item.get("station") or {}
+        code = item.get("station_code")
+        if not code or code in existing_codes or code in seen:
+            continue
+
+        name = (station_info.get("name") or {}).get("uz") or code
+        lat = station_info.get("latitude") or None
+        lon = station_info.get("longitude") or None
+
+        cursor.execute(
+            """
+            INSERT INTO stations (name, code, latitude, longitude)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (name, code, lat, lon)
+        )
+        seen.add(code)
+        logger.info(f"➕ Yangi stansiya qo'shildi: {code} ({name})")
+
+    connection.commit()
+    cursor.close()
+
+
+# ============================================================
+# ASOSIY FUNKSIYA: measurements jadvaliga yozish
+# ============================================================
+
+def save_to_measurements(connection, api_data):
+    """
+    API dan kelgan magnitude ma'lumotlarini measurements jadvaliga yozadi.
+    is_valid va recived_at ustunlari yozilmaydi (jadvaldagi DEFAULT qiymatlar ishlatiladi).
+    """
+    if not api_data:
+        logger.warning("⚠️ Bo'sh ma'lumot keldi")
+        return 0
+
+    cursor = connection.cursor()
+
+    # --- code → local station_id mapping ---
+    cursor.execute("SELECT id, code FROM stations")
+    code_to_id = {row[1]: row[0] for row in cursor.fetchall()}
+
+    rows_to_insert = []
+    skipped = 0
+    unknown_codes = set()
+
+    for item in api_data:
+
+        # ── station_id (code orqali) ────────────────────────────────
+        code = item.get("station_code")
+        station_id = code_to_id.get(code)
+        if not station_id:
+            unknown_codes.add(code)
+            skipped += 1
+            continue
+
+        # ── measured_at ──────────────────────────────────────────────
+        raw_dt = item.get("datetime")
+        if not raw_dt:
+            skipped += 1
+            continue
+        try:
+            measured_at = dt.datetime.strptime(raw_dt, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            logger.warning(f"⚠️ Vaqt formati xato: {raw_dt}")
+            skipped += 1
+            continue
+
+        # ── value ─────────────────────────────────────────────────────
+        raw_value = item.get("value")
+        if raw_value is None or raw_value == "":
+            skipped += 1
+            continue
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            logger.warning(f"⚠️ Qiymat float ga o'tkazilmadi: {raw_value}")
+            skipped += 1
+            continue
+
+        rows_to_insert.append((station_id, measured_at, value))
+
+    if unknown_codes:
+        logger.warning(f"⚠️ Noma'lum stansiya kodlari: {unknown_codes}")
+
+    logger.info(f"📊 Tayyorlandi: {len(rows_to_insert)} ta | O'tkazildi: {skipped} ta")
+
+    if not rows_to_insert:
+        cursor.close()
+        return 0
+
+    # --- Batch INSERT (1000 tadan bo'lib) ---
+    BATCH_SIZE = 1000
+    affected = 0
+
+    for i in range(0, len(rows_to_insert), BATCH_SIZE):
+        batch = rows_to_insert[i: i + BATCH_SIZE]
+        cursor.executemany(
+            """
+            INSERT INTO measurements (station_id, measured_at, value)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                value    = VALUES(value)
+            """,
+            batch,
+        )
+        connection.commit()
+        affected += cursor.rowcount
+        logger.info(f"💾 {i + len(batch)} / {len(rows_to_insert)} yuborildi...")
+
+    cursor.close()
+    logger.info(f"✅ Jami {len(rows_to_insert)} ta qatordan {affected} ta ta'sirlandi")
+    return len(rows_to_insert)
+
+
+# ============================================================
+# VIEW
+# ============================================================
+@csrf_exempt
+def upload_measurements(request):
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "POST kerak."}, status=405)
+
+    try:
+        body = json.loads(request.body)
+        date_start = body.get("date_start")
+        date_end = body.get("date_end")
+        station_code = body.get("station_code")
+
+        logger.info(f"📥 upload_measurements: date_start={date_start}, date_end={date_end}, station_code={station_code}")
+
+        if not date_start or not date_end:
+            return JsonResponse(
+                {"success": False, "message": "date_start va date_end kerak (YYYY-MM-DD)."},
+                status=400
+            )
+
+        logger.info("🔐 Token olinmoqda (magnitka)...")
+        token = get_auth_token_magnitka()
+        if not token:
+            logger.error("❌ Token olinmadi!")
+            return JsonResponse({"success": False, "message": "Token olinmadi."}, status=401)
+
+        logger.info(f"✅ Token olindi. API dan ma'lumot olinmoqda...")
+        api_data = fetch_magnitka_from_api(date_start, date_end, token, station_code)
+
+        if api_data is None:
+            logger.error("❌ API dan olishda xato!")
+            return JsonResponse({
+                "success": False,
+                "message": "API dan olishda xato. Log faylini tekshiring."
+            }, status=500)
+
+        if not api_data:
+            logger.warning("⚠️ API bo'sh javob berdi")
+            return JsonResponse({
+                "success": False,
+                "message": "API bo'sh javob berdi. Sana oralig'ini tekshiring."
+            }, status=400)
+
+        logger.info(f"✅ API dan {len(api_data)} ta qator olindi")
+
+        conn = get_db_connection()
+
+        # Yangi stansiyalar bo'lsa avtomatik qo'shadi
+        sync_stations(conn, api_data)
+
+        inserted = save_to_measurements(conn, api_data)
+        conn.close()
+
+        logger.info(f"✅ Muvaffaqiyat! {inserted} ta yozuv qayta ishlandi")
+
+        return JsonResponse({
+            "success": True,
+            "processed": inserted,
+            "message": f"Jami {inserted} ta yozuv qayta ishlandi."
+        })
+
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ JSON parse xatosi: {e}", exc_info=True)
+        return JsonResponse({"success": False, "message": f"JSON xatosi: {e}"}, status=400)
+    except Exception as e:
+        logger.error(f"❌ upload_measurements: {e}", exc_info=True)
+        return JsonResponse({"success": False, "message": str(e)}, status=500)
+
+
 # ==================== Views ====================
 
 def index(request):
     return render(request, "download_base_app/index.html", {"stations": STATIONS_AND_WELLS})
 
+
+# views.py
+
+@csrf_exempt
+def get_magnitka_stations(request):
+    """
+    Database stations jadvalidan stansiyalarni JSON bilan qaytarish
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id, code, name, latitude, longitude FROM stations ORDER BY name"
+        )
+        stations_list = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        logger.info(f"✅ {len(stations_list)} ta stansiya DB dan olindi")
+
+        return JsonResponse({
+            "success": True,
+            "data": stations_list
+        })
+    except Exception as e:
+        logger.error(f"❌ Stansiyalarni olishda xato: {e}", exc_info=True)
+        return JsonResponse({
+            "success": False,
+            "message": str(e)
+        }, status=500)
 
 @csrf_exempt
 def upload_api(request):
@@ -639,11 +1111,11 @@ def upload_api(request):
         return JsonResponse({"success": False, "message": "POST kerak."}, status=405)
 
     try:
-        data         = json.loads(request.body)
+        data = json.loads(request.body)
         station_code = data.get("station")
-        well_code    = data.get("well")
-        start_date   = data.get("start_date")
-        end_date     = data.get("end_date")
+        well_code = data.get("well")
+        start_date = data.get("start_date")
+        end_date = data.get("end_date")
 
         if not all([station_code, well_code, start_date, end_date]):
             return JsonResponse({"success": False, "message": "Ma'lumotlar to'liq emas."}, status=400)
@@ -671,9 +1143,9 @@ def upload_api(request):
         for t in api_targets:
             params = {
                 "station_code": t["station_code"],
-                "well_code":    t["well_code"],
-                "date_start":   start_date,
-                "date_end":     end_date,
+                "well_code": t["well_code"],
+                "date_start": start_date,
+                "date_end": end_date,
             }
             chunk = fetch_data_from_api(params, token)
             if chunk is None:
@@ -681,7 +1153,7 @@ def upload_api(request):
             all_data.extend(chunk)
             time.sleep(1)
 
-        conn     = get_db_connection()
+        conn = get_db_connection()
         inserted = save_api_data_to_db(conn, all_data)
         conn.close()
 
@@ -703,7 +1175,7 @@ def upload_excel(request):
         if not file:
             return JsonResponse({"success": False, "message": "Excel fayl yuborilmadi."}, status=400)
 
-        conn          = get_db_connection()
+        conn = get_db_connection()
         updated_cells = save_excel_files_to_db(conn, file)
         conn.close()
 
@@ -721,11 +1193,11 @@ def transfer_to_new_db(request):
         return JsonResponse({"success": False, "message": "POST kerak."}, status=405)
 
     try:
-        data         = json.loads(request.body)
+        data = json.loads(request.body)
         station_code = data.get("station")
-        well_code    = data.get("well")
-        start_date   = data.get("start_date")
-        end_date     = data.get("end_date")
+        well_code = data.get("well")
+        start_date = data.get("start_date")
+        end_date = data.get("end_date")
 
         if not all([station_code, well_code, start_date, end_date]):
             return JsonResponse({"success": False, "message": "Barcha maydonlar to'ldirilishi shart."}, status=400)

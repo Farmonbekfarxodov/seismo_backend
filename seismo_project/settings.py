@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'upload_catalog_app',
     'app_informativlik',
     'app_anomaly',
+    'app_magnitka',
 ]
 
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv())

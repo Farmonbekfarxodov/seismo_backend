@@ -13,4 +13,8 @@ urlpatterns = [
     path("upload/excel/", views.upload_excel, name="upload_excel"),
 
     path('upload/transfer/', views.transfer_to_new_db),  # ← yangi
+
+    path('upload/magnitka/', views.upload_measurements, name='upload_magnitka'),
+
+    path('upload/get-stations/', views.get_magnitka_stations, name='get_stations'),
 ]
