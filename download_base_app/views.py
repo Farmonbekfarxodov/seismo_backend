@@ -298,38 +298,29 @@ def fetch_data_from_api(params, token):
 # ============================================================
 # API dan magnitka ma'lumotlarini olish
 # ============================================================
-def split_date_range_by_month(start_date: str, end_date: str):
+def split_date_range_by_week(start_date: str, end_date: str, chunk_days: int = 7):
     """
-    Sana oralig'ini oyma-oy bo'lib beradi.
-    Misol:
-    2020-01-15 -> 2020-03-10
+    Sana oralig'ini haftalik (7 kunlik) bo'laklarga ajratadi.
+    Misol (chunk_days=7):
+    2020-01-15 -> 2020-02-05
     [
-        ('2020-01-15', '2020-01-31'),
-        ('2020-02-01', '2020-02-29'),
-        ('2020-03-01', '2020-03-10'),
+        ('2020-01-15', '2020-01-21'),
+        ('2020-01-22', '2020-01-28'),
+        ('2020-01-29', '2020-02-05'),
     ]
+    Agar API hali ham timeout bersa, chunk_days=3 yoki chunk_days=1 qilib kamaytiriladi.
     """
-    start = dt.datetime.strptime(start_date, "%Y-%m-%d").date()
-    end = dt.datetime.strptime(end_date, "%Y-%m-%d").date()
-
-    ranges = []
+    start   = dt.datetime.strptime(start_date, "%Y-%m-%d").date()
+    end     = dt.datetime.strptime(end_date, "%Y-%m-%d").date()
+    ranges  = []
     current = start
 
     while current <= end:
-        # current oyning oxirini topish
-        if current.month == 12:
-            next_month = current.replace(year=current.year + 1, month=1, day=1)
-        else:
-            next_month = current.replace(month=current.month + 1, day=1)
-
-        month_end = next_month - timedelta(days=1)
-        chunk_end = min(month_end, end)
-
+        chunk_end = min(current + timedelta(days=chunk_days - 1), end)
         ranges.append((
             current.strftime("%Y-%m-%d"),
             chunk_end.strftime("%Y-%m-%d")
         ))
-
         current = chunk_end + timedelta(days=1)
 
     return ranges
@@ -455,15 +446,16 @@ def fetch_magnitka_chunk(date_start, date_end, token, station_code=None, max_ret
     return all_data
 
 
-def fetch_magnitka_from_api(date_start, date_end, token, station_code=None):
+def fetch_magnitka_from_api(date_start, date_end, token, station_code=None, chunk_days: int = 7):
     """
-    Katta sana oralig'ini oyma-oy bo'lib, har bir oy uchun pagination bilan yuklaydi.
+    Katta sana oralig'ini haftalik (7 kunlik) bo'lib, pagination bilan yuklaydi.
+    Agar API timeout bersa, chunk_days=3 yoki chunk_days=1 qilib kamaytiring.
     """
     all_data = []
 
     try:
-        ranges = split_date_range_by_month(date_start, date_end)
-        logger.info(f"📦 Sana oralig'i {len(ranges)} ta chunk ga bo'lindi")
+        ranges = split_date_range_by_week(date_start, date_end, chunk_days=chunk_days)
+        logger.info(f"📦 Sana oralig'i {len(ranges)} ta chunk ga bo'lindi ({chunk_days} kunlik)")
 
         failed_chunks = []
 
@@ -1007,11 +999,15 @@ def upload_measurements(request):
 
     try:
         body = json.loads(request.body)
-        date_start = body.get("date_start")
-        date_end = body.get("date_end")
-        station_code = body.get("station_code")
+        date_start   = body.get("date_start")
+        date_end     = body.get("date_end")
+        station_code = body.get("station_code") or None
+        chunk_days   = int(body.get("chunk_days", 7))   # default: 7 kun
 
-        logger.info(f"📥 upload_measurements: date_start={date_start}, date_end={date_end}, station_code={station_code}")
+        logger.info(
+            f"📥 upload_measurements: date_start={date_start}, date_end={date_end}, "
+            f"station_code={station_code}, chunk_days={chunk_days}"
+        )
 
         if not date_start or not date_end:
             return JsonResponse(
@@ -1025,8 +1021,8 @@ def upload_measurements(request):
             logger.error("❌ Token olinmadi!")
             return JsonResponse({"success": False, "message": "Token olinmadi."}, status=401)
 
-        logger.info(f"✅ Token olindi. API dan ma'lumot olinmoqda...")
-        api_data = fetch_magnitka_from_api(date_start, date_end, token, station_code)
+        logger.info(f"✅ Token olindi. API dan ma'lumot olinmoqda ({chunk_days} kunlik chunk)...")
+        api_data = fetch_magnitka_from_api(date_start, date_end, token, station_code, chunk_days=chunk_days)
 
         if api_data is None:
             logger.error("❌ API dan olishda xato!")

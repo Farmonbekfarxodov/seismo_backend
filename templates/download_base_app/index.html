@@ -401,7 +401,7 @@ magnitkaForm.addEventListener('submit', async function (event) {
   }
 
   // ✅ Loading message
-  setMsg(magnitkaMessageDiv, '⏳ Magnitka ma\'lumotlari yuklanmoqda... (Bu 2-3 daqiqani olishi mumkin)', 'text-muted');
+  setMsg(magnitkaMessageDiv, 'Magnitka ma\'lumotlari yuklanmoqda...', 'text-muted');
 
   try {
     const response = await fetch('/upload/magnitka/', {

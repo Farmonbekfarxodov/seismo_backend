@@ -36,7 +36,6 @@ class Measurement(models.Model):
     )
     measured_at = models.DateTimeField(verbose_name="O'lchov vaqti", db_index=True)
     value = models.FloatField(null=True, blank=True, verbose_name="Qiymat")
-    is_valid = models.BooleanField(default=True, verbose_name="Yaroqli")
 
     class Meta:
         db_table = "measurements"
@@ -50,3 +49,37 @@ class Measurement(models.Model):
 
     def __str__(self):
         return f"{self.station.name} | {self.measured_at} = {self.value}"
+
+
+class Catalog(models.Model):
+    """
+    Zilzilalar katalogi - mavjud `catalog` jadvaliga mos
+    (rasmda ko'rsatilgan ustunlar asosida)
+    """
+    event_date = models.DateField(verbose_name="Sana", db_column="Event_date")
+    event_time = models.TimeField(verbose_name="Vaqt", db_column="Event_time", null=True, blank=True)
+    latitude = models.FloatField(verbose_name="Kenglik", db_column="Latitude")
+    longitude = models.FloatField(verbose_name="Uzunlik", db_column="Longitude")
+    depth = models.FloatField(verbose_name="Chuqurlik (km)", db_column="Depth", null=True, blank=True)
+    mb = models.FloatField(verbose_name="Magnituda (Mb)", db_column="Mb", null=True, blank=True)
+    epicenter = models.CharField(max_length=150, verbose_name="Epitsentr", db_column="Epicenter", null=True, blank=True)
+
+    class Meta:
+        db_table = "catalog"
+        verbose_name = "Zilzila"
+        verbose_name_plural = "Zilzilalar katalogi"
+        ordering = ["-event_date", "-event_time"]
+        indexes = [
+            models.Index(fields=["event_date"], name="idx_catalog_event_date"),
+            models.Index(fields=["mb"], name="idx_catalog_mb"),
+        ]
+
+    def __str__(self):
+        return f"{self.event_date} {self.event_time} | Mb={self.mb} | {self.epicenter}"
+
+    @property
+    def event_datetime_str(self):
+        """Sana va vaqtni birlashtirib qaytaradi (frontend uchun qulay)."""
+        if self.event_time:
+            return f"{self.event_date}T{self.event_time}"
+        return f"{self.event_date}T00:00:00"

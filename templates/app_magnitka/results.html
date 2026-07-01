@@ -1,0 +1,493 @@
+{% extends "app_magnitka/base.html" %}
+{% block title %}Magnitka tahlili{% endblock %}
+
+{% block extra_head %}
+<style>
+    /* ── Filter panel ─────────────────────────────────────────────────── */
+    .filter-panel {
+        background: #fff;
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        border-left: 4px solid var(--primary);
+    }
+
+    .menu-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 15px;
+        padding: 15px;
+        background: #f8f9fa;
+        border-radius: 8px;
+        margin-bottom: 20px;
+        align-items: start;
+    }
+
+    /* ── Details/summary (ochiladigan ro'yxat) ───────────────────────── */
+    details {
+        position: relative;
+        cursor: pointer;
+    }
+
+    summary {
+        background: #fff;
+        padding: 10px 12px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: .9rem;
+        list-style: none;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::after {
+        content: "▾";
+        color: var(--gray-400);
+        font-size: .8rem;
+        margin-left: auto;
+    }
+
+    details[open] summary { background: #e9ecef; }
+
+    .badge-count {
+        background: var(--primary);
+        color: #fff;
+        border-radius: 10px;
+        padding: 1px 8px;
+        font-size: .72rem;
+        font-weight: 700;
+    }
+
+    .option-list {
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        max-height: 360px;
+        overflow-y: auto;
+        padding: 10px;
+        margin-top: 5px;
+        position: absolute;
+        z-index: 50;
+        width: max(100%, 480px);
+    }
+
+    .station-search-mini {
+        width: 100%;
+        padding: 6px 10px;
+        border: 1px solid var(--gray-200);
+        border-radius: 6px;
+        font-size: .85rem;
+        margin-bottom: 8px;
+        outline: none;
+    }
+    .station-search-mini:focus { border-color: var(--accent); }
+
+    .stations-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 4px;
+    }
+
+    .option-list label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 8px;
+        font-size: .85rem;
+        border-radius: 4px;
+        min-width: 0;
+    }
+    .option-list label:hover { background-color: #f1f1f1; }
+    .option-list input[type="checkbox"] { accent-color: var(--primary); width: 16px; height: 16px; flex-shrink: 0; }
+
+    /* ── Forma elementlari ────────────────────────────────────────────── */
+    .form-group { display: flex; flex-direction: column; gap: 4px; }
+    .form-group small { font-size: .78rem; font-weight: 600; color: var(--gray-700); }
+    .form-control {
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--gray-200);
+        font-size: .88rem;
+        outline: none;
+    }
+    .form-control:focus { border-color: var(--accent); }
+
+    /* ── Pill buttons (magnituda yoqish/o'chirish) ────────────────────── */
+    .display-control-group { display: flex; flex-direction: row; gap: 12px; flex-wrap: wrap; }
+
+    .pill-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 18px;
+        background: #fff;
+        border: 2px solid #e0e0e0;
+        border-radius: 50px;
+        cursor: pointer;
+        transition: all .25s ease;
+        font-size: .88rem;
+        user-select: none;
+    }
+    .pill-button input { width: 18px; height: 18px; cursor: pointer; margin: 0; }
+    .pill-button:hover { background: #f0f4ff; border-color: var(--accent); }
+    .pill-button:has(input:checked) {
+        background: linear-gradient(135deg, var(--primary) 0%, #0D47A1 100%);
+        border-color: var(--primary);
+        color: #fff;
+        box-shadow: 0 4px 15px rgba(21,101,192,.3);
+    }
+
+    .mag-slider-inline { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+    .mag-slider-inline input[type="range"] { flex: 1; accent-color: var(--danger); }
+    .mag-slider-inline span { font-size: .85rem; font-weight: 700; color: var(--danger); min-width: 28px; text-align: center; }
+
+    /* ── Submit ───────────────────────────────────────────────────────── */
+    .submit-row { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px; }
+
+    /* ── Info banner ──────────────────────────────────────────────────── */
+    .info-banner {
+        background: var(--primary-lt);
+        border-left: 4px solid var(--primary);
+        border-radius: 8px;
+        padding: 12px 16px;
+        font-size: .88rem;
+        color: var(--primary);
+        margin-bottom: 20px;
+    }
+
+    /* ── Grafik kartalari ─────────────────────────────────────────────── */
+    .graph-card {
+        background: #fff;
+        border: 1px solid var(--gray-200);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        margin-bottom: 24px;
+        transition: box-shadow .2s;
+        overflow: hidden;
+    }
+    .graph-card:hover { box-shadow: var(--shadow-md); }
+
+    .graph-card-header {
+        background: #fff;
+        border-bottom: 1px solid var(--gray-200);
+        padding: 12px 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .graph-card-title {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 700;
+        color: var(--primary);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .delta-badge {
+        background: #E3F2FD;
+        color: #1565C0;
+        padding: 2px 10px;
+        border-radius: 12px;
+        font-size: .72rem;
+        font-weight: 600;
+    }
+    .mag-mini-badge {
+        background: #FFEBEE;
+        color: #C62828;
+        padding: 2px 10px;
+        border-radius: 12px;
+        font-size: .72rem;
+        font-weight: 600;
+    }
+
+    .graph-card-body { padding: 6px; }
+    .plotly-graph-container { width: 100% !important; overflow-x: hidden; }
+    .plotly-graph-container .plotly-graph-div { width: 100% !important; }
+
+    .download-btn {
+        background: #fff;
+        border: 1px solid var(--success);
+        color: var(--success);
+        padding: 5px 14px;
+        border-radius: 6px;
+        font-size: .8rem;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: background .15s;
+    }
+    .download-btn:hover { background: #E8F5E9; }
+
+    .no-data { text-align: center; padding: 64px 20px; color: var(--gray-400); }
+    .no-data svg { margin-bottom: 16px; opacity: .4; }
+    .no-data h3 { font-size: 1.1rem; color: var(--gray-700); margin-bottom: 8px; }
+
+    .page-title { text-align: center; margin-bottom: 20px; }
+    .page-title h1 { font-size: 1.4rem; font-weight: 700; color: var(--gray-900); }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<div class="page-title">
+    <h1>🌋 Magnitka tahlili</h1>
+</div>
+
+<form method="POST" action="{% url 'magnitka:index' %}" class="filter-panel" id="filterForm">
+    {% csrf_token %}
+
+    <div class="menu-row">
+
+        <!-- ── Stantsiyalar (details/summary) ─────────────────────────── -->
+        <details {% if selected_ids %}open{% endif %}>
+            <summary>
+                🏭 Stantsiyalar
+                <span class="badge-count selected-count">{{ selected_ids|length|default:0 }}</span>
+            </summary>
+            <div class="option-list">
+                <input type="text" class="station-search-mini" id="stationSearch" placeholder="Qidirish...">
+                <div class="stations-grid" id="stationsGrid">
+                    {% for station in stations %}
+                    <label>
+                        <input type="checkbox" name="station_ids" value="{{ station.id }}"
+                               {% if station.id in selected_ids %}checked{% endif %}>
+                        {{ station.name }}
+                    </label>
+                    {% empty %}
+                    <p style="font-size:.85rem; color:var(--gray-400)">Faol stantsiyalar yo'q</p>
+                    {% endfor %}
+                </div>
+            </div>
+        </details>
+
+        <!-- ── Davr ─────────────────────────────────────────────────────── -->
+        <div class="form-group">
+            <small>📅 Vaqt oralig'i</small>
+            <select name="days" class="form-control">
+                {% for val, label in period_options %}
+                <option value="{{ val }}" {% if val == days|stringformat:"s" %}selected{% endif %}>
+                    {{ label }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- ── Sana oralig'i (ixtiyoriy) ───────────────────────────────── -->
+        <div class="form-group">
+            <small>Boshlanish sanasi (ixtiyoriy)</small>
+            <input type="date" class="form-control" name="start_date" value="{{ start_date|default:'' }}">
+        </div>
+        <div class="form-group">
+            <small>Tugash sanasi (ixtiyoriy)</small>
+            <input type="date" class="form-control" name="end_date" value="{{ end_date|default:'' }}">
+        </div>
+
+        <!-- ── Magnituda nazorati ──────────────────────────────────────── -->
+        <div class="form-group">
+            <small>🌋 Zilzila magnitudalari</small>
+            <div class="display-control-group">
+                <label class="pill-button">
+                    <input type="checkbox" name="show_magnitude" value="1"
+                           id="magCheckbox"
+                           {% if show_magnitude %}checked{% endif %}>
+                    <span>Ko'rsatish</span>
+                </label>
+            </div>
+            <div class="mag-slider-inline" id="magSliderWrap" style="{% if not show_magnitude %}display:none{% endif %}">
+                <span>Min M:</span>
+                <input type="range" name="min_magnitude" min="0" max="7" step="0.5"
+                       value="{{ min_magnitude|default:0 }}" id="minMagRange">
+                <span id="minMagVal">{{ min_magnitude|default:0 }}</span>
+            </div>
+        </div>
+
+        <div class="submit-row">
+            <button type="submit" class="btn btn-primary" id="submitButton">
+                📈 Tahlil qilish
+            </button>
+        </div>
+
+    </div>
+</form>
+
+{% if submitted %}
+
+    {% if error %}
+        <div class="alert alert-danger">⚠️ {{ error }}</div>
+    {% else %}
+
+        <div class="info-banner">
+            ℹ️
+            {% if days and days != 0 %}
+                So'nggi <b>{{ days }}</b> kunlik ma'lumotlar ko'rsatilmoqda.
+            {% elif start_date and end_date %}
+                <b>{{ start_date }}</b> dan <b>{{ end_date }}</b> gacha bo'lgan ma'lumotlar.
+            {% else %}
+                Barcha mavjud ma'lumotlar ko'rsatilmoqda.
+            {% endif %}
+            {% if show_magnitude %}
+                🌋 Magnitudalar ko'rsatilmoqda (≥ M{{ min_magnitude }}, {{ earthquake_count }} ta zilzila).
+            {% endif %}
+            {% if total_graphs %}
+                Jami <b>{{ total_graphs }}</b> ta grafik tayyorlandi.
+            {% endif %}
+        </div>
+
+        {% if graphs_list %}
+        <div class="container-fluid px-0">
+            {% for g in graphs_list %}
+            <div class="graph-card" id="{{ g.div_id }}_card">
+                <div class="graph-card-header">
+                    <h5 class="graph-card-title">
+                        {{ g.title }}
+                        {% if g.is_delta %}
+                        <span class="delta-badge">Δ {{ base_station_name }} ga nisbatan</span>
+                        {% endif %}
+                        {% if show_magnitude %}
+                        <span class="mag-mini-badge">🌋 M≥{{ min_magnitude }}</span>
+                        {% endif %}
+                    </h5>
+                    <button type="button" class="download-btn"
+                            onclick="downloadPlotlyImage('{{ g.div_id }}', '{{ g.filename }}')">
+                        ⬇ PNG yuklash
+                    </button>
+                </div>
+                <div class="graph-card-body">
+                    <div class="plotly-graph-container">
+                        {{ g.html|safe }}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="no-data">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="var(--gray-400)" stroke-width="1.5">
+                <path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/>
+            </svg>
+            <h3>Ma'lumot topilmadi</h3>
+            <p style="font-size:.88rem">Tanlangan mezonlarga mos o'lchov yo'q. Boshqa stantsiya yoki davr tanlang.</p>
+        </div>
+        {% endif %}
+
+    {% endif %}
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// ── Stantsiyalar sonini hisoblash ──────────────────────────────────────────
+function updateSelectedCount() {
+    const countSpan = document.querySelector('.selected-count');
+    const checked = document.querySelectorAll('input[name="station_ids"]:checked').length;
+    if (countSpan) countSpan.textContent = checked;
+}
+document.querySelectorAll('input[name="station_ids"]').forEach(cb => {
+    cb.addEventListener('change', updateSelectedCount);
+});
+updateSelectedCount();
+
+// ── Stantsiya qidirish ──────────────────────────────────────────────────────
+const stationSearchEl = document.getElementById('stationSearch');
+if (stationSearchEl) {
+    stationSearchEl.addEventListener('input', function () {
+        const q = this.value.toLowerCase();
+        document.querySelectorAll('#stationsGrid label').forEach(label => {
+            label.style.display = label.textContent.toLowerCase().includes(q) ? '' : 'none';
+        });
+    });
+    stationSearchEl.addEventListener('click', e => e.stopPropagation());
+}
+
+// ── Magnituda checkbox -> slayder ko'rsatish/yashirish ──────────────────────
+const magCheckbox = document.getElementById('magCheckbox');
+const magSliderWrap = document.getElementById('magSliderWrap');
+if (magCheckbox && magSliderWrap) {
+    magCheckbox.addEventListener('change', function () {
+        magSliderWrap.style.display = this.checked ? 'flex' : 'none';
+    });
+}
+
+const minMagRange = document.getElementById('minMagRange');
+const minMagVal = document.getElementById('minMagVal');
+if (minMagRange && minMagVal) {
+    minMagRange.addEventListener('input', function () {
+        minMagVal.textContent = this.value;
+    });
+}
+
+// ── Details elementlari: bittasi ochilsa, boshqalari yopiladi ──────────────
+const detailsElements = document.querySelectorAll('details');
+detailsElements.forEach(details => {
+    details.addEventListener('toggle', function () {
+        if (this.open) {
+            detailsElements.forEach(other => {
+                if (other !== details) other.removeAttribute('open');
+            });
+        }
+    });
+});
+
+// Sahifa boshqa joyiga bosilganda details yopilishi
+document.addEventListener('click', function (e) {
+    detailsElements.forEach(details => {
+        if (details.open && !details.contains(e.target)) {
+            details.removeAttribute('open');
+        }
+    });
+});
+
+// ── Grafikni PNG sifatida yuklab olish ──────────────────────────────────────
+function downloadPlotlyImage(divId, filename) {
+    const gd = document.getElementById(divId);
+    if (!gd) {
+        alert("Grafik topilmadi!");
+        return;
+    }
+    Plotly.downloadImage(gd, {
+        format: 'png',
+        width: 1400,
+        height: 800,
+        filename: filename,
+        scale: 2
+    });
+}
+
+// ── Sana validatsiyasi ───────────────────────────────────────────────────────
+const startInput = document.querySelector('input[name="start_date"]');
+const endInput = document.querySelector('input[name="end_date"]');
+if (startInput && endInput) {
+    const validateDates = () => {
+        if (startInput.value && endInput.value) {
+            const s = new Date(startInput.value);
+            const e = new Date(endInput.value);
+            if (s > e) {
+                endInput.setCustomValidity("Tugash sanasi boshlanish sanasidan kech bo'lishi kerak");
+                endInput.reportValidity();
+            } else {
+                endInput.setCustomValidity("");
+            }
+        }
+    };
+    startInput.addEventListener('change', validateDates);
+    endInput.addEventListener('change', validateDates);
+}
+
+// ── Plotly grafiklarini ekran o'lchamiga moslashtirish ──────────────────────
+window.addEventListener('resize', function () {
+    document.querySelectorAll('.js-plotly-plot').forEach(plot => {
+        Plotly.Plots.resize(plot);
+    });
+});
+</script>
+{% endblock %}
