@@ -27,7 +27,13 @@ from seismos_app.views import (
     destenc_vectorized,
     get_well_detailed_info,
 )
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+
 from .models import AnomalyRecord
+from .serializers import AnomalyRecordSerializer
 from .forms import AnomalyAnalysisForm
 
 logger = logging.getLogger(__name__)
@@ -903,15 +909,19 @@ def anomaly_analysis_view(request):
         )
         return render(request, 'app_anomaly/index.html', context)
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def anomaly_history_view(request):
+    """GET /anomaly/history/ — so'nggi 50 ta faol anomaliya yozuvi."""
     try:
         records = AnomalyRecord.objects.filter(is_active=True).order_by('-created_at')[:50]
-        context = {
-            'records': records,
+        return Response({
+            'records': AnomalyRecordSerializer(records, many=True).data,
             'total_count': AnomalyRecord.objects.filter(is_active=True).count(),
-        }
-        return render(request, 'app_anomaly/history.html', context)
+        })
     except Exception as e:
         logger.error(f"Tarix xato: {e}")
-        return render(request, 'app_anomaly/history.html', {'error': 'Xatolik yuz berdi'})
+        return Response(
+            {'error': 'Xatolik yuz berdi'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )

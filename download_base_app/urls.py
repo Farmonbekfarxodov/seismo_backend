@@ -17,4 +17,7 @@ urlpatterns = [
     path('upload/magnitka/', views.upload_measurements, name='upload_magnitka'),
 
     path('upload/get-stations/', views.get_magnitka_stations, name='get_stations'),
+
+    # React frontend uchun: STATIONS_AND_WELLS ro'yxati
+    path('upload/stations-wells/', views.get_stations_and_wells, name='stations_wells'),
 ]

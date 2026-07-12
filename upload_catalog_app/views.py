@@ -6,12 +6,14 @@ from datetime import timedelta
 import csv
 import io
 
-from django.contrib import messages
-from django.shortcuts import render, redirect, reverse
 from django.db.models import Min, Max
-from django.core.exceptions import ValidationError
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
 
 from .models import Catalog
+from .serializers import CatalogSerializer, ManualEntrySerializer
 
 DATA_URL = "https://api.smrm.uz/api/earthquakes/central-asia"
 
@@ -78,7 +80,10 @@ def save_data_to_db(data_list):
     return len(rows_to_create)
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def catalog_list(request):
+    """GET /api/catalog/  — so'nggi 20 ta yozuv + sana oralig'i."""
     all_records = Catalog.objects.all().order_by("-Event_date", "-Event_time")
     records = all_records[:20]
 
@@ -87,67 +92,74 @@ def catalog_list(request):
         end_date=Max("Event_date")
     )
 
-    context = {
-        "records": records,
+    return Response({
+        "records": CatalogSerializer(records, many=True).data,
         "start_date": date_range["start_date"],
         "end_date": date_range["end_date"],
-    }
-    return render(request, "upload_catalog_app/catalog_list.html", context)
+    })
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def upload_catalog(request):
+    """POST /api/catalog/upload-catalog/ — tashqi API'dan zilzilalarni tortib olish."""
     params = {"sort": "datetime_desc", "per_page": 50, "page": 1}
     data = fetch_data_from_api(params)
+
+    if data is None:
+        return Response(
+            {"success": False, "message": "Tashqi API'dan ma'lumot olishda xatolik."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
     new_count = save_data_to_db(data)
 
-    if new_count > 0:
-        messages.success(request, f"{new_count} ta yangi ma'lumot qo'shildi.")
-    else:
-        messages.info(request, "Yangi ma'lumotlar yo'q.")
+    return Response({
+        "success": True,
+        "added": new_count,
+        "message": f"{new_count} ta yangi ma'lumot qo'shildi." if new_count > 0 else "Yangi ma'lumotlar yo'q.",
+    })
 
-    return redirect(reverse("catalog:catalog_list"))
 
-
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def upload_from_file(request):
-    if request.method == "POST":
-        uploaded_file = request.FILES.get("file")
+    """POST /api/catalog/upload-file/  (multipart/form-data, 'file' maydoni bilan)."""
+    uploaded_file = request.FILES.get("file")
 
-        if not uploaded_file:
-            messages.error(request, "Iltimos, fayl tanlang!")
-            return redirect(reverse("catalog:upload_file"))
+    if not uploaded_file:
+        return Response(
+            {"success": False, "message": "Iltimos, fayl tanlang!"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
-        ext = uploaded_file.name.split(".")[-1].lower()
+    ext = uploaded_file.name.split(".")[-1].lower()
 
-        try:
-            # 📌 Pandas bilan o‘qish – universal
-            if ext == "csv":
-                df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
-            elif ext in ["xlsx", "xls"]:
-                df = pd.read_excel(uploaded_file)
-            else:
-                messages.error(request, f"Noto‘g‘ri fayl turi: {ext}")
-                return redirect(reverse("catalog:upload_file"))
+    try:
+        if ext == "csv":
+            df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
+        elif ext in ["xlsx", "xls"]:
+            df = pd.read_excel(uploaded_file)
+        else:
+            return Response(
+                {"success": False, "message": f"Noto'g'ri fayl turi: {ext}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-            print("\n📊 Fayl o‘qildi:")
-            print(df.head(3))
+        added_count, errors = save_file_data_to_db(df)
 
-            added_count, errors = save_file_data_to_db(df)
+        return Response({
+            "success": True,
+            "added": added_count,
+            "errors": errors[:10],
+            "error_count": len(errors),
+        })
 
-            if added_count > 0:
-                messages.success(request, f"👍 {added_count} ta yangi ma’lumot qo‘shildi.")
-
-            if errors:
-                first_errors = "<br>".join(errors[:10])
-                messages.warning(request, f"⚠️ {len(errors)} ta xato! Birinchi 10:<br>{first_errors}")
-
-        except Exception as e:
-            messages.error(request, f"Xatolik: {str(e)}")
-            import traceback
-            traceback.print_exc()
-
-        return redirect(reverse("catalog:catalog_list"))
-
-    return render(request, "upload_catalog_app/upload_file.html")
+    except Exception as e:
+        return Response(
+            {"success": False, "message": f"Xatolik: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 def save_file_data_to_db(df):
@@ -299,55 +311,33 @@ def save_file_data_to_db(df):
 
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def manual_entry(request):
-    """Qo'lda ma'lumot kiritish"""
-    if request.method == 'POST':
-        try:
-            event_date = datetime.datetime.strptime(request.POST.get('event_date'), "%Y-%m-%d").date()
-            event_time = datetime.datetime.strptime(request.POST.get('event_time'), "%H:%M:%S").time()
-            latitude = float(request.POST.get('latitude'))
-            longitude = float(request.POST.get('longitude'))
-            depth = float(request.POST.get('depth'))
-            magnitude = float(request.POST.get('magnitude'))
-            epicenter = request.POST.get('epicenter', '')
+    """
+    POST /api/catalog/manual-entry/
+    Body (JSON): { event_date, event_time, latitude, longitude, depth, magnitude, epicenter }
+    """
+    payload = {
+        "Event_date": request.data.get("event_date"),
+        "Event_time": request.data.get("event_time"),
+        "Latitude": request.data.get("latitude"),
+        "Longitude": request.data.get("longitude"),
+        "Depth": request.data.get("depth"),
+        "Mb": request.data.get("magnitude"),
+        "Epicenter": request.data.get("epicenter", ""),
+    }
 
-            # Validatsiya
-            if not (-90 <= latitude <= 90):
-                raise ValidationError("Kenglik -90 dan 90 gacha bo'lishi kerak.")
-            if not (-180 <= longitude <= 180):
-                raise ValidationError("Uzunlik -180 dan 180 gacha bo'lishi kerak.")
-            if depth < 0:
-                raise ValidationError("Chuqurlik musbat son bo'lishi kerak.")
-            if magnitude < 0:
-                raise ValidationError("Magnitud musbat son bo'lishi kerak.")
+    serializer = ManualEntrySerializer(data=payload)
+    if not serializer.is_valid():
+        return Response(
+            {"success": False, "errors": serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
-            # Dublikat tekshirish
-            exists = Catalog.objects.filter(
-                Event_date=event_date,
-                Event_time=event_time,
-                Latitude=latitude,
-                Longitude=longitude
-            ).exists()
-
-            if exists:
-                messages.warning(request, "⚠️ Bu ma'lumot allaqachon bazada mavjud!")
-                return redirect(reverse("catalog:manual_entry"))
-
-            # Bazaga saqlash
-            Catalog.objects.create(
-                Event_date=event_date,
-                Event_time=event_time,
-                Latitude=latitude,
-                Longitude=longitude,
-                Depth=depth,
-                Mb=magnitude,
-                Epicenter=epicenter
-            )
-
-            messages.success(request, "✅ Ma'lumot muvaffaqiyatli qo'shildi.")
-            return redirect(reverse("catalog:manual_entry"))
-
-        except (ValueError, ValidationError) as e:
-            messages.error(request, f"❌ Xatolik: {str(e)}")
-
-    return render(request, "upload_catalog_app/manual_entry.html")
+    instance = serializer.save()
+    return Response({
+        "success": True,
+        "message": "Ma'lumot muvaffaqiyatli qo'shildi.",
+        "record": CatalogSerializer(instance).data,
+    }, status=status.HTTP_201_CREATED)

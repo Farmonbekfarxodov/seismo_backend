@@ -15,8 +15,9 @@ urlpatterns = [
     path('api/', include('app_users.urls')),
     path('anomaly/', include('app_anomaly.urls', namespace="app_anomaly")),
     path('magnitka/', include('app_magnitka.urls', namespace='magnitka')),
+    # TUZATILDI: 'login' nomi ikki marta va '' yo'li ikki joyda edi —
+    # bu Django'da reverse() chalkashligi va noaniq routing berardi
     path('login/', TemplateView.as_view(template_name='app_users/login.html'), name='login'),
-    path('', TemplateView.as_view(template_name='app_users/login.html'), name='login'),
     path('index/', TemplateView.as_view(template_name='index.html'), name='index'),
 ]
 

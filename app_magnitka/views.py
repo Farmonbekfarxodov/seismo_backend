@@ -9,11 +9,17 @@ from plotly.subplots import make_subplots
 
 from django.shortcuts import render
 from django.http import JsonResponse
-from django.views.decorators.http import require_GET
 from django.core.cache import cache
 from django.utils import timezone
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 
 from .models import Station, Measurement, Catalog
+from .serializers import (
+    StationSerializer,
+    MeasurementsQuerySerializer,
+    EarthquakesQuerySerializer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +203,46 @@ def add_magnitude_lines(fig: go.Figure, earthquakes_df: pd.DataFrame, x_range_st
         )
 
     logger.info(f"✅ Added {len(in_range)} magnitude lines to chart")
+
+
+def aggregate_base_to_10min(base_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Yangibozor (baza stantsiya) ma'lumotini 10 minutlik qadamga keltiradi.
+
+    Yangibozor har 1 minutda o'lchov yuboradi, qolgan stantsiyalar esa
+    har 10 minutda. Taqqoslash to'g'ri bo'lishi uchun Yangibozorning
+    1-minutdan 10-minutgacha bo'lgan qiymatlari qo'shilib, ularning
+    o'rtachasi olinadi (oynada 10 tadan kam qiymat bo'lsa — mavjudlari
+    soniga bo'linadi, ya'ni oddiy o'rtacha).
+
+    Vaqt belgisi oyna OXIRIga yoziladi: 10:01–10:10 qiymatlari -> 10:10.
+    Bu boshqa stantsiyalarning :00, :10, :20 ... dagi o'lchov vaqtlariga
+    aynan mos keladi (delta hisoblashda measured_at bo'yicha join qilinadi).
+    """
+    if base_df.empty:
+        return base_df
+
+    df = base_df.copy()
+    df["measured_at"] = pd.to_datetime(df["measured_at"])
+
+    resampled = (
+        df.set_index("measured_at")["value"]
+        .resample("10min", closed="right", label="right")
+        .mean()
+        .dropna()
+        .reset_index()
+    )
+
+    # Asl ustunlarni tiklash (station_id, station_name saqlanadi)
+    for col in ("station_id", "station_name"):
+        if col in base_df.columns:
+            resampled[col] = base_df[col].iloc[0]
+
+    logger.info(
+        f"✅ {BASE_STATION_NAME}: {len(base_df)} ta 1-minutlik -> "
+        f"{len(resampled)} ta 10-minutlik nuqta"
+    )
+    return resampled
 
 
 def compute_delta_series(
@@ -445,6 +491,10 @@ def results(request):
                 logger.warning(
                     f"⚠️ '{BASE_STATION_NAME}' stantsiyasi uchun shu davrda ma'lumot yo'q — delta hisoblanmaydi"
                 )
+            else:
+                # MUHIM: Yangibozor 1-minutlik keladi — barcha hisob-kitoblardan
+                # OLDIN 10-minutlik o'rtachaga keltiriladi
+                base_df = aggregate_base_to_10min(base_df)
         else:
             logger.warning(f"⚠️ '{BASE_STATION_NAME}' nomli stantsiya bazada topilmadi")
 
@@ -456,10 +506,13 @@ def results(request):
             station_name = df_s["station_name"].iloc[0]
             color = COLOR_PALETTE[idx % len(COLOR_PALETTE)]
 
-            # ✅ Yangibozorning o'zi uchun — xom qiymat (deltasiz)
+            # ✅ Yangibozorning o'zi uchun — 10-minutlik o'rtacha (deltasiz)
             is_base_station = (station_name == BASE_STATION_NAME)
 
-            if is_base_station or base_df.empty:
+            if is_base_station:
+                chart_df = base_df if not base_df.empty else aggregate_base_to_10min(df_s)
+                is_delta = False
+            elif base_df.empty:
                 chart_df = df_s
                 is_delta = False
             else:
@@ -510,70 +563,98 @@ def results(request):
     return render(request, "app_magnitka/results.html", context)
 
 
-@require_GET
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def api_stations(request):
     """AJAX: Barcha faol stantsiyalar ro'yxatini JSON da qaytaradi."""
     stations = get_active_stations()
-    data = [
-        {
-            "id": s.id,
-            "name": s.name,
-            "code": s.code,
-            "location": s.location,
-            "lat": float(s.latitude) if s.latitude else None,
-            "lon": float(s.longitude) if s.longitude else None,
-        }
-        for s in stations
-    ]
+    data = StationSerializer(stations, many=True).data
     return JsonResponse({"stations": data})
 
 
-@require_GET
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def api_measurements(request):
-    """AJAX: Berilgan stantsiya uchun o'lchov ma'lumotlarini JSON da qaytaradi."""
-    raw_ids  = request.GET.get("station_ids", "")
-    days_raw = request.GET.get("days", "30")
+    """AJAX: Berilgan stantsiyalar uchun o'lchov seriyalarini JSON da qaytaradi.
 
-    try:
-        station_ids = [int(i) for i in raw_ids.split(",") if i.strip().isdigit()]
-        days = int(days_raw)
-    except (ValueError, AttributeError):
-        return JsonResponse({"error": "Noto'g'ri parametrlar"}, status=400)
-
-    if not station_ids:
-        return JsonResponse({"error": "station_ids kerak"}, status=400)
+    Eski results_view bilan bir xil hisob mantiq:
+      1. Yangibozor (baza) ma'lumoti avval 10-minutlik o'rtachaga keltiriladi
+         (u 1-minutlik keladi, boshqalar 10-minutlik).
+      2. Yangibozorning o'z seriyasi — shu 10-minutlik qiymatlar (deltasiz).
+      3. Boshqa stantsiyalar — Δ = qiymat − Yangibozor (bir xil vaqtda),
+         mos vaqt topilmagan nuqtalar tashlab yuboriladi.
+    """
+    query = MeasurementsQuerySerializer(data=request.GET)
+    if not query.is_valid():
+        return JsonResponse({"error": "Noto'g'ri parametrlar", "details": query.errors}, status=400)
+    station_ids = query.validated_data["station_ids"]
+    days = query.validated_data["days"]
 
     df = fetch_measurements(station_ids=station_ids, days=days)
 
     if df.empty:
-        return JsonResponse({"data": []})
+        return JsonResponse({"data": [], "base_station": BASE_STATION_NAME})
+
+    # ── Baza stantsiya (Yangibozor)ni topish va 10-minutlikka keltirish ──
+    base_station_obj = Station.objects.filter(name=BASE_STATION_NAME).first()
+    base_df = pd.DataFrame()
+    if base_station_obj:
+        if base_station_obj.id in station_ids:
+            base_df = df[df["station_id"] == base_station_obj.id].copy()
+        else:
+            base_df = fetch_measurements(
+                station_ids=[base_station_obj.id], days=days
+            )
+        if not base_df.empty:
+            base_df = aggregate_base_to_10min(base_df)
 
     result = []
     for sid in station_ids:
-        sub = df[df["station_id"] == sid]
+        sub = df[df["station_id"] == sid].copy()
         if sub.empty:
             continue
+        station_name = sub["station_name"].iloc[0]
+        is_base = (station_name == BASE_STATION_NAME)
+
+        if is_base:
+            series_df = base_df if not base_df.empty else aggregate_base_to_10min(sub)
+            is_delta = False
+        elif base_df.empty:
+            series_df = sub
+            is_delta = False
+        else:
+            series_df = compute_delta_series(sub, base_df)
+            is_delta = True
+            if series_df.empty:
+                # Yangibozor bilan mos vaqt topilmadi — seriyani belgilab qaytaramiz
+                result.append({
+                    "station_id": sid,
+                    "station_name": station_name,
+                    "dates": [], "values": [],
+                    "is_delta": True, "no_match": True,
+                })
+                continue
+
         result.append({
             "station_id":   sid,
-            "station_name": sub["station_name"].iloc[0],
-            "dates":        sub["measured_at"].dt.strftime("%Y-%m-%dT%H:%M:%S").tolist(),
-            "values":       sub["value"].tolist(),
+            "station_name": station_name,
+            "dates":        pd.to_datetime(series_df["measured_at"]).dt.strftime("%Y-%m-%dT%H:%M:%S").tolist(),
+            "values":       [round(float(v), 6) for v in series_df["value"]],
+            "is_delta":     is_delta,
+            "is_base":      is_base,
         })
 
-    return JsonResponse({"data": result})
+    return JsonResponse({"data": result, "base_station": BASE_STATION_NAME})
 
 
-@require_GET
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def api_earthquakes(request):
     """AJAX: Zilzilalar katalogini JSON da qaytaradi (min_magnitude bilan filtrlash mumkin)."""
-    min_mag_raw = request.GET.get("min_magnitude", "")
-
-    min_mag = None
-    if min_mag_raw:
-        try:
-            min_mag = float(min_mag_raw)
-        except ValueError:
-            min_mag = None
+    query = EarthquakesQuerySerializer(data=request.GET)
+    min_mag = (
+        query.validated_data.get("min_magnitude") if query.is_valid() else None
+    )
 
     df = fetch_earthquakes(min_mag=min_mag)
 

@@ -184,3 +184,8 @@ user_info.json
 
 test_anomaly_debug.py
 test_real_anomaly.py
+
+logs/
+static/
+staticfiles/
+templates/

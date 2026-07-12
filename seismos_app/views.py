@@ -20,7 +20,6 @@ from plotly.subplots import make_subplots
 from folium.plugins import Fullscreen
 from scipy.stats import pearsonr, spearmanr
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
 from decouple import config as env_config
 from typing import Dict, Tuple, List, Optional
 from django.core.cache import cache

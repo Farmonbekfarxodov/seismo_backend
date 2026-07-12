@@ -9,9 +9,11 @@ import requests
 
 from django.shortcuts import render
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
 from decouple import config
 from datetime import timedelta
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from .serializers import MagnitkaSyncRequestSerializer, ApiUploadRequestSerializer
 
 # ✅ Logging
 logging.basicConfig(
@@ -992,17 +994,23 @@ def save_to_measurements(connection, api_data):
 # ============================================================
 # VIEW
 # ============================================================
-@csrf_exempt
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def upload_measurements(request):
     if request.method != "POST":
         return JsonResponse({"success": False, "message": "POST kerak."}, status=405)
 
     try:
-        body = json.loads(request.body)
-        date_start   = body.get("date_start")
-        date_end     = body.get("date_end")
-        station_code = body.get("station_code") or None
-        chunk_days   = int(body.get("chunk_days", 7))   # default: 7 kun
+        req = MagnitkaSyncRequestSerializer(data=request.data)
+        if not req.is_valid():
+            first_error = next(iter(req.errors.values()))
+            msg = first_error[0] if isinstance(first_error, list) else str(first_error)
+            return JsonResponse({"success": False, "message": str(msg)}, status=400)
+        v = req.validated_data
+        date_start   = v["date_start"].isoformat()
+        date_end     = v["date_end"].isoformat()
+        station_code = v["station_code"] or None
+        chunk_days   = v["chunk_days"]
 
         logger.info(
             f"📥 upload_measurements: date_start={date_start}, date_end={date_end}, "
@@ -1070,9 +1078,21 @@ def index(request):
     return render(request, "download_base_app/index.html", {"stations": STATIONS_AND_WELLS})
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_stations_and_wells(request):
+    """React frontend uchun: 1- va 3-bo'limlardagi stansiya/quduq ro'yxati.
+
+    Eski sahifada bu ro'yxat template orqali (json_script) uzatilardi,
+    React'da esa JSON endpoint kerak.
+    """
+    return JsonResponse({"success": True, "data": STATIONS_AND_WELLS})
+
+
 # views.py
 
-@csrf_exempt
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def get_magnitka_stations(request):
     """
     Database stations jadvalidan stansiyalarni JSON bilan qaytarish
@@ -1100,21 +1120,24 @@ def get_magnitka_stations(request):
             "message": str(e)
         }, status=500)
 
-@csrf_exempt
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def upload_api(request):
     """1) API dan yuklab asosiy DBga yozish"""
     if request.method != "POST":
         return JsonResponse({"success": False, "message": "POST kerak."}, status=405)
 
     try:
-        data = json.loads(request.body)
-        station_code = data.get("station")
-        well_code = data.get("well")
-        start_date = data.get("start_date")
-        end_date = data.get("end_date")
-
-        if not all([station_code, well_code, start_date, end_date]):
-            return JsonResponse({"success": False, "message": "Ma'lumotlar to'liq emas."}, status=400)
+        req = ApiUploadRequestSerializer(data=request.data)
+        if not req.is_valid():
+            first_error = next(iter(req.errors.values()))
+            msg = first_error[0] if isinstance(first_error, list) else str(first_error)
+            return JsonResponse({"success": False, "message": str(msg)}, status=400)
+        v = req.validated_data
+        station_code = v["station"]
+        well_code = v["well"]
+        start_date = v["start_date"]
+        end_date = v["end_date"]
 
         token = get_auth_token()
         if not token:
@@ -1160,7 +1183,8 @@ def upload_api(request):
         return JsonResponse({"success": False, "message": str(e)}, status=500)
 
 
-@csrf_exempt
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def upload_excel(request):
     """2) Excel fayl yuklab asosiy DBga yozish"""
     if request.method != "POST":
@@ -1182,21 +1206,24 @@ def upload_excel(request):
         return JsonResponse({"success": False, "message": str(e)}, status=500)
 
 
-@csrf_exempt
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def transfer_to_new_db(request):
     """3) Asosiy bazadan yangi bazaga ma'lumot ko'chirish (.env dan olinadi)"""
     if request.method != "POST":
         return JsonResponse({"success": False, "message": "POST kerak."}, status=405)
 
     try:
-        data = json.loads(request.body)
-        station_code = data.get("station")
-        well_code = data.get("well")
-        start_date = data.get("start_date")
-        end_date = data.get("end_date")
-
-        if not all([station_code, well_code, start_date, end_date]):
-            return JsonResponse({"success": False, "message": "Barcha maydonlar to'ldirilishi shart."}, status=400)
+        req = ApiUploadRequestSerializer(data=request.data)
+        if not req.is_valid():
+            first_error = next(iter(req.errors.values()))
+            msg = first_error[0] if isinstance(first_error, list) else str(first_error)
+            return JsonResponse({"success": False, "message": str(msg)}, status=400)
+        v = req.validated_data
+        station_code = v["station"]
+        well_code = v["well"]
+        start_date = v["start_date"]
+        end_date = v["end_date"]
 
         # Asosiy bazaga ulanish
         src_conn = get_db_connection()

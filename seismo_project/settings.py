@@ -43,6 +43,8 @@ INSTALLED_APPS = [
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv())
 
 MIDDLEWARE = [
+    # JSON javoblarni siqish (masalan, xarita qatlamlari 1.1MB -> ~0.2MB)
+    'django.middleware.gzip.GZipMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
