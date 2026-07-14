@@ -588,9 +588,26 @@ def api_measurements(request):
     if not query.is_valid():
         return JsonResponse({"error": "Noto'g'ri parametrlar", "details": query.errors}, status=400)
     station_ids = query.validated_data["station_ids"]
-    days = query.validated_data["days"]
+    start_raw = query.validated_data.get("start_date")
+    end_raw = query.validated_data.get("end_date")
 
-    df = fetch_measurements(station_ids=station_ids, days=days)
+    # Sana oralig'ini tayyorlash: faqat bittasi berilsa ham ishlaydi;
+    # ikkalasi bo'sh bo'lsa — days=0, ya'ni BARCHA ma'lumot
+    start_date = end_date = None
+    if start_raw or end_raw:
+        start_date = (
+            datetime.combine(start_raw, datetime.min.time())
+            if start_raw else datetime(1900, 1, 1)
+        )
+        end_date = (
+            datetime.combine(end_raw, datetime.max.time().replace(microsecond=0))
+            if end_raw else datetime.now()
+        )
+
+    df = fetch_measurements(
+        station_ids=station_ids, days=0,
+        start_date=start_date, end_date=end_date,
+    )
 
     if df.empty:
         return JsonResponse({"data": [], "base_station": BASE_STATION_NAME})
@@ -603,7 +620,8 @@ def api_measurements(request):
             base_df = df[df["station_id"] == base_station_obj.id].copy()
         else:
             base_df = fetch_measurements(
-                station_ids=[base_station_obj.id], days=days
+                station_ids=[base_station_obj.id], days=0,
+                start_date=start_date, end_date=end_date,
             )
         if not base_df.empty:
             base_df = aggregate_base_to_10min(base_df)

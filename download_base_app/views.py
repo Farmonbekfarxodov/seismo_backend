@@ -1265,3 +1265,123 @@ def transfer_to_new_db(request):
     except Exception as e:
         logger.error(f"❌ transfer_to_new_db xato: {e}", exc_info=True)
         return JsonResponse({"success": False, "message": str(e)}, status=500)
+
+# ═══════════════════════ SPM FAYLDAN YUKLASH (5-bo'lim) ═══════════════════════
+# Desktop SPM_fayldan_serverga_yuklash.py skriptining web versiyasi.
+# Yozish manzili: geoseysmo bazasi (NEW_DB_*) — 3-bo'lim bilan bir xil.
+
+from .spm_upload import process_spm_file, fill_missing_dates, extract_skvajina_name
+from .serializers import SpmFolderRequestSerializer
+
+
+def _spm_process_files(file_items):
+    """Umumiy oqim: geoseysmoga ulanish, sanalarni to'ldirish, fayllarni ishlash.
+
+    file_items — [(file_obj_yoki_yo'l, filename), ...] ro'yxati.
+    """
+    conn = get_custom_db_connection(NEW_DB_HOST, NEW_DB_USER, NEW_DB_PASSWORD, NEW_DB_NAME)
+    cursor = conn.cursor()
+    try:
+        dates_added = fill_missing_dates(cursor, conn)
+        results = []
+        for file_obj, filename in file_items:
+            try:
+                results.append(process_spm_file(file_obj, filename, cursor, conn, NEW_DB_NAME))
+            except Exception as e:
+                logger.error(f"SPM fayl xatosi {filename}: {e}", exc_info=True)
+                results.append({
+                    "file": filename, "skvajina": extract_skvajina_name(filename),
+                    "params": [], "warnings": [f"Faylni qayta ishlashda xato: {e}"],
+                })
+        return dates_added, results
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def spm_upload_files(request):
+    """POST /upload/spm/files/ — brauzerdan bir nechta Gidrogeoseysmologiya*.xlsx."""
+    files = request.FILES.getlist("files")
+    if not files:
+        return JsonResponse(
+            {"success": False, "message": "Kamida bitta fayl tanlang."}, status=400
+        )
+
+    bad = [f.name for f in files
+           if not f.name.startswith("Gidrogeoseysmologiya") or not f.name.endswith(".xlsx")]
+    if bad:
+        return JsonResponse({
+            "success": False,
+            "message": "Fayl nomi 'Gidrogeoseysmologiya' bilan boshlanib, .xlsx bo'lishi shart: "
+                       + ", ".join(bad),
+        }, status=400)
+
+    try:
+        dates_added, results = _spm_process_files([(f, f.name) for f in sorted(files, key=lambda x: x.name)])
+    except mysql.connector.Error as e:
+        return JsonResponse(
+            {"success": False, "message": f"Geoseysmo bazasiga ulanishda xato: {e}"}, status=502
+        )
+
+    return JsonResponse({
+        "success": True,
+        "dates_added": dates_added,
+        "results": results,
+        "message": f"{len(results)} ta fayl qayta ishlandi.",
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def spm_upload_folder(request):
+    """POST /upload/spm/folder/ — serverdagi papkadan Gidrogeoseysmologiya*.xlsx o'qish."""
+    import glob as _glob
+    import os as _os
+
+    s = SpmFolderRequestSerializer(data=request.data)
+    if not s.is_valid():
+        return JsonResponse({"success": False, "message": "Noto'g'ri parametrlar",
+                             "errors": s.errors}, status=400)
+    folder = s.validated_data["folder_path"]
+    delete_after = s.validated_data["delete_after"]
+
+    if not _os.path.isdir(folder):
+        return JsonResponse(
+            {"success": False, "message": f"Papka topilmadi: {folder}"}, status=400
+        )
+
+    paths = sorted(_glob.glob(_os.path.join(folder, "Gidrogeoseysmologiya*.xlsx")))
+    if not paths:
+        return JsonResponse({
+            "success": False,
+            "message": "Papkada 'Gidrogeoseysmologiya*.xlsx' fayllar topilmadi.",
+        }, status=400)
+
+    try:
+        dates_added, results = _spm_process_files([(p, p) for p in paths])
+    except mysql.connector.Error as e:
+        return JsonResponse(
+            {"success": False, "message": f"Geoseysmo bazasiga ulanishda xato: {e}"}, status=502
+        )
+
+    deleted = 0
+    if delete_after:
+        # Desktop skript xatti-harakati: o'qilgan fayllar o'chiriladi
+        # (faqat foydalanuvchi aniq so'raganda)
+        for p in paths:
+            try:
+                _os.remove(p)
+                deleted += 1
+            except OSError as e:
+                logger.warning(f"Faylni o'chirib bo'lmadi {p}: {e}")
+
+    return JsonResponse({
+        "success": True,
+        "dates_added": dates_added,
+        "results": results,
+        "deleted": deleted,
+        "message": f"{len(results)} ta fayl qayta ishlandi"
+                   + (f", {deleted} tasi o'chirildi." if delete_after else "."),
+    })

@@ -20,4 +20,8 @@ urlpatterns = [
 
     # React frontend uchun: STATIONS_AND_WELLS ro'yxati
     path('upload/stations-wells/', views.get_stations_and_wells, name='stations_wells'),
+
+    # SPM fayldan geoseysmoga yuklash (5-bo'lim)
+    path('upload/spm/files/', views.spm_upload_files, name='spm_files'),
+    path('upload/spm/folder/', views.spm_upload_folder, name='spm_folder'),
 ]

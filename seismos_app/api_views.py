@@ -69,11 +69,33 @@ def api_layers(request):
     from django.conf import settings
     from django.core.cache import cache
 
-    cached = cache.get("seismos_map_layers_v2")
-    if cached:
-        return Response(cached)
+    # Redis ishlamayotgan bo'lsa ham endpoint ishlashda davom etadi
+    # (shunchaki keshsiz, har safar qayta hisoblaydi)
+    try:
+        cached = cache.get("seismos_map_layers_v3")
+        if cached:
+            return Response(cached)
+    except Exception as e:
+        logger.warning(f"Kesh o'qishda xato (Redis ishlayaptimi?): {e}")
 
-    shp_dir = os.path.join(settings.BASE_DIR, "static", "shapefiles")
+    # Shapefile'lar joylashuvi loyihadan loyihaga farq qiladi — bir necha
+    # ehtimoliy joyni ketma-ket tekshiramiz, .shp fayl topilgan birinchisini olamiz.
+    candidate_dirs = [
+        os.path.join(settings.BASE_DIR, "seismos_app", "static", "shapefiles"),
+        os.path.join(settings.BASE_DIR, "static", "shapefiles"),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "shapefiles"),
+        os.path.join(os.path.dirname(__file__), "static", "shapefiles"),
+    ]
+    shp_dir = next(
+        (d for d in candidate_dirs
+         if os.path.isdir(d) and glob.glob(os.path.join(d, "*.shp"))),
+        candidate_dirs[0],
+    )
+    logger.info(f"Shapefile papkasi: {shp_dir}")
+    if not (os.path.isdir(shp_dir) and glob.glob(os.path.join(shp_dir, "*.shp"))):
+        logger.warning(
+            "Shapefile topilmadi! Tekshirilgan joylar: " + "; ".join(candidate_dirs)
+        )
 
     def load_many(patterns, keep_cols):
         frames = []
@@ -115,7 +137,13 @@ def api_layers(request):
     )
 
     payload = {"cracks": cracks, "zones": zones}
-    cache.set("seismos_map_layers_v2", payload, 60 * 60 * 24)
+    # Faqat haqiqiy ma'lumot keshlanadi — null natija keshlanmaydi,
+    # aks holda fayl topilmagan holat 24 soat "yopishib" qolardi
+    if cracks is not None or zones is not None:
+        try:
+            cache.set("seismos_map_layers_v3", payload, 60 * 60 * 24)
+        except Exception as e:
+            logger.warning(f"Kesh yozishda xato (Redis ishlayaptimi?): {e}")
     return Response(payload)
 
 MEDIAN_VALUES = [3, 5, 7, 15, 31, 91, 183, 365, 731]
@@ -258,7 +286,10 @@ def _earthquakes_for_well(eq_df, well_lat, well_lon, min_mag, min_mlgr, filter_m
     return [
         {
             "datetime": row["combined_datetime"].strftime("%Y-%m-%dT%H:%M:%S"),
+            "lat": float(row["Latitude"]),
+            "lon": float(row["Longitude"]),
             "mb": round(float(row["Mb"]), 2),
+            "depth": float(row["Depth"]) if pd.notna(row["Depth"]) else None,
             "r_km": float(row["R(km)"]) if pd.notna(row["R(km)"]) else None,
             "mlgr": round(float(row["M/lgR"]), 2) if pd.notna(row["M/lgR"]) else None,
         }
@@ -311,6 +342,9 @@ def api_series(request):
     eq_df = fetch_and_filter_earthquakes(min_mag=min_mag, start_date=start_date, end_date=end_date)
 
     series_out = []
+    # Xarita uchun: har quduq zilzilalarini (grafik bilan AYNAN bir xil
+    # filtrlangan) to'playmiz — koordinata bo'yicha, dublikatsiz
+    map_eq_by_coord = {}
     engine = get_db_engine()
     conn = engine.connect()
     try:
@@ -324,6 +358,14 @@ def api_series(request):
                 well_earthquakes = _earthquakes_for_well(
                     eq_df, coords[0], coords[1], min_mag, min_mlgr, filter_mode
                 )
+                # Xarita uchun: shu quduq zilzilalarini koordinata bo'yicha
+                # to'playmiz. Bir zilzila bir necha quduqqa yaqin bo'lsa,
+                # eng katta M/lgR (eng yaqin) qiymatli nusxa qoladi.
+                for we in well_earthquakes:
+                    ck = (round(we["lat"], 4), round(we["lon"], 4))
+                    prev = map_eq_by_coord.get(ck)
+                    if prev is None or (we.get("mlgr") or 0) > (prev.get("mlgr") or 0):
+                        map_eq_by_coord[ck] = we
 
             for param in selected_params:
                 ssdi_id = lst_stansiya.get(key, {}).get(param)
@@ -377,52 +419,10 @@ def api_series(request):
     finally:
         conn.close()
 
-    # Xarita uchun: barcha filtrlangan zilzilalar. Eski xaritadagidek tooltip
-    # uchun tanlangan quduqlargacha bo'lgan ENG YAQIN masofa va M/lgR ham beriladi.
-    selected_coords = [
-        well_coords[k.split(" | ")[1].strip()]
-        for k in selected_keys
-        if " | " in k and k.split(" | ")[1].strip() in well_coords
-    ]
-    map_earthquakes = []
-    if eq_df is not None and not eq_df.empty:
-        eq = eq_df.reset_index(drop=True)
-        # VEKTORLASHTIRILGAN: har bir tanlangan quduq uchun barcha zilzilalarga
-        # masofa bir yo'la hisoblanadi, keyin element bo'yicha minimal olinadi.
-        min_r = None
-        if selected_coords:
-            dist_cols = [
-                np.asarray(destenc_vectorized(la, lo, eq["Latitude"], eq["Longitude"]), dtype=float)
-                for la, lo in selected_coords
-            ]
-            min_r = np.round(np.minimum.reduce(dist_cols))
-        with np.errstate(divide="ignore", invalid="ignore"):
-            mlgr_arr = (
-                np.where(min_r > 1, eq["Mb"].to_numpy(dtype=float) / np.log10(min_r), np.nan)
-                if min_r is not None else None
-            )
-        for i, row in eq.iterrows():
-            r_km = float(min_r[i]) if min_r is not None else None
-            mlgr_v = (
-                round(float(mlgr_arr[i]), 2)
-                if mlgr_arr is not None and not np.isnan(mlgr_arr[i]) else None
-            )
-            # mlgr rejimida: hech bir tanlangan quduq mezonidan o'tmagan
-            # zilzilalar xaritada ko'rsatilmaydi (eski folium xarita bilan
-            # bir xil: min masofa -> maksimal M/lgR, ya'ni "kamida bitta
-            # quduq uchun o'tadi" sharti bilan ekvivalent)
-            if filter_mode == "mlgr" and selected_coords:
-                if mlgr_v is None or mlgr_v < min_mlgr:
-                    continue
-            map_earthquakes.append({
-                "datetime": row["combined_datetime"].strftime("%Y-%m-%dT%H:%M:%S"),
-                "lat": float(row["Latitude"]),
-                "lon": float(row["Longitude"]),
-                "mb": round(float(row["Mb"]), 2),
-                "depth": float(row["Depth"]) if pd.notna(row["Depth"]) else None,
-                "r_km": r_km,
-                "mlgr": mlgr_v,
-            })
+    # Xarita zilzilalari — yuqorida har quduq uchun hisoblangan (grafik bilan
+    # AYNAN bir xil filtrlangan) zilzilalardan to'plandi. Bu grafik va xarita
+    # doim mos bo'lishini kafolatlaydi.
+    map_earthquakes = list(map_eq_by_coord.values())
 
     selected_wells = {
         (k.split(" | ")[1].strip() if " | " in k else k) for k in selected_keys

@@ -20,10 +20,23 @@ class StationSerializer(serializers.ModelSerializer):
 
 
 class MeasurementsQuerySerializer(serializers.Serializer):
-    """GET /magnitka/api/measurements/ query parametrlari."""
+    """GET /magnitka/api/measurements/ query parametrlari.
+
+    start_date/end_date ixtiyoriy — ikkalasi ham berilmasa,
+    stantsiyaning BARCHA ma'lumotlari qaytariladi.
+    """
 
     station_ids = serializers.CharField()
-    days = serializers.IntegerField(required=False, default=30, min_value=1, max_value=3650)
+    start_date = serializers.DateField(required=False, allow_null=True)
+    end_date = serializers.DateField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        s, e = attrs.get("start_date"), attrs.get("end_date")
+        if s and e and e < s:
+            raise serializers.ValidationError(
+                "Tugash sanasi boshlanish sanasidan oldin bo'lishi mumkin emas."
+            )
+        return attrs
 
     def validate_station_ids(self, value):
         try:

@@ -40,3 +40,12 @@ class ApiUploadRequestSerializer(serializers.Serializer):
         self._check_ddmmyyyy(attrs["start_date"], "start_date")
         self._check_ddmmyyyy(attrs["end_date"], "end_date")
         return attrs
+
+
+class SpmFolderRequestSerializer(serializers.Serializer):
+    """POST /upload/spm/folder/ — serverdagi papkadan o'qish."""
+
+    folder_path = serializers.CharField()
+    # Desktop skript fayllarni o'qigach O'CHIRIB yuborardi; serverda bu
+    # xavfli bo'lgani uchun standart holatda o'chirilmaydi
+    delete_after = serializers.BooleanField(required=False, default=False)
