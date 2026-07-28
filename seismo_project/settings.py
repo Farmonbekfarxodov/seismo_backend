@@ -46,6 +46,7 @@ MIDDLEWARE = [
     # JSON javoblarni siqish (masalan, xarita qatlamlari 1.1MB -> ~0.2MB)
     'django.middleware.gzip.GZipMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
