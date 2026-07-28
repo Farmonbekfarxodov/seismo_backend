@@ -151,7 +151,7 @@ CACHES = {
     'default': {
         # ✅ TO'G'RI: django_redis backend
         'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': 'redis://127.0.0.1:6379/1',
+        'LOCATION': config('REDIS_URL' ,default='redis://127.0.0.1:6379/1'),
 
         # ✅ OPTIONS to'g'ri strukturada
         'OPTIONS': {
