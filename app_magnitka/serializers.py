@@ -36,6 +36,12 @@ class MeasurementsQuerySerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 "Tugash sanasi boshlanish sanasidan oldin bo'lishi mumkin emas."
             )
+        MIN_YEAR = 1960
+        for label, d in (("start_date", s), ("end_date", e)):
+            if d and d.year < MIN_YEAR:
+                raise serializers.ValidationError(
+                    f"{label}: yil {MIN_YEAR} dan katta bo'lishi kerak (kiritilgan: {d.year})."
+                )
         return attrs
 
     def validate_station_ids(self, value):
