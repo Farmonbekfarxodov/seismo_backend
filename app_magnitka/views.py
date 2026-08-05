@@ -571,6 +571,30 @@ def api_stations(request):
     data = StationSerializer(stations, many=True).data
     return JsonResponse({"stations": data})
 
+def aggregate_to_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Grafik uchun YAKUNIY qadam: 10 (yoki 1) minutlik nuqtalarni SUTKALIK
+    o'rtachaga aylantiradi. Yangibozor 1->10 min konversiyasi va delta
+    hisoblash yuqorida O'ZGARISHSIZ qoladi — bu faqat natija ustiga
+    qo'shiladigan qo'shimcha bosqich.
+
+    Bir kunda odatda 144 ta nuqta (10 minutda bitta) bo'ladi, lekin ba'zi
+    kunlarda uzilish sabab kamroq (masalan 130 ta) bo'lishi mumkin.
+    pandas .mean() har doim MAVJUD nuqtalar soniga bo'ladi — 144 bo'lsa
+    144 ga, 130 bo'lsa 130 ga (hech qachon zo'rlab 144 ga bo'lmaydi).
+    """
+    if df.empty:
+        return df
+    d = df.copy()
+    d["measured_at"] = pd.to_datetime(d["measured_at"])
+    daily = (
+        d.set_index("measured_at")["value"]
+        .resample("1D")
+        .mean()
+        .dropna()
+        .reset_index()
+    )
+    return daily
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -652,7 +676,7 @@ def api_measurements(request):
                     "is_delta": True, "no_match": True,
                 })
                 continue
-
+        series_df = aggregate_to_daily(series_df)
         result.append({
             "station_id":   sid,
             "station_name": station_name,
