@@ -84,8 +84,19 @@ def save_data_to_db(data_list):
 @permission_classes([IsAuthenticated])
 def catalog_list(request):
     """GET /api/catalog/  — so'nggi 20 ta yozuv + sana oralig'i."""
+    start_date = request.query_params.get("start_date")
+    end_date = request.query_params.get("end_date")
     all_records = Catalog.objects.all().order_by("-Event_date", "-Event_time")
-    records = all_records[:20]
+
+    #Sana oralig'i bo'yicha filtrlash
+    if start_date and end_date:
+        records = all_records.filter(Event_date__range=[start_date, end_date])
+    elif start_date:
+        records = all_records.filter(Event_date__gte=start_date)
+    elif end_date:
+        records = all_records.filter(Event_date__lte=end_date)
+    else:
+        records = all_records[:20]
 
     date_range = Catalog.objects.aggregate(
         start_date=Min("Event_date"),
@@ -96,6 +107,8 @@ def catalog_list(request):
         "records": CatalogSerializer(records, many=True).data,
         "start_date": date_range["start_date"],
         "end_date": date_range["end_date"],
+        "filtered": bool(start_date or end_date),
+        "count": len(records) if (start_date or end_date) else 20
     })
 
 
