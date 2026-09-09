@@ -478,3 +478,161 @@ def api_well_info(request):
     except Exception as e:
         logger.error(f"Well info xato ({name}): {e}")
         return Response({"error": "Ma'lumot olinmadi"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+from .serializers import EpochRequestSerializer
+
+MAX_EPOCH_CHARTS = 200
+
+
+def _load_raw_series(conn, ssdi_id):
+    """Bitta parametrning butun vaqt qatori (sana filtrsiz, medianasiz).
+
+    Epoch tahlilida har bir zilzila atrofidan kesib olinadi, shuning uchun
+    bir marta o'qib, keyin xotirada kesish tezroq.
+    """
+    query = text(f"SELECT date, `{ssdi_id}` FROM alldata WHERE `{ssdi_id}` IS NOT NULL")
+    data = conn.execute(query).fetchall()
+    if not data:
+        return None
+    df = pd.DataFrame(data, columns=["date", "value"])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df[(df["value"] != 0) & df["value"].notna() & df["date"].notna()]
+    if df.empty:
+        return None
+    # Bir kunda bir nechta o'lchov bo'lsa — kunlik median
+    daily = df.groupby(df["date"].dt.normalize())["value"].median()
+    # Sigma BUTUN TARIX bo'yicha hisoblanadi (oyna ichidagi emas) —
+    # shuning uchun uni shu yerda, kesishdan oldin olamiz
+    stats = {
+        "mean": float(daily.mean()),
+        "std": float(daily.std()) if len(daily) > 1 else 0.0,
+    }
+    return daily, stats
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def api_epoch_analysis(request):
+    """Zilzila tahlili: har bir mos zilzila uchun alohida oyna grafigi.
+
+    Zilzila sanasi = 0-kun. X o'qi nisbiy kunlarda: -days_before ... +days_after.
+    Ma'lumot yo'q kunlar null bo'lib qaytadi — grafikda tabiiy uzilish
+    (gap) sifatida ko'rinadi, sun'iy to'ldirish qilinmaydi.
+    """
+    req = EpochRequestSerializer(data=request.data)
+    if not req.is_valid():
+        first_error = next(iter(req.errors.values()))
+        msg = first_error[0] if isinstance(first_error, list) else str(first_error)
+        return Response({"error": str(msg), "details": req.errors},
+                        status=status.HTTP_400_BAD_REQUEST)
+    v = req.validated_data
+
+    selected_keys = v["selected_keys"]
+    selected_params = v["selected_params"] or sorted(
+        set(sum(DEFAULT_ELEMENTS_GROUPS.values(), []))
+    )
+    min_mag, min_mlgr = v["min_mag"], v["min_mlgr"]
+    days_before, days_after = v["days_before"], v["days_after"]
+
+    start_date = pd.Timestamp(v["start_date"]) if v.get("start_date") else pd.to_datetime("1984-01-01")
+    end_date = pd.Timestamp(v["end_date"]) if v.get("end_date") else None
+
+    lst_stansiya, well_coords = fetch_data()
+    # Sana oralig'i — ZILZILALARNI tanlash uchun
+    eq_df = fetch_and_filter_earthquakes(min_mag=min_mag, start_date=start_date, end_date=end_date)
+
+    charts = []
+    truncated = False
+    engine = get_db_engine()
+    conn = engine.connect()
+    try:
+        for key in selected_keys:
+            _, skvajina = key.split(" | ") if " | " in key else ("", key)
+            coords = well_coords.get(skvajina.strip())
+            if not coords:
+                continue
+
+            # Seysmik tahlil bilan AYNAN bir xil M/lgR filtri
+            well_eqs = _earthquakes_for_well(
+                eq_df, coords[0], coords[1], min_mag, min_mlgr, "mlgr"
+            )
+            if not well_eqs:
+                continue
+
+            for param in selected_params:
+                ssdi_id = lst_stansiya.get(key, {}).get(param)
+                if not ssdi_id:
+                    continue
+                try:
+                    loaded = _load_raw_series(conn, ssdi_id)
+                except Exception as e:
+                    logger.error(f"Epoch: {key}/{param} o'qishda xato: {e}")
+                    continue
+                if loaded is None:
+                    continue
+                daily, stats = loaded
+                if daily.empty:
+                    continue
+
+                for eq in well_eqs:
+                    if len(charts) >= MAX_EPOCH_CHARTS:
+                        truncated = True
+                        break
+
+                    eq_day = pd.Timestamp(eq["datetime"]).normalize()
+                    win_start = eq_day - pd.Timedelta(days=days_before)
+                    win_end = eq_day + pd.Timedelta(days=days_after)
+
+                    window = daily[(daily.index >= win_start) & (daily.index <= win_end)]
+                    if window.empty:
+                        continue  # bu oynada umuman ma'lumot yo'q
+
+                    # To'liq kun diapazoni: yo'q kunlar null bo'ladi (gap)
+                    offsets, values, dates = [], [], []
+                    for off in range(-days_before, days_after + 1):
+                        day = eq_day + pd.Timedelta(days=off)
+                        offsets.append(off)
+                        dates.append(day.strftime("%Y-%m-%d"))
+                        val = window.get(day)
+                        values.append(round(float(val), 6) if val is not None and pd.notna(val) else None)
+
+                    charts.append({
+                        "key": key,
+                        "skvajina": skvajina.strip(),
+                        "param": param,
+                        "earthquake": {
+                            "datetime": eq["datetime"],
+                            "mb": eq["mb"],
+                            "r_km": eq.get("r_km"),
+                            "mlgr": eq.get("mlgr"),
+                            "depth": eq.get("depth"),
+                        },
+                        "offsets": offsets,
+                        "values": values,
+                        "dates": dates,
+                        "stats": {
+                            "mean": round(stats["mean"], 6),
+                            "std": round(stats["std"], 6),
+                        },
+                        "points_count": int(window.notna().sum()),
+                        "days_before": days_before,
+                        "days_after": days_after,
+                    })
+                if len(charts) >= MAX_EPOCH_CHARTS:
+                    break
+            if len(charts) >= MAX_EPOCH_CHARTS:
+                break
+    finally:
+        conn.close()
+
+    return Response({
+        "charts": charts,
+        "meta": {
+            "count": len(charts),
+            "truncated": truncated,
+            "min_mag": min_mag,
+            "min_mlgr": min_mlgr,
+            "days_before": days_before,
+            "days_after": days_after,
+        },
+    })

@@ -14,4 +14,5 @@ urlpatterns = [
     path('api/series/', api_views.api_series, name='api_series'),
     path('api/layers/', api_views.api_layers, name='api_layers'),
     path('api/well-info/', api_views.api_well_info, name='api_well_info'),
+    path('api/epoch-analysis/', api_views.api_epoch_analysis, name='api_epoch_analysis'),
 ]
