@@ -15,7 +15,9 @@ class AnomalyRecord(models.Model):
         (24, '24 oy'),
     ]
 
+    # Eski (v1) formadagi 1 kun varianti qaytarildi, v2 dagi 60 kun saqlandi
     ANOMALY_DURATION_CHOICES = [
+        (1, '1 kun'),
         (3, '3 kun'),
         (5, '5 kun'),
         (7, '7 kun'),
