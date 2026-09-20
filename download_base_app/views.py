@@ -7,7 +7,6 @@ import pandas as pd
 import mysql.connector
 import requests
 
-from django.shortcuts import render
 from django.http import JsonResponse
 from decouple import config
 from datetime import timedelta
@@ -1073,10 +1072,6 @@ def upload_measurements(request):
 
 
 # ==================== Views ====================
-
-def index(request):
-    return render(request, "download_base_app/index.html", {"stations": STATIONS_AND_WELLS})
-
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

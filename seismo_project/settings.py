@@ -1,8 +1,5 @@
 from datetime import timedelta
-from email.policy import default
 from pathlib import Path
-import os
-import json
 from decouple import config, Csv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.

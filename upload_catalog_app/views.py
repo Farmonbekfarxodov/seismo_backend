@@ -2,9 +2,6 @@ import pandas as pd
 import requests
 import json
 import datetime
-from datetime import timedelta
-import csv
-import io
 
 from django.db.models import Min, Max
 from rest_framework.decorators import api_view, permission_classes

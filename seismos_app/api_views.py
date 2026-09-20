@@ -36,23 +36,6 @@ logger = logging.getLogger(__name__)
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def api_well_info(request):
-    """Xaritada skvajina ustiga bosilganda chiqadigan batafsil ma'lumot.
-
-    Eski folium popup'idagi jadvalning aynan manbasi: Malumot jadvalidan
-    quduq turi, chuqurlik, seysmotektonik holat, strategrafik taqsimot,
-    litologik tarkib va mineralizatsiya rasmi (base64).
-    GET /seismos/api/well-info/?name=<skvajina>
-    """
-    name = (request.GET.get("name") or "").strip()
-    if not name:
-        return Response({"error": "name parametri kerak."}, status=status.HTTP_400_BAD_REQUEST)
-    info = get_well_detailed_info(name)
-    return Response(info)
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
 def api_layers(request):
     """Xarita qatlamlari: yer yoriqlari (AFEAD) va seysmogen zonalar.
 
