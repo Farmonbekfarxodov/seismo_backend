@@ -196,3 +196,6 @@ earthquakes_debug.py
 # Node (frontend alohida repo bo'lsa)
 node_modules/
 frontend/dist/
+
+# Lokal Docker sozlamalari (har bir mashinada o'ziga xos)
+docker-compose.override.yml
