@@ -4,8 +4,6 @@ from . import views
 app_name = "download_base"
 
 urlpatterns = [
-    path("upload/", views.index, name="index"),
-
     # 1) API dan yuklash (POST)
     path("upload/api/", views.upload_api, name="upload_api"),
 

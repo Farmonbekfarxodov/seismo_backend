@@ -16,6 +16,8 @@ services:
       - seismo_net
 
   frontend:
+    # seismo_fronted repo'si backend bilan yonma-yon klon qilingan bo'lishi kerak.
+    # Repo ildizining o'zida Dockerfile bor, shuning uchun qo'shimcha papka yo'q.
     build: ../seismo_fronted
     restart: unless-stopped
     ports:
