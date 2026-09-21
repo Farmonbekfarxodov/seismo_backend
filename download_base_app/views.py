@@ -225,40 +225,85 @@ def normalize_string(s):
 
 # ==================== API flow ====================
 
-def get_auth_token():
-    payload = {"username": USERNAME, "password": PASSWORD}
+# Xato xabarlarida ko'rsatiladigan tashqi manba nomi
+API_NOMI = "geofizik.uz"
+
+
+def _login_va_token(login_url, username, password, manba):
+    """Tashqi API'dan token oladi.
+
+    Qaytaradi: (token, xato_xabari) juftligi. Muvaffaqiyatda xato_xabari None,
+    aks holda token None va xabar foydalanuvchiga ko'rsatishga tayyor holda
+    qaytadi — nima uchun ishlamaganini aytadi, shunchaki "Token olinmadi"
+    demaydi.
+    """
+    payload = {"username": username, "password": password}
+
     try:
-        response = requests.post(LOGIN_URL, json=payload, timeout=10)
-        response.raise_for_status()
-        token = response.json().get("result", {}).get("token")
-        return token
+        response = requests.post(login_url, json=payload, timeout=10)
     except requests.exceptions.ConnectionError:
-        logger.error("❌ Token: internet ulanish xatosi")
-        return None
+        logger.error(f"❌ Token ({manba}): ulanish xatosi")
+        return None, (
+            f"{API_NOMI} bilan aloqa o'rnatilmadi. "
+            f"Internet ulanishini tekshiring."
+        )
     except requests.exceptions.Timeout:
-        logger.error("⏱️ Token: so'rov vaqti tugadi")
-        return None
-    except Exception as e:
-        logger.error(f"❌ Token olishda xato: {e}", exc_info=True)
-        return None
+        logger.error(f"⏱️ Token ({manba}): so'rov vaqti tugadi")
+        return None, (
+            f"{API_NOMI} 10 soniya ichida javob bermadi. "
+            f"Keyinroq urinib ko'ring."
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Token ({manba}) so'rovida xato: {e}", exc_info=True)
+        return None, f"{API_NOMI} ga so'rov yuborib bo'lmadi: {e}"
+
+    kod = response.status_code
+    tana = response.text[:300].replace("\n", " ")
+
+    if kod >= 500:
+        logger.error(f"❌ Token ({manba}): tashqi API HTTP {kod}. Javob: {tana}")
+        return None, (
+            f"Tashqi manba ({API_NOMI}) javob bermadi — HTTP {kod}. "
+            f"Bu ularning serveridagi nosozlik. Keyinroq urinib ko'ring."
+        )
+
+    if kod in (401, 403):
+        logger.error(f"❌ Token ({manba}): login/parol qabul qilinmadi (HTTP {kod})")
+        return None, (
+            f"{API_NOMI} login yoki parolni qabul qilmadi (HTTP {kod}). "
+            f".env dagi ma'lumotlarni tekshiring."
+        )
+
+    if kod >= 400:
+        logger.error(f"❌ Token ({manba}): HTTP {kod}. Javob: {tana}")
+        return None, f"{API_NOMI} so'rovni rad etdi (HTTP {kod})."
+
+    try:
+        javob = response.json()
+    except ValueError:
+        logger.error(f"❌ Token ({manba}): javob JSON emas. Javob: {tana}")
+        return None, (
+            f"{API_NOMI} kutilmagan formatda javob qaytardi (JSON emas)."
+        )
+
+    natija = javob.get("result") if isinstance(javob, dict) else None
+    token = natija.get("token") if isinstance(natija, dict) else None
+
+    if not token:
+        logger.error(f"❌ Token ({manba}): javobda token yo'q. Javob: {tana}")
+        return None, f"{API_NOMI} javobida token topilmadi."
+
+    return token, None
+
+
+def get_auth_token():
+    """Geoseysmo API uchun token. Qaytaradi: (token, xato_xabari)."""
+    return _login_va_token(LOGIN_URL, USERNAME, PASSWORD, "geoseysmo")
 
 
 def get_auth_token_magnitka():
-    payload = {"username": USERNAME_MAG, "password": PASSWORD_MAG}
-    try:
-        response = requests.post(LOGIN_URL_MAG, json=payload, timeout=10)
-        response.raise_for_status()
-        token = response.json().get("result", {}).get("token")
-        return token
-    except requests.exceptions.ConnectionError:
-        logger.error("❌ Token: internet ulanish xatosi")
-        return None
-    except requests.exceptions.Timeout:
-        logger.error("⏱️ Token: so'rov vaqti tugadi")
-        return None
-    except Exception as e:
-        logger.error(f"❌ Token olishda xato: {e}", exc_info=True)
-        return None
+    """Magnitka API uchun token. Qaytaradi: (token, xato_xabari)."""
+    return _login_va_token(LOGIN_URL_MAG, USERNAME_MAG, PASSWORD_MAG, "magnitka")
 
 
 def fetch_data_from_api(params, token):
@@ -1023,10 +1068,12 @@ def upload_measurements(request):
             )
 
         logger.info("🔐 Token olinmoqda (magnitka)...")
-        token = get_auth_token_magnitka()
+        token, token_xatosi = get_auth_token_magnitka()
         if not token:
-            logger.error("❌ Token olinmadi!")
-            return JsonResponse({"success": False, "message": "Token olinmadi."}, status=401)
+            # 502: muammo tashqi manbada, bu saytning autentifikatsiyasida emas.
+            # 401 bersak, frontend uni "JWT eskirgan" deb o'ylab so'rovni
+            # qaytadan yuboradi va foydalanuvchini login sahifasiga uloqtirishi mumkin.
+            return JsonResponse({"success": False, "message": token_xatosi}, status=502)
 
         logger.info(f"✅ Token olindi. API dan ma'lumot olinmoqda ({chunk_days} kunlik chunk)...")
         api_data = fetch_magnitka_from_api(date_start, date_end, token, station_code, chunk_days=chunk_days)
@@ -1134,9 +1181,10 @@ def upload_api(request):
         start_date = v["start_date"]
         end_date = v["end_date"]
 
-        token = get_auth_token()
+        token, token_xatosi = get_auth_token()
         if not token:
-            return JsonResponse({"success": False, "message": "Token olinmadi."}, status=401)
+            # 502 — sabab tashqi manbada (yuqoridagi izohga qarang)
+            return JsonResponse({"success": False, "message": token_xatosi}, status=502)
 
         api_targets = []
         if station_code == "all":
