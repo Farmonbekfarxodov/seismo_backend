@@ -32,6 +32,24 @@ MAGNITUDE_LINE_COLOR = "rgba(220, 38, 38, 0.55)"  # qizil, yarim shaffof
 # ✅ Delta hisoblash uchun baza stantsiya nomi
 BASE_STATION_NAME = "Yangibozor"
 
+# Qiymat O'Z STANSIYASINING medianasidan shunchadan ko'p chetlashsa, u
+# yaroqsiz (sensor yoki yozuv nosozligi) deb hisoblanadi va hisobga olinmaydi.
+#
+# Filtr ikki joyda kerak:
+#   1) Baza (Yangibozor) — barcha stansiyalar Δ = qiymat − Yangibozor tarzida
+#      chiziladi, shuning uchun bazaning bitta buzuq nuqtasi o'sha vaqtdagi
+#      HAMMA grafikni buzadi. 2022-05-11 da Yangibozor kun bo'yi ~543 yozgan
+#      (odatda ~53 655) — natijada barcha stansiyalarda Δ ≈ 53 000 chiqqan.
+#   2) O'lchovchi stansiyaning o'zi — o'z sensori nosoz bo'lsa, faqat o'sha
+#      stansiyaning grafigi buziladi. 2024-02-18 da Xumson ~32 434 yozgan
+#      (odatda ~53 740), natijada Δ = −21 221 bo'lgan (odatdagi +85 o'rniga).
+#
+# Chegara nega 5000: haqiqiy magnit o'zgarishlar (kunlik variatsiya, magnit
+# bo'ronlar) yuzlab nT bo'ladi — kuzatilgan eng katta haqiqiy chetlanish
+# +3177 nT. Nosozliklar esa o'n minglab nT. 5000 nT ikkalasini ishonchli
+# ajratadi: haqiqiy bo'ronlar saqlanadi, sensor nosozligi tashlanadi.
+MAX_DEVIATION = 5000.0
+
 PERIOD_OPTIONS = [
     ("7",   "1 hafta"),
     ("30",  "1 oy"),
@@ -140,6 +158,43 @@ def fetch_earthquakes(
     except Exception as e:
         logger.error(f"❌ fetch_earthquakes error: {e}", exc_info=True)
         return pd.DataFrame()
+
+
+def filter_outliers(
+    base_df: pd.DataFrame,
+    nom: str = BASE_STATION_NAME,
+    max_deviation: float = MAX_DEVIATION,
+) -> pd.DataFrame:
+    """Stansiyaning yaroqsiz nuqtalarini olib tashlaydi.
+
+    Qiymat shu stansiyaning o'z medianasidan `max_deviation` dan ko'p
+    chetlashsa — bu magnit o'zgarish emas, sensor/yozuv nosozligi.
+    Bunday nuqtalar hisobdan chiqarib tashlanadi; natijada o'sha vaqtlarda
+    grafik bo'sh qoladi (soxta cho'qqi chizilmaydi).
+
+    Ham baza (Yangibozor), ham har bir o'lchovchi stansiya uchun ishlatiladi.
+    Delta hisoblash va 10-minutlik o'rtachaga keltirishdan OLDIN chaqirilishi
+    kerak — aks holda bitta oynada yaroqli va yaroqsiz qiymatlar aralashib,
+    o'rtachasi "ishonarli" ko'rinib qolishi mumkin.
+    """
+    if base_df.empty or "value" not in base_df.columns:
+        return base_df
+
+    median = base_df["value"].median()
+    yaroqli = (base_df["value"] - median).abs() <= max_deviation
+    tashlandi = int((~yaroqli).sum())
+
+    if tashlandi:
+        sanalar = sorted(
+            set(pd.to_datetime(base_df.loc[~yaroqli, "measured_at"]).dt.date.astype(str))
+        )
+        logger.warning(
+            f"⚠️ {nom}: {tashlandi} ta yaroqsiz nuqta tashlandi "
+            f"(median={median:.1f}, chegara=±{max_deviation:.0f}). "
+            f"Sanalar: {', '.join(sanalar)}"
+        )
+
+    return base_df.loc[yaroqli].reset_index(drop=True)
 
 
 def aggregate_base_to_10min(base_df: pd.DataFrame) -> pd.DataFrame:
@@ -295,6 +350,9 @@ def api_measurements(request):
                 start_date=start_date, end_date=end_date,
             )
         if not base_df.empty:
+            # Avval yaroqsiz nuqtalar tashlanadi, keyin 10-minutlikka keltiriladi
+            base_df = filter_outliers(base_df, BASE_STATION_NAME)
+        if not base_df.empty:
             base_df = aggregate_base_to_10min(base_df)
 
     result = []
@@ -306,23 +364,39 @@ def api_measurements(request):
         is_base = (station_name == BASE_STATION_NAME)
 
         if is_base:
-            series_df = base_df if not base_df.empty else aggregate_base_to_10min(sub)
-            is_delta = False
-        elif base_df.empty:
-            series_df = sub
+            series_df = (
+                base_df if not base_df.empty
+                else aggregate_base_to_10min(filter_outliers(sub, station_name))
+            )
             is_delta = False
         else:
-            series_df = compute_delta_series(sub, base_df)
-            is_delta = True
-            if series_df.empty:
-                # Yangibozor bilan mos vaqt topilmadi — seriyani belgilab qaytaramiz
+            # Stansiyaning O'Z nosoz nuqtalari ham tashlanadi — aks holda
+            # uning sensori buzilgan kunda Δ soxta cho'qqi berib yuboradi.
+            sub = filter_outliers(sub, station_name)
+            if sub.empty:
                 result.append({
                     "station_id": sid,
                     "station_name": station_name,
                     "dates": [], "values": [],
-                    "is_delta": True, "no_match": True,
+                    "is_delta": not base_df.empty, "no_match": True,
                 })
                 continue
+
+            if base_df.empty:
+                series_df = sub
+                is_delta = False
+            else:
+                series_df = compute_delta_series(sub, base_df)
+                is_delta = True
+                if series_df.empty:
+                    # Yangibozor bilan mos vaqt topilmadi — seriyani belgilab qaytaramiz
+                    result.append({
+                        "station_id": sid,
+                        "station_name": station_name,
+                        "dates": [], "values": [],
+                        "is_delta": True, "no_match": True,
+                    })
+                    continue
         series_df = aggregate_to_daily(series_df)
         result.append({
             "station_id":   sid,
