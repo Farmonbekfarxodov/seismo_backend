@@ -228,6 +228,10 @@ def normalize_string(s):
 # Xato xabarlarida ko'rsatiladigan tashqi manba nomi
 API_NOMI = "geofizik.uz"
 
+# Log yozuvlarida qaysi oqim ekanini ajratish uchun yorliqlar (maxfiy emas)
+MANBA_GEO = "geoseysmo"
+MANBA_MAG = "magnitka"
+
 
 def _login_va_token(login_url, username, password, manba):
     """Tashqi API'dan token oladi.
@@ -298,12 +302,12 @@ def _login_va_token(login_url, username, password, manba):
 
 def get_auth_token():
     """Geoseysmo API uchun token. Qaytaradi: (token, xato_xabari)."""
-    return _login_va_token(LOGIN_URL, USERNAME, PASSWORD, "geoseysmo")
+    return _login_va_token(LOGIN_URL, USERNAME, PASSWORD, manba=MANBA_GEO)
 
 
 def get_auth_token_magnitka():
     """Magnitka API uchun token. Qaytaradi: (token, xato_xabari)."""
-    return _login_va_token(LOGIN_URL_MAG, USERNAME_MAG, PASSWORD_MAG, "magnitka")
+    return _login_va_token(LOGIN_URL_MAG, USERNAME_MAG, PASSWORD_MAG, manba=MANBA_MAG)
 
 
 def fetch_data_from_api(params, token):

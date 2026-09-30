@@ -1,17 +1,25 @@
 """
 SPM_fayldan_serverga_yuklash.py desktop skriptining server (web) versiyasi.
 
-Desktop skriptdagi mantiq AYNAN saqlangan:
+Desktop skriptdagi mantiq asosan saqlangan, BITTA MUHIM TUZATISH bilan:
+eski versiya bo'sh katakchalarni 0 bilan to'ldirib, keyin har doim 0
+qiymatlarni "ma'lumot yo'q" deb tashlab yuborardi — natijada haqiqiy 0
+o'lchovlar (masalan, suv sathi yoki CO2 uchun chinakam nol natija) ham
+bazaga yozilmay qolardi. Endi bo'sh katak (NaN) bilan haqiqiy 0 qiymat
+aniq ajratiladi: faqat chindan ham bo'sh kataklar o'tkazib yuboriladi,
+0 qiymat esa oddiy o'lchov sifatida saqlanadi.
+
   1. `alldata` jadvalida yetishmayotgan sanalar bugungacha to'ldiriladi
   2. Fayl nomidan skvajina nomi ajratiladi:
      "Gidrogeoseysmologiya-" prefiksi olib tashlanadi, oxirgi _timestamp
      kesiladi, '_' -> bo'sh joy, "'" -> "ʻ"
-  3. Excel o'qiladi, sana bo'lmagan ustunlardagi bo'sh qiymatlar 0 bilan
-     to'ldiriladi, birinchi qator ustun nomlari sifatida olinadi
-  4. Butunlay 0 dan iborat ustunlar tashlanadi
+  3. Excel o'qiladi, birinchi qator ustun nomlari sifatida olinadi;
+     bo'sh kataklar NaN holicha qoladi (0 bilan to'ldirilmaydi)
+  4. Butunlay bo'sh (birorta ham o'lchov kiritilmagan) ustunlar tashlanadi
   5. Har parametr uchun `all_izmereniya`dan ssdi_id topiladi; `alldata`da
      bunday ustun bo'lmasa ALTER TABLE bilan qo'shiladi; ustunning oxirgi
-     to'ldirilgan sanasidan keyingi, 0 bo'lmagan qiymatlargina UPDATE qilinadi
+     to'ldirilgan sanasidan keyingi, HAQIQATDA bo'sh bo'lmagan (0 ni ham
+     o'z ichiga olgan) qiymatlar UPDATE qilinadi
   6. all_izmereniya'da topilmagan skvajina+parametr — ogohlantirish bilan
      o'tkazib yuboriladi
 
@@ -23,7 +31,6 @@ import logging
 import os
 
 import pandas as pd
-import pandas.api.types as ptypes
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +83,11 @@ def process_spm_file(file_obj, filename: str, cursor, conn, db_name: str) -> dic
 
     df = pd.read_excel(file_obj)
 
-    # Sana ustuniga tegmasdan bo'sh qiymatlarni 0 bilan to'ldirish
-    for col in df.columns:
-        if not ptypes.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].fillna(0)
+    # MUHIM: bo'sh katakchalar 0 bilan TO'LDIRILMAYDI — aks holda "o'lchov
+    # olinmagan" (bo'sh) bilan "o'lchov 0 chiqqan" (haqiqiy nol qiymat) farqi
+    # yo'qoladi va pastdagi filtrlar haqiqiy 0 qiymatlarni ham tashlab
+    # yuboradi. Bo'sh kataklar pandas'da NaN bo'lib qoladi, keyinroq
+    # `notna()`/`isna()` bilan ajratiladi.
 
     # Birinchi qator — ustun nomlari (desktop skript bilan bir xil tartib)
     name = df.iloc[0].to_list()[2:]
@@ -90,8 +98,9 @@ def process_spm_file(file_obj, filename: str, cursor, conn, db_name: str) -> dic
     df = df.set_index("T/r")
     df["Sana"] = pd.to_datetime(df["Sana"], format="%d.%m.%Y", errors="coerce")
 
-    # Butunlay 0 dan iborat ustunlarni tashlash
-    columns_to_drop = [c for c in df.columns if c != "Sana" and df[c].eq(0).all()]
+    # Butunlay bo'sh (birorta ham o'lchov kiritilmagan) ustunlarni tashlash —
+    # haqiqiy 0 qiymatlar bilan to'la ustun endi tashlanmaydi
+    columns_to_drop = [c for c in df.columns if c != "Sana" and df[c].isna().all()]
     df = df.drop(columns=columns_to_drop)
 
     for column in df.columns:
@@ -136,7 +145,9 @@ def process_spm_file(file_obj, filename: str, cursor, conn, db_name: str) -> dic
             df1 = df_col[df_col["Sana"] >= pd.Timestamp(info[0])]
         else:
             df1 = df_col
-        df1 = df1[df1[column] != 0]
+        # Faqat HAQIQATDA bo'sh (o'lchov kiritilmagan) qatorlar tashlanadi —
+        # 0 qiymat ham amaldagi o'lchov hisoblanib, bazaga yoziladi
+        df1 = df1[df1[column].notna()]
         df1_sort = df1.sort_values(by="Sana", ascending=True)
 
         updated = 0
@@ -146,7 +157,7 @@ def process_spm_file(file_obj, filename: str, cursor, conn, db_name: str) -> dic
                 continue
             date_value = sana.strftime("%Y-%m-%d %H:%M:%S")
             value = df1_sort.iloc[i, 1]
-            if value == 0:
+            if pd.isna(value):
                 continue
             try:
                 cursor.execute(

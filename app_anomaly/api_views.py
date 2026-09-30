@@ -348,7 +348,18 @@ def api_analyze(request):
             })
 
             # Bazaga yozish — bir xil tahlil qayta bosilsa DUBLIKAT YARATMAYDI:
-            # o'sha kalit maydonlar bo'yicha mavjud yozuv yangilanadi
+            # o'sha kalit maydonlar bo'yicha mavjud yozuv yangilanadi.
+            #
+            # MUHIM TUZATISH: ilgari anomaly_start_date/anomaly_end_date ham
+            # LOOKUP kaliti ichida edi. Yangi kun(lar)ning ma'lumoti kelishi
+            # bilan aniqlangan anomaliya oynasining boshlanish/tugash sanasi
+            # biroz siljib qolishi mumkin — natijada "bir xil" tahlil qayta
+            # bosilganda kalit mos kelmay, ESKI yozuv o'rniga bazaga YANGI
+            # (deyarli bir xil) qator qo'shilardi — tarix ro'yxatida
+            # "takroriy" yozuvlar shundan paydo bo'lgan. Endi sana maydonlari
+            # `defaults` ichida — ular har safar YANGILANADI, lookup esa
+            # faqat o'zgarmas sozlamalarga (skvajina/parametr/davr/...) qarab
+            # bitta yozuvni topadi.
             try:
                 first, last = recent_anomalies[0], recent_anomalies[-1]
                 AnomalyRecord.objects.update_or_create(
@@ -357,11 +368,11 @@ def api_analyze(request):
                     time_period_months=time_period,
                     anomaly_duration_days=anomaly_duration,
                     recent_days_filter=recent_days,
-                    anomaly_start_date=first["start_date"].date(),
-                    anomaly_end_date=last["end_date"].date(),
                     defaults={
                         "magnitude": magnitude,
                         "detected_anomalies_count": len(recent_anomalies),
+                        "anomaly_start_date": first["start_date"].date(),
+                        "anomaly_end_date": last["end_date"].date(),
                         "is_active": True,
                     },
                 )

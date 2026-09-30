@@ -14,6 +14,58 @@ from .serializers import CatalogSerializer, ManualEntrySerializer
 
 DATA_URL = "https://api.smrm.uz/api/earthquakes/central-asia"
 
+# Ba'zan klaviatura tili kirillchada qolgan holda yozilgan epitsentr nomlari
+# uchraydi — masalan "Аfg'oniston" (birinchi harf kirillcha "А", qolgani
+# lotincha). Natijada bir xil joy nomi ikki xil "matn" bo'lib ko'rinadi.
+# Faqat bitta so'z ICHIDA ham kirill, ham lotin harf aralashgan holatda
+# ishlatiladi — sof kirillcha (masalan ruscha) matnga tegilmaydi.
+_CYR_TO_LAT_HOMOGLYPHS = {
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H",
+    "О": "O", "Р": "P", "С": "C", "Т": "T", "У": "Y", "Х": "X",
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x",
+}
+
+
+def normalize_mixed_script(text):
+    """Bir so'z ichidagi kirill-lotin aralashmasini (klaviatura xatosi) tuzatadi."""
+    if not text:
+        return text
+    fixed_words = []
+    for word in str(text).split():
+        has_latin = any(c.isalpha() and c.isascii() for c in word)
+        has_cyr_homoglyph = any(c in _CYR_TO_LAT_HOMOGLYPHS for c in word)
+        if has_latin and has_cyr_homoglyph:
+            word = "".join(_CYR_TO_LAT_HOMOGLYPHS.get(c, c) for c in word)
+        fixed_words.append(word)
+    return " ".join(fixed_words)
+
+
+# Tashqi API'dan bir xil hodisa bir necha soniya farq bilan (ba'zan boshqa
+# magnitudayoq) ikki marta kelishi mumkin (masalan 2025-10-05 Mb5.4 va
+# Mb5.7 — bitta zilzila). Shuning uchun endi shunчaki "oxirgi yozuvdan
+# keyin" emas, shu kunning barcha yozuvlariga nisbatan yaqin-dublikatlik
+# tekshiriladi.
+NEAR_DUP_MAX_SECONDS = 120
+NEAR_DUP_MAX_DEG = 0.5
+
+
+def _is_near_duplicate(candidate_date, candidate_time, lat, lon, existing_same_day):
+    """existing_same_day — [(date, time, lat, lon), ...] shu kun uchun."""
+    if candidate_time is None:
+        return False
+    cand_dt = datetime.datetime.combine(candidate_date, candidate_time)
+    for ex_date, ex_time, ex_lat, ex_lon in existing_same_day:
+        if ex_time is None:
+            continue
+        delta = abs((cand_dt - datetime.datetime.combine(ex_date, ex_time)).total_seconds())
+        if (
+            delta <= NEAR_DUP_MAX_SECONDS
+            and abs(ex_lat - lat) <= NEAR_DUP_MAX_DEG
+            and abs(ex_lon - lon) <= NEAR_DUP_MAX_DEG
+        ):
+            return True
+    return False
+
 
 def fetch_data_from_api(params):
     all_data = []
@@ -44,6 +96,11 @@ def save_data_to_db(data_list):
     last_record = Catalog.objects.order_by("-Event_date", "-Event_time").first()
     rows_to_create = []
 
+    # Kun bo'yicha keshlangan mavjud yozuvlar — yaqin-dublikat tekshiruvi
+    # uchun (bir necha soniya farqli, ba'zan boshqa magnitudali "bir xil
+    # zilzila" holatlarini ushlab qolish uchun kerak).
+    existing_by_day = {}
+
     for item in data_list:
         try:
             formatted_date_naive = datetime.datetime.strptime(item.get("date"), "%d.%m.%Y").date()
@@ -61,16 +118,36 @@ def save_data_to_db(data_list):
         ):
             continue
 
+        try:
+            lat = float(item.get('latitude'))
+            lon = float(item.get('longitude'))
+        except (TypeError, ValueError):
+            continue
+
+        if formatted_date_naive not in existing_by_day:
+            existing_by_day[formatted_date_naive] = list(
+                Catalog.objects.filter(Event_date=formatted_date_naive)
+                .values_list("Event_date", "Event_time", "Latitude", "Longitude")
+            )
+
+        if _is_near_duplicate(formatted_date_naive, formatted_time, lat, lon, existing_by_day[formatted_date_naive]):
+            continue
+
         new_record = Catalog(
             Event_date=formatted_date_naive,
             Event_time=formatted_time,
-            Latitude=float(item.get('latitude')),
-            Longitude=float(item.get('longitude')),
+            Latitude=lat,
+            Longitude=lon,
             Depth=float(item.get('depth')),
             Mb=float(item.get('magnitude')),
-            Epicenter=item.get('epicenter')
+            Epicenter=normalize_mixed_script(item.get('epicenter')),
         )
         rows_to_create.append(new_record)
+        # Shu partiya ichida ham takrorlanmasin (API bir marta chaqirilib
+        # bir necha bet ma'lumot qaytarsa, o'zaro dublikat bo'lishi mumkin)
+        existing_by_day[formatted_date_naive].append(
+            (formatted_date_naive, formatted_time, lat, lon)
+        )
 
     rows_to_create.sort(key=lambda r: (r.Event_date, r.Event_time))
     Catalog.objects.bulk_create(rows_to_create)
@@ -305,7 +382,7 @@ def save_file_data_to_db(df):
             Longitude=float(row['longitude']),
             Depth=float(row['depth']),
             Mb=float(row['magnitude']),
-            Epicenter=str(row['epicenter']).strip()
+            Epicenter=normalize_mixed_script(str(row['epicenter']).strip()),
         ))
         existing_keys.add(key)
 
@@ -335,7 +412,7 @@ def manual_entry(request):
         "Longitude": request.data.get("longitude"),
         "Depth": request.data.get("depth"),
         "Mb": request.data.get("magnitude"),
-        "Epicenter": request.data.get("epicenter", ""),
+        "Epicenter": normalize_mixed_script(request.data.get("epicenter", "")),
     }
 
     serializer = ManualEntrySerializer(data=payload)

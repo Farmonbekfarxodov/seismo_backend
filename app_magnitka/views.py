@@ -135,7 +135,10 @@ def fetch_earthquakes(
         if start_date and end_date:
             qs = qs.filter(event_date__range=(start_date.date(), end_date.date()))
 
-        values = qs.values("event_date", "event_time", "mb", "epicenter", "depth")
+        values = qs.values(
+            "event_date", "event_time", "mb", "epicenter", "depth",
+            "latitude", "longitude",
+        )
 
         if not values.exists():
             return pd.DataFrame()
@@ -160,17 +163,64 @@ def fetch_earthquakes(
         return pd.DataFrame()
 
 
+def compute_reference_median(
+    station_id: int,
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
+    pad_days: int = 30,
+    min_samples: int = 100,
+) -> Optional[float]:
+    """So'ralgan sana oralig'i tashqarisidan ham ma'lumot olib, ishonchliroq
+    median hisoblaydi (filter_outliers'ga beriladi).
+
+    Muammo: agar foydalanuvchi tor sana oralig'ini tanlasa va aynan o'sha
+    oraliq nosozlik davriga to'g'ri kelsa, filter_outliers'ning o'zi
+    hisoblaydigan lokal median ham "buzilgan" nuqtalar ta'sirida siljib
+    qoladi — natijada nosoz qiymatlar "normal" ko'rinib, filtrlanmay qoladi.
+    Shuning uchun so'ralgan oyna atrofiga (oldin/keyin) `pad_days` kun
+    qo'shib, kengroq va shu bilan barqarorroq median hisoblanadi.
+
+    Agar bu ham yetarli nuqta bermasa (masalan yangi stantsiya yoki
+    days=0/"hammasi" rejimida start/end berilmagan bo'lsa), None qaytariladi
+    — chaqiruvchi o'zining lokal medianasiga qaytadi (eski xatti-harakat).
+    """
+    if start_date is None or end_date is None:
+        return None
+    try:
+        padded_start = start_date - timedelta(days=pad_days)
+        padded_end = end_date + timedelta(days=pad_days)
+        values = list(
+            Measurement.objects.filter(
+                station_id=station_id,
+                value__isnull=False,
+                measured_at__range=(padded_start, padded_end),
+            ).values_list("value", flat=True)
+        )
+        if len(values) < min_samples:
+            return None
+        return float(pd.Series(values).median())
+    except Exception as e:
+        logger.warning(f"⚠️ compute_reference_median xato (station={station_id}): {e}")
+        return None
+
+
 def filter_outliers(
     base_df: pd.DataFrame,
     nom: str = BASE_STATION_NAME,
     max_deviation: float = MAX_DEVIATION,
+    reference_median: Optional[float] = None,
 ) -> pd.DataFrame:
     """Stansiyaning yaroqsiz nuqtalarini olib tashlaydi.
 
-    Qiymat shu stansiyaning o'z medianasidan `max_deviation` dan ko'p
-    chetlashsa — bu magnit o'zgarish emas, sensor/yozuv nosozligi.
-    Bunday nuqtalar hisobdan chiqarib tashlanadi; natijada o'sha vaqtlarda
-    grafik bo'sh qoladi (soxta cho'qqi chizilmaydi).
+    Qiymat medianadan `max_deviation` dan ko'p chetlashsa — bu magnit
+    o'zgarish emas, sensor/yozuv nosozligi. Bunday nuqtalar hisobdan
+    chiqarib tashlanadi; natijada o'sha vaqtlarda grafik bo'sh qoladi
+    (soxta cho'qqi chizilmaydi).
+
+    `reference_median` berilsa (compute_reference_median orqali, so'ralgan
+    oyna atrofidagi kengroq ma'lumotdan hisoblangan), o'sha ishlatiladi —
+    aks holda shu `base_df`ning o'z medianasiga qaytiladi (eski xatti-harakat,
+    "hammasi" rejimida yoki yetarli qo'shimcha ma'lumot bo'lmaganda).
 
     Ham baza (Yangibozor), ham har bir o'lchovchi stansiya uchun ishlatiladi.
     Delta hisoblash va 10-minutlik o'rtachaga keltirishdan OLDIN chaqirilishi
@@ -180,7 +230,7 @@ def filter_outliers(
     if base_df.empty or "value" not in base_df.columns:
         return base_df
 
-    median = base_df["value"].median()
+    median = reference_median if reference_median is not None else base_df["value"].median()
     yaroqli = (base_df["value"] - median).abs() <= max_deviation
     tashlandi = int((~yaroqli).sum())
 
@@ -350,8 +400,11 @@ def api_measurements(request):
                 start_date=start_date, end_date=end_date,
             )
         if not base_df.empty:
-            # Avval yaroqsiz nuqtalar tashlanadi, keyin 10-minutlikka keltiriladi
-            base_df = filter_outliers(base_df, BASE_STATION_NAME)
+            # Avval yaroqsiz nuqtalar tashlanadi, keyin 10-minutlikka keltiriladi.
+            # Median so'ralgan oyna atrofidagi kengroq ma'lumotdan hisoblanadi
+            # (tor oyna nosozlik davriga to'g'ri kelib qolsa ham ishonchli bo'lsin).
+            ref_median = compute_reference_median(base_station_obj.id, start_date, end_date)
+            base_df = filter_outliers(base_df, BASE_STATION_NAME, reference_median=ref_median)
         if not base_df.empty:
             base_df = aggregate_base_to_10min(base_df)
 
@@ -363,16 +416,18 @@ def api_measurements(request):
         station_name = sub["station_name"].iloc[0]
         is_base = (station_name == BASE_STATION_NAME)
 
+        ref_median = compute_reference_median(sid, start_date, end_date)
+
         if is_base:
             series_df = (
                 base_df if not base_df.empty
-                else aggregate_base_to_10min(filter_outliers(sub, station_name))
+                else aggregate_base_to_10min(filter_outliers(sub, station_name, reference_median=ref_median))
             )
             is_delta = False
         else:
             # Stansiyaning O'Z nosoz nuqtalari ham tashlanadi — aks holda
             # uning sensori buzilgan kunda Δ soxta cho'qqi berib yuboradi.
-            sub = filter_outliers(sub, station_name)
+            sub = filter_outliers(sub, station_name, reference_median=ref_median)
             if sub.empty:
                 result.append({
                     "station_id": sid,
@@ -429,6 +484,11 @@ def api_earthquakes(request):
         "magnitude": r["mb"],
         "epicenter": r["epicenter"],
         "depth":     r["depth"],
+        # Stansiyadan masofani hisoblash uchun (frontendda M/lgR filtri kerak) —
+        # ilgari yo'q edi, shu sabab Magnitka'da HAR bir zilzila HAMMA
+        # stansiya grafigida bir xil (masofadan qat'i nazar) chizilar edi.
+        "lat":       r["latitude"],
+        "lon":       r["longitude"],
     }, axis=1).tolist()
 
     return JsonResponse({"data": result})
