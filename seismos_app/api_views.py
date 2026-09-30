@@ -55,7 +55,10 @@ def api_layers(request):
     # Redis ishlamayotgan bo'lsa ham endpoint ishlashda davom etadi
     # (shunchaki keshsiz, har safar qayta hisoblaydi)
     try:
-        cached = cache.get("seismos_map_layers_v3")
+        # v4: zonalarga zone_number/roman maydonlari qo'shildi — kalit
+        # versiyasi oshirildi, aks holda eski (raqamsiz) kesh 24 soat
+        # davomida qaytarilib turardi.
+        cached = cache.get("seismos_map_layers_v4")
         if cached:
             return Response(cached)
     except Exception as e:
@@ -114,17 +117,41 @@ def api_layers(request):
                 geom["coordinates"] = _round(geom["coordinates"])
         return geo
 
+    def _to_roman(num):
+        """Butun sonni rim raqamiga o'zgartiradi (v1 folium xaritasidagi bilan bir xil)."""
+        vals = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
+        syms = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
+        roman, i = "", 0
+        while num > 0:
+            while num >= vals[i]:
+                roman += syms[i]
+                num -= vals[i]
+            i += 1
+        return roman
+
     cracks = load_many(["AFEAD_*.shp", "Export_Output*.shp"], ["NAME", "RATE"])
     zones = load_many(
-        ["Seysmogen_*.shp"], ["seysmogen_", "hududiy_ma", "seysmogen1"]
+        ["Seysmogen_*.shp"], ["seysmogen_", "hududiy_ma", "seysmogen1", "OBJECTID"]
     )
+    if zones:
+        # Har bir zonaga v1 xaritasidagi bilan bir xil tartibda (OBJECTID,
+        # bo'lmasa qator tartibi) rim raqami beriladi — xaritadagi belgi va
+        # yon tarafdagi "shartli belgilar" ro'yxati shu raqam orqali bog'lanadi.
+        for i, feat in enumerate(zones.get("features", [])):
+            props = feat.setdefault("properties", {}) or {}
+            try:
+                zone_number = int(props["OBJECTID"]) if props.get("OBJECTID") is not None else i + 1
+            except (TypeError, ValueError):
+                zone_number = i + 1
+            props["zone_number"] = zone_number
+            props["roman"] = _to_roman(zone_number)
 
     payload = {"cracks": cracks, "zones": zones}
     # Faqat haqiqiy ma'lumot keshlanadi — null natija keshlanmaydi,
     # aks holda fayl topilmagan holat 24 soat "yopishib" qolardi
     if cracks is not None or zones is not None:
         try:
-            cache.set("seismos_map_layers_v3", payload, 60 * 60 * 24)
+            cache.set("seismos_map_layers_v4", payload, 60 * 60 * 24)
         except Exception as e:
             logger.warning(f"Kesh yozishda xato (Redis ishlayaptimi?): {e}")
     return Response(payload)
